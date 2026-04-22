@@ -37,8 +37,11 @@ WhatsApp moderation bot for the Fete event groups. It runs through Baileys, appl
 ### HTTP surface
 
 - `GET /health`
+  - `200 OK` when the process is running
+  - returns `WAITING_FOR_WHATSAPP` until the bot is paired and connected
+- `GET /ready`
   - `200 OK` when the bot socket is connected
-  - `503 DISCONNECTED` when the socket is not connected
+  - `503 DISCONNECTED` when the bot socket is not connected
 
 ### Persistent storage
 
@@ -438,6 +441,8 @@ Notes:
 - Do not use `ADMIN_JIDS`; the app reads `OWNER_JIDS`
 - `data/` is intentionally excluded from the Docker build so the Railway volume stays authoritative for both the SQLite DB and WhatsApp auth files
 - The container listens on Railway's `PORT` env var and falls back to `3000` locally
+- Railway deploy health checks should target `/health`, not `/ready`, so the container can become active before the WhatsApp QR has been scanned
+- Use `/ready` only if you want to confirm that the bot is fully connected to WhatsApp
 
 ## Operational Notes
 

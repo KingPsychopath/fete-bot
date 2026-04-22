@@ -51,9 +51,16 @@ let socketInstanceCounter = 0;
 const healthPort = Number(process.env.PORT ?? "3000");
 const healthServer = createServer((req, res) => {
   if (req.url === "/health") {
-    const healthy = activeSocket?.user !== undefined;
-    res.writeHead(healthy ? 200 : 503);
-    res.end(healthy ? "OK" : "DISCONNECTED");
+    const connected = activeSocket?.user !== undefined;
+    res.writeHead(200);
+    res.end(connected ? "OK" : "WAITING_FOR_WHATSAPP");
+    return;
+  }
+
+  if (req.url === "/ready") {
+    const connected = activeSocket?.user !== undefined;
+    res.writeHead(connected ? 200 : 503);
+    res.end(connected ? "OK" : "DISCONNECTED");
     return;
   }
 
