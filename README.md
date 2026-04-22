@@ -51,10 +51,31 @@ WhatsApp moderation bot for the Fete event groups. It runs through Baileys, appl
   - `bans`
   - `mutes`
   - `audit_log`
+  - `moderators`
+  - `review_queue`
 
 ### Session storage
 
 - `./data/auth`
+
+## Storage Contract
+
+Use one Railway volume for this service.
+
+- Recommended volume name: `fete-bot-data`
+- Mount path: `/app/data`
+- Number of volumes required: `1`
+
+Inside that volume:
+
+- `/app/data/bot.db` stores the SQLite database
+- `/app/data/auth` stores the Baileys multi-file WhatsApp session
+
+Notes:
+
+- The volume name is a Railway label for humans; the app only depends on the mount path
+- Railway exposes `RAILWAY_VOLUME_NAME` and `RAILWAY_VOLUME_MOUNT_PATH` automatically at runtime
+- Volumes are mounted at runtime, not during build or pre-deploy steps
 
 ## Safety Defaults
 
@@ -421,8 +442,9 @@ Seen message from group JID: 120363XXXXXXXXXX@g.us
 
 1. Create a Railway project from this repo
 2. Railway will use the included [Dockerfile](/Users/abel/dev/personal/fete-bot/Dockerfile:1) automatically
-3. Mount a persistent volume at `/app/data`
-4. Set these variables in Railway:
+3. Attach one Railway volume named `fete-bot-data`
+4. Mount that volume at `/app/data`
+5. Set these variables in Railway:
 
 ```text
 DRY_RUN=true
@@ -432,14 +454,15 @@ ALLOWED_GROUP_JIDS=120363408759548644@g.us
 NODE_ENV=production
 ```
 
-5. Deploy
-6. Scan the QR code from Railway logs with the WhatsApp Business account
-7. Use `/health` for Railway health checks
+6. Deploy
+7. Scan the QR code from Railway logs with the WhatsApp Business account
+8. Use `/health` for Railway health checks
 
 Notes:
 
 - Do not use `ADMIN_JIDS`; the app reads `OWNER_JIDS`
 - `data/` is intentionally excluded from the Docker build so the Railway volume stays authoritative for both the SQLite DB and WhatsApp auth files
+- `railway.toml` does not create or attach volumes; volume setup still happens in Railway
 - The container listens on Railway's `PORT` env var and falls back to `3000` locally
 - Railway deploy health checks should target `/health`, not `/ready`, so the container can become active before the WhatsApp QR has been scanned
 - Use `/ready` only if you want to confirm that the bot is fully connected to WhatsApp

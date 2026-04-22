@@ -926,16 +926,25 @@ export const startBot = async (): Promise<void> => {
 
     if (qr) {
       log("QR received. Scan it with the WhatsApp Business account you want to use.");
-      QRCode.toString(qr, { type: "terminal", small: true }, (err, code) => {
+      log("=== QR RAW STRING (paste into any QR generator) ===");
+      process.stdout.write(`${qr}\n`);
+      log("=== END RAW STRING ===");
+
+      const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(qr)}`;
+      log(`QR image URL: ${qrImageUrl}`);
+
+      QRCode.toString(qr, { type: "terminal", small: false, margin: 2 }, (err, code) => {
         if (err) {
           warn("Failed to render terminal QR code.", err);
           return;
         }
 
-        console.log(code);
+        const paddedCode = code
+          .split("\n")
+          .map((line) => `.${line}`)
+          .join("\n");
+        process.stdout.write(`\n${paddedCode}\n`);
       });
-      log("Raw QR string fallback. Paste this into a QR generator if the terminal QR is too large to scan.");
-      console.log(qr);
     }
 
     if (connection === "open") {
