@@ -1,9 +1,10 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { AUTH_DIR } from "./storagePaths.js";
 
 const lidToPhone = new Map<string, string>();
 
-export async function loadLidMappings(authDir = "auth"): Promise<void> {
+export async function loadLidMappings(authDir = AUTH_DIR): Promise<void> {
   lidToPhone.clear();
 
   let entries: string[];

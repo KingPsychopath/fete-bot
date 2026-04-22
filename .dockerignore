@@ -3,7 +3,6 @@ dist
 .env
 .env.*
 data
-auth
 .git
 .gitignore
 README.md

@@ -7,7 +7,6 @@ import makeWASocket, {
   type WAMessage,
   type WAMessageKey,
 } from "@whiskeysockets/baileys";
-import { mkdirSync } from "node:fs";
 import { createServer } from "node:http";
 import pino from "pino";
 import qrcodeTerminal from "qrcode-terminal";
@@ -33,6 +32,7 @@ import { expandCandidateJids, loadLidMappings } from "./lidMap.js";
 import { containsDisallowedUrl } from "./linkChecker.js";
 import { SpamDetector, type SpamReason } from "./spamDetector.js";
 import { error, log, warn } from "./logger.js";
+import { AUTH_DIR, ensureStorageDirs, migrateLegacyAuthDir } from "./storagePaths.js";
 import { extractAllIdentifiers, isProtectedGroupMember, parseToJid } from "./utils.js";
 import { STARTED_AT, VERSION } from "./version.js";
 
@@ -863,6 +863,8 @@ They have been banned and removed after repeatedly trying to post while muted.`,
 
 export const startBot = async (): Promise<void> => {
   const socketInstanceId = ++socketInstanceCounter;
+  migrateLegacyAuthDir();
+  ensureStorageDirs();
   initDb();
   await loadLidMappings();
   purgeExpiredStrikes();
@@ -888,8 +890,7 @@ export const startBot = async (): Promise<void> => {
   log(`${config.botName} ${VERSION} starting at ${STARTED_AT}`);
   logConfig();
 
-  const authFolder = process.env.AUTH_FOLDER ?? "./data/auth";
-  mkdirSync(authFolder, { recursive: true });
+  const authFolder = AUTH_DIR;
   const { state, saveCreds } = await useMultiFileAuthState(authFolder);
   const { version, isLatest, error: versionError } = await fetchLatestBaileysVersion();
 

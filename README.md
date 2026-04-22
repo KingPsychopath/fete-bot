@@ -51,7 +51,7 @@ WhatsApp moderation bot for the Fete event groups. It runs through Baileys, appl
 
 ### Session storage
 
-- `./auth`
+- `./data/auth`
 
 ## Safety Defaults
 
@@ -419,8 +419,7 @@ Seen message from group JID: 120363XXXXXXXXXX@g.us
 1. Create a Railway project from this repo
 2. Railway will use the included [Dockerfile](/Users/abel/dev/personal/fete-bot/Dockerfile:1) automatically
 3. Mount a persistent volume at `/app/data`
-4. Mount a persistent volume at `/app/auth`
-5. Set these variables in Railway:
+4. Set these variables in Railway:
 
 ```text
 DRY_RUN=true
@@ -430,14 +429,14 @@ ALLOWED_GROUP_JIDS=120363408759548644@g.us
 NODE_ENV=production
 ```
 
-6. Deploy
-7. Scan the QR code from Railway logs with the WhatsApp Business account
-8. Use `/health` for Railway health checks
+5. Deploy
+6. Scan the QR code from Railway logs with the WhatsApp Business account
+7. Use `/health` for Railway health checks
 
 Notes:
 
 - Do not use `ADMIN_JIDS`; the app reads `OWNER_JIDS`
-- `data/` and `auth/` are intentionally excluded from the Docker build so Railway volumes stay authoritative
+- `data/` is intentionally excluded from the Docker build so the Railway volume stays authoritative for both the SQLite DB and WhatsApp auth files
 - The container listens on Railway's `PORT` env var and falls back to `3000` locally
 
 ## Operational Notes

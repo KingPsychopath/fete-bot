@@ -1,7 +1,5 @@
-import { mkdirSync } from "fs";
-import path from "node:path";
-
 import Database from "better-sqlite3";
+import { DATABASE_PATH, ensureStorageDirs } from "./storagePaths.js";
 
 export type LogAction = "DELETED" | "DRY_RUN" | "ERROR" | "WARN";
 
@@ -69,9 +67,6 @@ export interface ReviewQueueEntry {
   flaggedAt: string;
 }
 
-const DATABASE_PATH = process.env.DB_PATH ?? path.join(path.resolve(process.cwd(), "data"), "bot.db");
-const DATA_DIR = path.dirname(DATABASE_PATH);
-
 let db: Database.Database | null = null;
 
 const getDb = (): Database.Database => {
@@ -87,7 +82,7 @@ export const initDb = (): void => {
     return;
   }
 
-  mkdirSync(DATA_DIR, { recursive: true });
+  ensureStorageDirs();
 
   db = new Database(DATABASE_PATH);
   db.exec(`
