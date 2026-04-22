@@ -56,7 +56,7 @@ WhatsApp moderation bot for the Fete event groups. It runs through Baileys, watc
 
 - `DRY_RUN=true` by default
 - `ALLOWED_GROUP_JIDS` defaults to empty, so the bot acts in zero groups until you opt in
-- `OWNER_JIDS` are never moderated, and moderators are exempt too
+- `OWNER_JIDS`, database moderators, and WhatsApp group admins are never moderated
 - The bot never responds in 1:1 chats unless the sender is an owner or moderator using a command
 - The bot never acts on its own messages, with an extra self-ID check as defence in depth
 
@@ -353,17 +353,19 @@ pnpm admin:cli mods list
 pnpm admin:cli mods add 07911123456 "sound team"
 pnpm admin:cli mods remove 07911123456
 pnpm admin:cli strikes list 07911123456
-pnpm admin:cli strikes reset 07911123456 120363408759548644@g.us
-pnpm admin:cli strikes reset-all 120363408759548644@g.us
-pnpm admin:cli strikes reset-all
+pnpm admin:cli strikes clear 07911123456 120363408759548644@g.us
+pnpm admin:cli strikes clear-all 120363408759548644@g.us
+pnpm admin:cli strikes clear-all
 pnpm admin:cli bans list 120363408759548644@g.us
-pnpm admin:cli bans reset 07911123456 120363408759548644@g.us
-pnpm admin:cli bans reset-all 120363408759548644@g.us
-pnpm admin:cli bans reset-all
+pnpm admin:cli bans clear 07911123456 120363408759548644@g.us
+pnpm admin:cli bans clear-all 120363408759548644@g.us
+pnpm admin:cli bans clear-all
 pnpm admin:cli mutes list 120363408759548644@g.us
-pnpm admin:cli mutes reset 07911123456 120363408759548644@g.us
-pnpm admin:cli mutes reset-all 120363408759548644@g.us
-pnpm admin:cli mutes reset-all
+pnpm admin:cli mutes clear 07911123456 120363408759548644@g.us
+pnpm admin:cli mutes clear-all 120363408759548644@g.us
+pnpm admin:cli mutes clear-all
+pnpm admin:cli reset-all 120363408759548644@g.us
+pnpm admin:cli reset-all
 pnpm admin:cli audit 20
 ```
 
@@ -372,6 +374,7 @@ Notes:
 - This CLI is local-only and talks directly to `./data/bot.db`
 - It is intended for testing, inspection, and cleanup
 - It does not send WhatsApp messages or bypass bot safety logic in chats
+- `clear` and `reset` are equivalent, so existing `reset` commands still work
 
 ## Environment Variables
 
@@ -397,13 +400,28 @@ Seen message from group JID: 120363XXXXXXXXXX@g.us
 ## Railway Deploy
 
 1. Create a Railway project from this repo
-2. Mount a persistent volume at `/app/data`
-3. If you want session persistence too, mount `/app/auth`
-4. Set the same env vars as local
-5. Deploy
-6. Use `/health` for Railway health checks
+2. Railway will use the included [Dockerfile](/Users/abel/dev/personal/fete-bot/Dockerfile:1) automatically
+3. Mount a persistent volume at `/app/data`
+4. Mount a persistent volume at `/app/auth`
+5. Set these variables in Railway:
 
-The included [Dockerfile](/Users/abel/dev/personal/fete-bot/Dockerfile:1) exposes port `3000`.
+```text
+DRY_RUN=true
+BOT_NAME=FeteBot
+OWNER_JIDS=447911123456@s.whatsapp.net
+ALLOWED_GROUP_JIDS=120363408759548644@g.us
+NODE_ENV=production
+```
+
+6. Deploy
+7. Scan the QR code from Railway logs with the WhatsApp Business account
+8. Use `/health` for Railway health checks
+
+Notes:
+
+- Do not use `ADMIN_JIDS`; the app reads `OWNER_JIDS`
+- `data/` and `auth/` are intentionally excluded from the Docker build so Railway volumes stay authoritative
+- The container listens on Railway's `PORT` env var and falls back to `3000` locally
 
 ## Operational Notes
 

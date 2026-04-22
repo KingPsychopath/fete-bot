@@ -31,7 +31,7 @@ import { runStartupHealthCheck } from "./healthCheck.js";
 import { containsDisallowedUrl } from "./linkChecker.js";
 import { SpamDetector, type SpamReason } from "./spamDetector.js";
 import { error, log, warn } from "./logger.js";
-import { extractAllIdentifiers, isAuthorised, parseToJid } from "./utils.js";
+import { extractAllIdentifiers, isProtectedGroupMember, parseToJid } from "./utils.js";
 import { STARTED_AT, VERSION } from "./version.js";
 
 const spamDetector = new SpamDetector();
@@ -43,6 +43,7 @@ let mutePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let activeSocket: WASocket | null = null;
 let shuttingDown = false;
 let reconnecting = false;
+let reconnectAttempts = 0;
 let socketInstanceCounter = 0;
 
 const healthPort = Number(process.env.PORT ?? "3000");
@@ -135,6 +136,9 @@ const getPushName = (msg: WAMessage): string | null => msg.pushName ?? null;
 const getPhoneJid = (phoneNumber: string | null): string | null =>
   phoneNumber ? parseToJid(phoneNumber) : null;
 
+const getActorCandidateJids = (senderJid: string, phoneJid?: string | null): string[] =>
+  Array.from(new Set([senderJid, phoneJid].filter((value): value is string => Boolean(value))));
+
 const getBotIdentifiers = (sock: WASocket): Set<string> => {
   const identifiers = new Set<string>();
   const user = sock.user;
@@ -160,6 +164,8 @@ const isForwardedMessage = (message: WAMessage["message"]): boolean => {
   return Boolean(contextInfo?.isForwarded || (contextInfo?.forwardingScore ?? 0) >= 5);
 };
 
+const MENTIONABLE_JID_REGEX = /@(s\.whatsapp\.net|lid)$/i;
+
 const getMentionTextToken = (
   senderJid: string,
   _pushName: string | null,
@@ -170,7 +176,32 @@ const getMentionTextToken = (
 };
 
 const getMentionTargetJid = (senderJid: string, phoneJid?: string | null): string =>
-  senderJid || phoneJid || "";
+  MENTIONABLE_JID_REGEX.test(senderJid) ? senderJid : "";
+
+const sendModerationMessage = async (
+  sock: WASocket,
+  groupJid: string,
+  text: string,
+  mentionTargetJid: string,
+): Promise<void> => {
+  if (!mentionTargetJid || !MENTIONABLE_JID_REGEX.test(mentionTargetJid)) {
+    const plainText = text.replace(/@\S+\s+-\s+/u, "").replace(/@\S+/u, "there");
+    await sock.sendMessage(groupJid, { text: plainText });
+    return;
+  }
+
+  log("Mention debug", {
+    text,
+    mentions: [mentionTargetJid],
+    tokenInText: text.match(/@([^ ]+)/)?.[1] ?? null,
+    jidUserPart: mentionTargetJid.split("@")[0] ?? null,
+  });
+
+  await sock.sendMessage(groupJid, {
+    text,
+    mentions: [mentionTargetJid],
+  });
+};
 
 const getMutedCounterKey = (userJid: string, groupJid: string): string => `${groupJid}::${userJid}`;
 
@@ -283,6 +314,16 @@ const listDiscoveredGroups = async (
   }
 };
 
+const refreshGroupMetadata = async (sock: WASocket, groupJid: string): Promise<void> => {
+  try {
+    const metadata = await sock.groupMetadata(groupJid);
+    discoveredGroups.set(groupJid, metadata.subject);
+    discoveredGroupMetadata.set(groupJid, metadata);
+  } catch (groupError) {
+    warn("Unable to refresh group metadata", { groupJid, error: groupError });
+  }
+};
+
 const buildErrorLogMessage = (messageText: string, moderationError: unknown): string => {
   const errorMessage =
     moderationError instanceof Error ? moderationError.message : String(moderationError);
@@ -312,10 +353,18 @@ export const handleMessage = async (
 
     const text = extractMessageText(msg);
 
-    if (remoteJid.endsWith("@s.whatsapp.net")) {
-      const senderJid = msg.key.participant ?? remoteJid;
+    if (remoteJid.endsWith("@s.whatsapp.net") || remoteJid.endsWith("@lid")) {
+      const { senderJid, phoneNumber } = extractAllIdentifiers(msg);
+      const phoneJid = getPhoneJid(phoneNumber);
       if (text) {
-        await handleAuthorisedCommand(sock, senderJid, text, config, discoveredGroups);
+        await handleAuthorisedCommand(
+          sock,
+          getActorCandidateJids(senderJid, phoneJid),
+          text,
+          config,
+          discoveredGroups,
+          discoveredGroupMetadata,
+        );
       }
       return;
     }
@@ -345,12 +394,13 @@ export const handleMessage = async (
     if (text) {
       const handledGroupCommand = await handleGroupCommand(
         sock,
-        canonicalSenderJid,
+        getActorCandidateJids(senderJid, phoneJid),
         groupJid,
         text,
         getQuotedParticipant(msg.message),
         config,
         discoveredGroups,
+        discoveredGroupMetadata,
       );
 
       if (handledGroupCommand) {
@@ -358,8 +408,26 @@ export const handleMessage = async (
       }
     }
 
-    if (isAuthorised(senderJid, config) || (phoneJid && isAuthorised(phoneJid, config))) {
+    if (
+      isProtectedGroupMember(
+        getActorCandidateJids(senderJid, phoneJid),
+        groupJid,
+        config,
+        discoveredGroupMetadata,
+      )
+    ) {
       return;
+    }
+
+    if (text.startsWith("!")) {
+      warn("Ignored in-group command from unauthorised sender", {
+        groupJid,
+        senderJid,
+        phoneJid,
+        lidJid,
+        pushName: getPushName(msg),
+        text,
+      });
     }
 
     try {
@@ -553,16 +621,12 @@ They have been banned and removed after repeatedly trying to post while muted.`,
           groupJid,
           moderationResult.reason ?? "unknown",
         );
-        log("Mention debug", {
-          text: appendStrikeWarning(warningText, strikeCount),
-          mentions: [mentionTargetJid],
-          tokenInText: appendStrikeWarning(warningText, strikeCount).match(/@([^ ]+)/)?.[1] ?? null,
-          jidUserPart: mentionTargetJid.split("@")[0] ?? null,
-        });
-        await sock.sendMessage(groupJid, {
-          text: appendStrikeWarning(warningText, strikeCount),
-          mentions: [mentionTargetJid],
-        });
+        await sendModerationMessage(
+          sock,
+          groupJid,
+          appendStrikeWarning(warningText, strikeCount),
+          mentionTargetJid,
+        );
 
         if (strikeCount >= 3) {
           upsertReviewQueueEntry(
@@ -583,16 +647,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
             );
           }
           const flaggedText = `@${getMentionTextToken(senderJid, pushName, phoneJid)} has been flagged for removal after repeated violations. An owner or moderator will review shortly.${config.muteOnStrike3 ? " They have been muted until review." : ""}`;
-          log("Mention debug", {
-            text: flaggedText,
-            mentions: [mentionTargetJid],
-            tokenInText: flaggedText.match(/@([^ ]+)/)?.[1] ?? null,
-            jidUserPart: mentionTargetJid.split("@")[0] ?? null,
-          });
-          await sock.sendMessage(groupJid, {
-            text: flaggedText,
-            mentions: [mentionTargetJid],
-          });
+          await sendModerationMessage(sock, groupJid, flaggedText, mentionTargetJid);
           await notifyOwnersOfStrikeThree(
             sock,
             canonicalSenderJid,
@@ -675,16 +730,12 @@ They have been banned and removed after repeatedly trying to post while muted.`,
       if (spamResult.action === "delete") {
         await sock.sendMessage(groupJid, { delete: msg.key as WAMessageKey });
         const strikeCount = addStrike(canonicalSenderJid, groupJid, spamResult.reason);
-        log("Mention debug", {
-          text: appendStrikeWarning(spamWarningText, strikeCount),
-          mentions: [mentionTargetJid],
-          tokenInText: appendStrikeWarning(spamWarningText, strikeCount).match(/@([^ ]+)/)?.[1] ?? null,
-          jidUserPart: mentionTargetJid.split("@")[0] ?? null,
-        });
-        await sock.sendMessage(groupJid, {
-          text: appendStrikeWarning(spamWarningText, strikeCount),
-          mentions: [mentionTargetJid],
-        });
+        await sendModerationMessage(
+          sock,
+          groupJid,
+          appendStrikeWarning(spamWarningText, strikeCount),
+          mentionTargetJid,
+        );
 
         if (strikeCount >= 3) {
           upsertReviewQueueEntry(
@@ -705,16 +756,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
             );
           }
           const flaggedText = `@${getMentionTextToken(senderJid, getPushName(msg), phoneJid)} has been flagged for removal after repeated violations. An owner or moderator will review shortly.${config.muteOnStrike3 ? " They have been muted until review." : ""}`;
-          log("Mention debug", {
-            text: flaggedText,
-            mentions: [mentionTargetJid],
-            tokenInText: flaggedText.match(/@([^ ]+)/)?.[1] ?? null,
-            jidUserPart: mentionTargetJid.split("@")[0] ?? null,
-          });
-          await sock.sendMessage(groupJid, {
-            text: flaggedText,
-            mentions: [mentionTargetJid],
-          });
+          await sendModerationMessage(sock, groupJid, flaggedText, mentionTargetJid);
           await notifyOwnersOfStrikeThree(
             sock,
             canonicalSenderJid,
@@ -725,10 +767,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
           );
         }
       } else {
-        await sock.sendMessage(groupJid, {
-          text: spamWarningText,
-          mentions: [mentionTargetJid],
-        });
+        await sendModerationMessage(sock, groupJid, spamWarningText, mentionTargetJid);
       }
 
       logAction({
@@ -820,6 +859,7 @@ export const startBot = async (): Promise<void> => {
 
     if (connection === "open") {
       reconnecting = false;
+      reconnectAttempts = 0;
       log("Bot connected");
       void (async () => {
         await listDiscoveredGroups(sock);
@@ -833,36 +873,68 @@ export const startBot = async (): Promise<void> => {
         return;
       }
 
+      if (activeSocket === sock) {
+        activeSocket = null;
+      }
+
       const statusCode = isBoomLike(lastDisconnect?.error)
         ? lastDisconnect.error.output?.statusCode
         : undefined;
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+      const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+      const isReplaced = statusCode === DisconnectReason.connectionReplaced || statusCode === 440;
 
-      warn("Connection closed", { statusCode, shouldReconnect });
+      if (isReplaced) {
+        error("Session replaced by another WhatsApp client. Exiting without reconnecting.", {
+          statusCode,
+        });
+        process.exit(1);
+      }
 
-      if (shouldReconnect && !shuttingDown && !reconnecting) {
+      if (isLoggedOut) {
+        error("WhatsApp logged the bot out. Remove ./auth and pair again.", { statusCode });
+        process.exit(1);
+      }
+
+      const delay = Math.min(Math.max(reconnectAttempts, 1) * 2000, 30_000);
+      reconnectAttempts += 1;
+
+      warn("Connection closed, reconnecting with backoff", { statusCode, delay, reconnectAttempts });
+
+      if (!shuttingDown && !reconnecting) {
         reconnecting = true;
         setTimeout(() => {
+          reconnecting = false;
           void startBot();
-        }, 1000);
-      } else {
-        warn("WhatsApp logged the bot out. Remove ./auth and pair again.");
+        }, delay);
       }
     }
   });
 
   sock.ev.on("group-participants.update", async (update) => {
-    if (update.action !== "add") {
+    if (!config.allowedGroupJids.includes(update.id)) {
       return;
     }
 
-    if (!config.allowedGroupJids.includes(update.id)) {
+    await refreshGroupMetadata(sock, update.id);
+
+    if (update.action !== "add") {
       return;
     }
 
     for (const participant of update.participants) {
       const participantJid = participant.id;
       const participantPhoneJid = getPhoneJid(participant.phoneNumber ?? null);
+
+      if (
+        isProtectedGroupMember(
+          [participantJid, participantPhoneJid].filter((value): value is string => Boolean(value)),
+          update.id,
+          config,
+          discoveredGroupMetadata,
+        )
+      ) {
+        continue;
+      }
 
       try {
         if (

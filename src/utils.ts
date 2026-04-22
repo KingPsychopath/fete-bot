@@ -1,4 +1,5 @@
 import type { WAMessage } from "@whiskeysockets/baileys";
+import type { GroupMetadata, GroupParticipant } from "@whiskeysockets/baileys";
 
 import type { Config } from "./config.js";
 import { isModerator } from "./db.js";
@@ -117,6 +118,39 @@ export function parseDuration(param?: string): Date | null {
 
 export function isAuthorised(jid: string, config: Config): boolean {
   return config.ownerJids.includes(jid) || isModerator(jid);
+}
+
+export function hasAdminPrivileges(
+  participant: Pick<GroupParticipant, "admin" | "isAdmin" | "isSuperAdmin"> | null | undefined,
+): boolean {
+  return Boolean(participant?.admin || participant?.isAdmin || participant?.isSuperAdmin);
+}
+
+export function isGroupAdmin(
+  jid: string,
+  groupJid: string,
+  groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
+): boolean {
+  const groupMetadata = groupMetadataByJid.get(groupJid);
+  if (!groupMetadata) {
+    return false;
+  }
+
+  return groupMetadata.participants.some(
+    (participant) => participant.id === jid && hasAdminPrivileges(participant),
+  );
+}
+
+export function isProtectedGroupMember(
+  candidateJids: readonly string[],
+  groupJid: string,
+  config: Config,
+  groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
+): boolean {
+  return candidateJids.some(
+    (candidateJid) =>
+      isAuthorised(candidateJid, config) || isGroupAdmin(candidateJid, groupJid, groupMetadataByJid),
+  );
 }
 
 // UK numbers

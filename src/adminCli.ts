@@ -25,27 +25,47 @@ Usage:
   pnpm admin:cli help
   pnpm admin:cli status
   pnpm admin:cli test-url <url>
+  pnpm admin:cli reset-all [groupJid]
 
+Moderators:
   pnpm admin:cli mods list
   pnpm admin:cli mods add <number|jid> [note...]
   pnpm admin:cli mods remove <number|jid>
 
+Strikes:
   pnpm admin:cli strikes list <number|jid>
   pnpm admin:cli strikes reset <number|jid> [groupJid]
+  pnpm admin:cli strikes clear <number|jid> [groupJid]
   pnpm admin:cli strikes reset-all [groupJid]
+  pnpm admin:cli strikes clear-all [groupJid]
 
+Bans:
   pnpm admin:cli bans list <groupJid>
   pnpm admin:cli bans reset <number|jid> <groupJid>
+  pnpm admin:cli bans clear <number|jid> <groupJid>
   pnpm admin:cli bans reset-all [groupJid]
+  pnpm admin:cli bans clear-all [groupJid]
+
+Mutes:
   pnpm admin:cli mutes list <groupJid>
   pnpm admin:cli mutes reset <number|jid> <groupJid>
+  pnpm admin:cli mutes clear <number|jid> <groupJid>
   pnpm admin:cli mutes reset-all [groupJid]
+  pnpm admin:cli mutes clear-all [groupJid]
+
   pnpm admin:cli audit [limit]
+
+Quick examples:
+  pnpm admin:cli strikes clear 07911123456
+  pnpm admin:cli bans clear 07911123456 120363408759548644@g.us
+  pnpm admin:cli mutes clear-all 120363408759548644@g.us
+  pnpm admin:cli reset-all 120363408759548644@g.us
 
 Notes:
   - This CLI is local-only and talks directly to ./data/bot.db
   - It is intended for testing and maintenance, not remote administration
-  - For phone numbers, both UK local and international formats are accepted`;
+  - For phone numbers, both UK local and international formats are accepted
+  - "clear" and "reset" mean the same thing; both are supported`;
 
 const fail = (message: string): never => {
   console.error(`Error: ${message}`);
@@ -190,6 +210,22 @@ const resetEveryoneStrikes = (groupJid?: string): void => {
   console.log("Reset strikes for everyone across all groups");
 };
 
+const resetAllState = (groupJidInput?: string): void => {
+  if (groupJidInput) {
+    const groupJid = requireGroupJid(groupJidInput);
+    resetAllStrikes(groupJid);
+    removeAllBans(groupJid);
+    removeAllMutes(groupJid);
+    console.log(`Reset all strikes, bans, and mutes in ${groupJid}`);
+    return;
+  }
+
+  resetAllStrikes();
+  removeAllBans();
+  removeAllMutes();
+  console.log("Reset all strikes, bans, and mutes across all groups");
+};
+
 const listBans = (groupJidInput: string | undefined): void => {
   const groupJid = requireGroupJid(groupJidInput);
   const bans = getBans(groupJid);
@@ -316,6 +352,11 @@ const main = (): void => {
       return;
     }
 
+    if (command === "reset-all" || command === "clear-all") {
+      resetAllState(subcommand);
+      return;
+    }
+
     if (command === "mods" && subcommand === "list") {
       listMods();
       return;
@@ -336,12 +377,12 @@ const main = (): void => {
       return;
     }
 
-    if (command === "strikes" && subcommand === "reset") {
+    if (command === "strikes" && (subcommand === "reset" || subcommand === "clear")) {
       resetUserStrikes(rest[0], rest[1]);
       return;
     }
 
-    if (command === "strikes" && subcommand === "reset-all") {
+    if (command === "strikes" && (subcommand === "reset-all" || subcommand === "clear-all")) {
       resetEveryoneStrikes(rest[0]);
       return;
     }
@@ -351,12 +392,12 @@ const main = (): void => {
       return;
     }
 
-    if (command === "bans" && subcommand === "reset") {
+    if (command === "bans" && (subcommand === "reset" || subcommand === "clear")) {
       resetBan(rest[0], rest[1]);
       return;
     }
 
-    if (command === "bans" && subcommand === "reset-all") {
+    if (command === "bans" && (subcommand === "reset-all" || subcommand === "clear-all")) {
       resetAllBans(rest[0]);
       return;
     }
@@ -366,12 +407,12 @@ const main = (): void => {
       return;
     }
 
-    if (command === "mutes" && subcommand === "reset") {
+    if (command === "mutes" && (subcommand === "reset" || subcommand === "clear")) {
       resetMute(rest[0], rest[1]);
       return;
     }
 
-    if (command === "mutes" && subcommand === "reset-all") {
+    if (command === "mutes" && (subcommand === "reset-all" || subcommand === "clear-all")) {
       resetAllMutes(rest[0]);
       return;
     }
@@ -381,7 +422,7 @@ const main = (): void => {
       return;
     }
 
-    fail(`unknown command: ${[command, subcommand].filter(Boolean).join(" ")}`);
+    fail(`unknown command: ${[command, subcommand].filter(Boolean).join(" ")} (run "pnpm admin:cli help" for usage)`);
   } finally {
     closeDb();
   }

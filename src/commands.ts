@@ -1,4 +1,4 @@
-import type { WASocket } from "@whiskeysockets/baileys";
+import type { GroupMetadata, WASocket } from "@whiskeysockets/baileys";
 
 import type { Config } from "./config.js";
 import {
@@ -29,7 +29,13 @@ import {
 } from "./db.js";
 import { containsDisallowedUrl, type DisallowedUrlReason } from "./linkChecker.js";
 import { STARTED_AT, VERSION } from "./version.js";
-import { formatJidForDisplay, isAuthorised, parseDuration, parseToJid } from "./utils.js";
+import {
+  formatJidForDisplay,
+  isAuthorised,
+  isProtectedGroupMember,
+  parseDuration,
+  parseToJid,
+} from "./utils.js";
 
 const HELP_MESSAGE = `Fete Bot Commands 🤖
 
@@ -107,6 +113,24 @@ const destructiveCommandTimestamps = new Map<string, number[]>();
 
 const normaliseCommand = (text: string): string => text.trim().toLowerCase();
 const isOwner = (jid: string, config: Config): boolean => config.ownerJids.includes(jid);
+const getActorIdentity = (
+  candidateJids: readonly string[],
+  config: Config,
+): { actorJid: string; actorRole: "owner" | "moderator" } | null => {
+  for (const candidateJid of candidateJids) {
+    if (isOwner(candidateJid, config)) {
+      return { actorJid: candidateJid, actorRole: "owner" };
+    }
+  }
+
+  for (const candidateJid of candidateJids) {
+    if (isAuthorised(candidateJid, config)) {
+      return { actorJid: candidateJid, actorRole: "moderator" };
+    }
+  }
+
+  return null;
+};
 
 const formatGroupName = (groupJid: string, groups: Map<string, string>): string =>
   groups.get(groupJid) ?? groupJid;
@@ -276,15 +300,17 @@ const ensureTargetNotAuthorised = async (
   sock: WASocket,
   senderJid: string,
   targetJid: string,
+  groupJid: string,
   config: Config,
+  groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
   action: "ban" | "mute" | "strike",
 ): Promise<boolean> => {
-  if (!isAuthorised(targetJid, config)) {
+  if (!isProtectedGroupMember([targetJid], groupJid, config, groupMetadataByJid)) {
     return true;
   }
 
   await sock.sendMessage(senderJid, {
-    text: `❌ Can't ${action} an owner or moderator.`,
+    text: `❌ Can't ${action} an owner, moderator, or group admin.`,
   });
   return false;
 };
@@ -352,13 +378,24 @@ async function handleBanCommand(
   groupJid: string,
   reason: string,
   config: Config,
+  groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
   lidJid: string | null = null,
 ): Promise<void> {
   if (!(await ensureAllowedGroup(sock, senderJid, groupJid, config))) {
     return;
   }
 
-  if (!(await ensureTargetNotAuthorised(sock, senderJid, targetJid, config, "ban"))) {
+  if (
+    !(await ensureTargetNotAuthorised(
+      sock,
+      senderJid,
+      targetJid,
+      groupJid,
+      config,
+      groupMetadataByJid,
+      "ban",
+    ))
+  ) {
     return;
   }
 
@@ -397,13 +434,24 @@ async function handleMuteCommand(
   durationInput: string | undefined,
   config: Config,
   groups: Map<string, string>,
+  groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
   lidJid: string | null = null,
 ): Promise<void> {
   if (!(await ensureAllowedGroup(sock, senderJid, groupJid, config))) {
     return;
   }
 
-  if (!(await ensureTargetNotAuthorised(sock, senderJid, targetJid, config, "mute"))) {
+  if (
+    !(await ensureTargetNotAuthorised(
+      sock,
+      senderJid,
+      targetJid,
+      groupJid,
+      config,
+      groupMetadataByJid,
+      "mute",
+    ))
+  ) {
     return;
   }
 
@@ -448,12 +496,23 @@ async function handleStrikeCommand(
   groupJid: string,
   reason: string,
   config: Config,
+  groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
 ): Promise<void> {
   if (!config.allowedGroupJids.includes(groupJid)) {
     return;
   }
 
-  if (!(await ensureTargetNotAuthorised(sock, replyJid, targetJid, config, "strike"))) {
+  if (
+    !(await ensureTargetNotAuthorised(
+      sock,
+      replyJid,
+      targetJid,
+      groupJid,
+      config,
+      groupMetadataByJid,
+      "strike",
+    ))
+  ) {
     return;
   }
 
@@ -494,18 +553,20 @@ async function handleUndoCommand(
 
 export async function handleGroupCommand(
   sock: WASocket,
-  senderJid: string,
+  actorCandidateJids: readonly string[],
   groupJid: string,
   text: string,
   quotedParticipant: string | null,
   config: Config,
   groups: Map<string, string>,
+  groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
 ): Promise<boolean> {
-  if (!isAuthorised(senderJid, config)) {
+  const actorIdentity = getActorIdentity(actorCandidateJids, config);
+  if (!actorIdentity) {
     return false;
   }
 
-  const actorRole = isOwner(senderJid, config) ? "owner" : "moderator";
+  const { actorJid: senderJid, actorRole } = actorIdentity;
 
   const command = normaliseCommand(text).split(/\s+/)[0] ?? "";
   if (!command.startsWith("!")) {
@@ -514,6 +575,14 @@ export async function handleGroupCommand(
 
   if (command === "!undo") {
     await handleUndoCommand(sock, groupJid, senderJid);
+    logAudit(senderJid, actorRole, command, null, groupJid, text, "success");
+    return true;
+  }
+
+  if (command === "!help") {
+    await sock.sendMessage(groupJid, {
+      text: `Owner and moderator commands work best in DM.\n\nReply to a message in-group for: !mute, !unmute, !ban, !strike, !pardon, !resetstrikes, !strikes\n\nDM me !help for the full command list.`,
+    });
     logAudit(senderJid, actorRole, command, null, groupJid, text, "success");
     return true;
   }
@@ -542,6 +611,7 @@ export async function handleGroupCommand(
       durationToken || undefined,
       config,
       groups,
+      groupMetadataByJid,
       quotedParticipant.endsWith("@lid") ? quotedParticipant : null,
     );
     logAudit(senderJid, actorRole, command, quotedParticipant, groupJid, text, "success");
@@ -566,6 +636,7 @@ They can now send messages again.`,
       groupJid,
       rest,
       config,
+      groupMetadataByJid,
       quotedParticipant.endsWith("@lid") ? quotedParticipant : null,
     );
     logAudit(senderJid, actorRole, command, quotedParticipant, groupJid, text, "success");
@@ -573,7 +644,15 @@ They can now send messages again.`,
   }
 
   if (command === "!strike") {
-    await handleStrikeCommand(sock, senderJid, quotedParticipant, groupJid, rest, config);
+    await handleStrikeCommand(
+      sock,
+      senderJid,
+      quotedParticipant,
+      groupJid,
+      rest,
+      config,
+      groupMetadataByJid,
+    );
     logAudit(senderJid, actorRole, command, quotedParticipant, groupJid, text, "success");
     return true;
   }
@@ -612,16 +691,18 @@ They can now send messages again.`,
 
 export async function handleAuthorisedCommand(
   sock: WASocket,
-  senderJid: string,
+  actorCandidateJids: readonly string[],
   text: string,
   config: Config,
   groups: Map<string, string>,
+  groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
 ): Promise<void> {
-  if (!isAuthorised(senderJid, config)) {
+  const actorIdentity = getActorIdentity(actorCandidateJids, config);
+  if (!actorIdentity) {
     return;
   }
 
-  const actorRole = isOwner(senderJid, config) ? "owner" : "moderator";
+  const { actorJid: senderJid, actorRole } = actorIdentity;
   const command = normaliseCommand(text);
 
   if (command === "!help") {
@@ -853,6 +934,14 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
       return;
     }
 
+    if (isProtectedGroupMember([targetJid], groupJid, config, groupMetadataByJid)) {
+      await sock.sendMessage(senderJid, {
+        text: "❌ Can't remove an owner, moderator, or group admin.",
+      });
+      logAudit(senderJid, actorRole, parsed.command, targetJid, groupJid, text, "error");
+      return;
+    }
+
     try {
       await sock.groupParticipantsUpdate(groupJid, [targetJid], "remove");
       resetStrikes(targetJid, groupJid);
@@ -957,7 +1046,15 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
       logAudit(senderJid, actorRole, parsed.command, targetJid, groupJid, text, "error");
       return;
     }
-    await handleBanCommand(sock, senderJid, targetJid, groupJid, parsed.rest, config);
+    await handleBanCommand(
+      sock,
+      senderJid,
+      targetJid,
+      groupJid,
+      parsed.rest,
+      config,
+      groupMetadataByJid,
+    );
     clearReviewQueueEntry(targetJid, groupJid);
     logAudit(senderJid, actorRole, parsed.command, targetJid, groupJid, text, "success");
     return;
@@ -1023,6 +1120,7 @@ They can now rejoin the group.`,
       parsed.rest.split(/\s+/)[0],
       config,
       groups,
+      groupMetadataByJid,
     );
     logAudit(senderJid, actorRole, parsed.command, targetJid, groupJid, text, "success");
     return;
@@ -1082,7 +1180,15 @@ They can now send messages again.`,
       logAudit(senderJid, actorRole, parsed.command, targetJid, groupJid, text, "error");
       return;
     }
-    await handleStrikeCommand(sock, senderJid, targetJid, groupJid, parsed.rest, config);
+    await handleStrikeCommand(
+      sock,
+      senderJid,
+      targetJid,
+      groupJid,
+      parsed.rest,
+      config,
+      groupMetadataByJid,
+    );
     logAudit(senderJid, actorRole, parsed.command, targetJid, groupJid, text, "success");
   }
 }
