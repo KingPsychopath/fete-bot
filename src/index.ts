@@ -927,6 +927,8 @@ export const startBot = async (): Promise<void> => {
     if (qr) {
       log("QR received. Scan it with the WhatsApp Business account you want to use.");
       qrcodeTerminal.generate(qr, { small: true });
+      log("Raw QR string fallback. Paste this into a QR generator if the terminal QR is too large to scan.");
+      console.log(qr);
     }
 
     if (connection === "open") {
