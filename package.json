@@ -4,18 +4,33 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "dev": "tsx src/index.ts",
+    "start": "tsx src/index.ts",
+    "admin:cli": "tsx src/adminCli.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "packageManager": "pnpm@10.33.1",
+  "engines": {
+    "node": ">=24.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3"
+    ]
+  },
   "dependencies": {
     "@whiskeysockets/baileys": "7.0.0-rc.9",
+    "better-sqlite3": "^12.9.0",
+    "dotenv": "^17.2.3",
     "pino": "^10.3.1",
     "qrcode-terminal": "^0.12.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.6.0",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3"
