@@ -355,7 +355,13 @@ pnpm admin:cli strikes reset 07911123456 120363408759548644@g.us
 pnpm admin:cli strikes reset-all 120363408759548644@g.us
 pnpm admin:cli strikes reset-all
 pnpm admin:cli bans list 120363408759548644@g.us
+pnpm admin:cli bans reset 07911123456 120363408759548644@g.us
+pnpm admin:cli bans reset-all 120363408759548644@g.us
+pnpm admin:cli bans reset-all
 pnpm admin:cli mutes list 120363408759548644@g.us
+pnpm admin:cli mutes reset 07911123456 120363408759548644@g.us
+pnpm admin:cli mutes reset-all 120363408759548644@g.us
+pnpm admin:cli mutes reset-all
 pnpm admin:cli audit 20
 ```
 

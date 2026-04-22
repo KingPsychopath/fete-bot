@@ -6,12 +6,15 @@ import {
   addModerator,
   addMute,
   addStrike,
+  clearReviewQueueEntry,
   getActiveMutes,
   getActiveStrikes,
   getActiveStrikesAcrossGroups,
   getAuditEntries,
   getBans,
   getForwardedMessagesSeenToday,
+  isMuted,
+  listReviewQueueEntries,
   listModerators,
   getStrikesIssuedToday,
   getTotalActiveBans,
@@ -60,6 +63,7 @@ Number formats accepted:
 
 ── Info commands (DM only) ──
   !status
+  !reviews
   !bans {groupJid}
   !mutes {groupJid}
   !audit {limit?}
@@ -226,26 +230,26 @@ const parseDirectTargetAndRest = (
 
 const previewWarningText = (reason: DisallowedUrlReason): string => {
   if (reason === "ticket platform") {
-    return `Hey @name 👋 We keep all event info in one place — search for it at fete.outofofficecollective.co.uk instead 🎉 Your message has been removed.`;
+    return `Hey @name - please use fete.outofofficecollective.co.uk to share event links 🙏`;
   }
 
   if (reason === "tiktok video (profile links only)") {
-    return `Hey @name 👋 TikTok profile links only please — share their profile page instead of a specific video 🎵 Your message has been removed.`;
+    return `Hey @name - TikTok profile links only please. Share their profile page instead of a specific video 🎵`;
   }
 
   if (reason === "youtube (music.youtube.com only)") {
-    return `Hey @name 👋 For YouTube, only YouTube Music links are allowed (music.youtube.com) 🎵 Your message has been removed.`;
+    return `Hey @name - only YouTube Music links are allowed for YouTube (music.youtube.com) 🎵`;
   }
 
   if (reason === "url shortener") {
-    return `Hey @name 👋 Shortened links aren't allowed — please share the full URL instead 🙏 Your message has been removed.`;
+    return `Hey @name - shortened links aren't allowed. Please share the full URL instead 🙏`;
   }
 
   if (reason === "whatsapp invite link") {
-    return `Hey @name 👋 WhatsApp group invite links aren't allowed in here 🙏 Your message has been removed.`;
+    return `Hey @name - WhatsApp group invite links aren't allowed in here 🙏`;
   }
 
-  return `Hey @name 👋 Only social media profiles or music links are allowed in here please 🙏 Your message has been removed.`;
+  return `Hey @name - only social media profiles or music links are allowed in this group 🙏`;
 };
 
 const sendInvalidNumber = async (sock: WASocket, destinationJid: string): Promise<void> => {
@@ -575,6 +579,7 @@ They can now send messages again.`,
 
   if (command === "!pardon") {
     resetStrikes(quotedParticipant, groupJid);
+    clearReviewQueueEntry(quotedParticipant, groupJid);
     await sock.sendMessage(groupJid, {
       text: `✅ Strikes cleared for ${quotedParticipant}`,
     });
@@ -584,6 +589,7 @@ They can now send messages again.`,
 
   if (command === "!resetstrikes") {
     resetStrikes(quotedParticipant, groupJid);
+    clearReviewQueueEntry(quotedParticipant, groupJid);
     await sock.sendMessage(groupJid, {
       text: `✅ Strikes reset for ${quotedParticipant}`,
     });
@@ -658,6 +664,33 @@ Forwarded messages seen today: ${getForwardedMessagesSeenToday()}`;
 
     await sock.sendMessage(senderJid, { text: statusMessage });
     logAudit(senderJid, actorRole, "!status", null, null, text, "success");
+    return;
+  }
+
+  if (command === "!reviews") {
+    const entries = listReviewQueueEntries();
+    if (entries.length === 0) {
+      await sock.sendMessage(senderJid, { text: "No pending review items right now." });
+      logAudit(senderJid, actorRole, "!reviews", null, null, text, "success");
+      return;
+    }
+
+    const lines = entries.map(
+      (entry, index) =>
+        `${index + 1}. ${entry.pushName ?? entry.userJid}
+   User: ${entry.userJid}
+   Group: ${formatGroupName(entry.groupJid, groups)} (${entry.groupJid})
+   Last offence: ${entry.reason}
+   Last message: ${entry.messageText?.trim() || "(no message text recorded)"}
+   Active strikes: ${getActiveStrikes(entry.userJid, entry.groupJid)}
+   Currently muted: ${isMuted(entry.userJid, entry.groupJid) ? "yes" : "no"}
+   Flagged: ${entry.flaggedAt}`,
+    );
+
+    await sock.sendMessage(senderJid, {
+      text: `Pending review queue:\n\n${lines.join("\n\n")}`,
+    });
+    logAudit(senderJid, actorRole, "!reviews", null, null, text, "success");
     return;
   }
 
@@ -822,6 +855,7 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
     try {
       await sock.groupParticipantsUpdate(groupJid, [targetJid], "remove");
       resetStrikes(targetJid, groupJid);
+      clearReviewQueueEntry(targetJid, groupJid);
       await sock.sendMessage(senderJid, { text: `✅ ${targetJid} removed from ${groupJid}` });
       await sock.sendMessage(groupJid, {
         text: "A member has been removed for repeated violations.",
@@ -848,9 +882,11 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
 
     if (groupJid) {
       resetStrikes(targetJid, groupJid);
+      clearReviewQueueEntry(targetJid, groupJid);
     } else {
       for (const allowedGroupJid of config.allowedGroupJids) {
         resetStrikes(targetJid, allowedGroupJid);
+        clearReviewQueueEntry(targetJid, allowedGroupJid);
       }
     }
 
@@ -871,9 +907,11 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
 
     if (groupJid) {
       resetStrikes(targetJid, groupJid);
+      clearReviewQueueEntry(targetJid, groupJid);
     } else {
       for (const allowedGroupJid of config.allowedGroupJids) {
         resetStrikes(targetJid, allowedGroupJid);
+        clearReviewQueueEntry(targetJid, allowedGroupJid);
       }
     }
 
@@ -919,6 +957,7 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
       return;
     }
     await handleBanCommand(sock, senderJid, targetJid, groupJid, parsed.rest, config);
+    clearReviewQueueEntry(targetJid, groupJid);
     logAudit(senderJid, actorRole, parsed.command, targetJid, groupJid, text, "success");
     return;
   }

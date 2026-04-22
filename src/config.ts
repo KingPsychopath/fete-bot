@@ -33,6 +33,7 @@ const loadedConfig = {
   dryRun: parseBoolean(process.env.DRY_RUN, true),
   allowedGroupJids: parseList(process.env.ALLOWED_GROUP_JIDS),
   ownerJids: parseList(process.env.OWNER_JIDS),
+  muteOnStrike3: parseBoolean(process.env.MUTE_ON_STRIKE_3, true),
   botName: process.env.BOT_NAME?.trim() || "Fete Bot",
 } as const;
 

@@ -60,6 +60,15 @@ export interface Moderator {
   addedAt: string;
 }
 
+export interface ReviewQueueEntry {
+  userJid: string;
+  groupJid: string;
+  pushName: string | null;
+  reason: string;
+  messageText: string | null;
+  flaggedAt: string;
+}
+
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const DATABASE_PATH = path.join(DATA_DIR, "bot.db");
 
@@ -154,6 +163,19 @@ export const initDb = (): void => {
       group_jid TEXT,
       raw_input TEXT,
       result TEXT NOT NULL CHECK(result IN ('success','error','pending'))
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS review_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_jid TEXT NOT NULL,
+      group_jid TEXT NOT NULL,
+      push_name TEXT,
+      reason TEXT NOT NULL,
+      message_text TEXT,
+      flagged_at TEXT NOT NULL,
+      UNIQUE(user_jid, group_jid)
     )
   `);
 
@@ -261,6 +283,11 @@ export const initDb = (): void => {
       FROM audit_log_old;
       DROP TABLE audit_log_old;
     `);
+  }
+
+  const reviewColumns = db.prepare<[], { name: string }>("PRAGMA table_info(review_queue)").all();
+  if (!reviewColumns.some((column) => column.name === "message_text")) {
+    db.exec("ALTER TABLE review_queue ADD COLUMN message_text TEXT");
   }
 };
 
@@ -424,6 +451,16 @@ export const removeBan = (userJid: string, groupJid: string): void => {
     .run(groupJid, userJid, userJid);
 };
 
+export const removeAllBans = (groupJid?: string): void => {
+  const database = getDb();
+  if (groupJid) {
+    database.prepare<[string]>("DELETE FROM bans WHERE group_jid = ?").run(groupJid);
+    return;
+  }
+
+  database.prepare("DELETE FROM bans").run();
+};
+
 export const isBanned = (userJid: string, groupJid: string): boolean => {
   const database = getDb();
   const result = database
@@ -511,6 +548,16 @@ export const removeMute = (userJid: string, groupJid: string): void => {
       WHERE group_jid = ? AND (user_jid = ? OR lid_jid = ?)
     `)
     .run(groupJid, userJid, userJid);
+};
+
+export const removeAllMutes = (groupJid?: string): void => {
+  const database = getDb();
+  if (groupJid) {
+    database.prepare<[string]>("DELETE FROM mutes WHERE group_jid = ?").run(groupJid);
+    return;
+  }
+
+  database.prepare("DELETE FROM mutes").run();
 };
 
 export const isMuted = (userJid: string, groupJid: string): boolean => {
@@ -709,6 +756,69 @@ export const getForwardedMessagesSeenToday = (): number => {
     .get(start.toISOString(), "forwarded message");
 
   return result?.count ?? 0;
+};
+
+export const upsertReviewQueueEntry = (
+  userJid: string,
+  groupJid: string,
+  pushName: string | null,
+  reason: string,
+  messageText: string | null,
+): void => {
+  const database = getDb();
+  database
+    .prepare<[string, string, string | null, string, string | null, string]>(`
+      INSERT INTO review_queue (
+        user_jid,
+        group_jid,
+        push_name,
+        reason,
+        message_text,
+        flagged_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_jid, group_jid) DO UPDATE SET
+        push_name = excluded.push_name,
+        reason = excluded.reason,
+        message_text = excluded.message_text,
+        flagged_at = excluded.flagged_at
+    `)
+    .run(userJid, groupJid, pushName, reason, messageText, new Date().toISOString());
+};
+
+export const clearReviewQueueEntry = (userJid: string, groupJid: string): void => {
+  const database = getDb();
+  database
+    .prepare<[string, string]>("DELETE FROM review_queue WHERE user_jid = ? AND group_jid = ?")
+    .run(userJid, groupJid);
+};
+
+export const listReviewQueueEntries = (): ReviewQueueEntry[] => {
+  const database = getDb();
+  return database
+    .prepare<
+      [],
+      {
+        user_jid: string;
+        group_jid: string;
+        push_name: string | null;
+        reason: string;
+        message_text: string | null;
+        flagged_at: string;
+      }
+    >(`
+      SELECT user_jid, group_jid, push_name, reason, message_text, flagged_at
+      FROM review_queue
+      ORDER BY flagged_at DESC
+    `)
+    .all()
+    .map((row) => ({
+      userJid: row.user_jid,
+      groupJid: row.group_jid,
+      pushName: row.push_name,
+      reason: row.reason,
+      messageText: row.message_text,
+      flaggedAt: row.flagged_at,
+    }));
 };
 
 export const addModerator = (jid: string, addedBy: string, note?: string): void => {

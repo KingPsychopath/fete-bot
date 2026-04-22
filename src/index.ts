@@ -14,14 +14,18 @@ import qrcodeTerminal from "qrcode-terminal";
 import { config } from "./config.js";
 import { handleAuthorisedCommand, handleGroupCommand } from "./commands.js";
 import {
+  addBan,
   addStrike,
+  addMute,
   closeDb,
+  clearReviewQueueEntry,
   initDb,
   isBanned,
   isMuted,
   logAction,
   purgeExpiredMutes,
   purgeExpiredStrikes,
+  upsertReviewQueueEntry,
 } from "./db.js";
 import { runStartupHealthCheck } from "./healthCheck.js";
 import { containsDisallowedUrl } from "./linkChecker.js";
@@ -33,6 +37,7 @@ import { STARTED_AT, VERSION } from "./version.js";
 const spamDetector = new SpamDetector();
 const discoveredGroups = new Map<string, string>();
 const discoveredGroupMetadata = new Map<string, GroupMetadata>();
+const mutedMessageCounts = new Map<string, number>();
 let strikePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let mutePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let activeSocket: WASocket | null = null;
@@ -155,28 +160,19 @@ const isForwardedMessage = (message: WAMessage["message"]): boolean => {
   return Boolean(contextInfo?.isForwarded || (contextInfo?.forwardingScore ?? 0) >= 5);
 };
 
-const getMentionLabel = (
+const getMentionTextToken = (
   senderJid: string,
-  pushName: string | null,
+  _pushName: string | null,
   phoneJid?: string | null,
 ): string => {
-  if (pushName && pushName.trim().length > 0) {
-    return pushName.trim();
-  }
-
-  if (phoneJid?.endsWith("@s.whatsapp.net")) {
-    return phoneJid.replace(/@s\.whatsapp\.net$/i, "");
-  }
-
-  if (senderJid.endsWith("@s.whatsapp.net")) {
-    return senderJid.replace(/@s\.whatsapp\.net$/i, "");
-  }
-
-  return pushName ?? senderJid.split("@")[0] ?? senderJid;
+  const targetJid = getMentionTargetJid(senderJid, phoneJid);
+  return targetJid.split("@")[0] ?? "";
 };
 
 const getMentionTargetJid = (senderJid: string, phoneJid?: string | null): string =>
   senderJid || phoneJid || "";
+
+const getMutedCounterKey = (userJid: string, groupJid: string): string => `${groupJid}::${userJid}`;
 
 const getWarningText = (
   senderJid: string,
@@ -184,29 +180,29 @@ const getWarningText = (
   reason?: string,
   phoneJid?: string | null,
 ): string => {
-  const mentionLabel = getMentionLabel(senderJid, pushName, phoneJid);
+  const mentionToken = getMentionTextToken(senderJid, pushName, phoneJid);
 
   if (reason === "whatsapp invite link") {
-    return `Hey @${mentionLabel} 👋 WhatsApp group invite links aren't allowed in here 🙏 Your message has been removed.`;
+    return `Hey @${mentionToken} - WhatsApp group invite links aren't allowed in here 🙏`;
   }
 
   if (reason === "ticket platform") {
-    return `Hey @${mentionLabel} 👋 We keep all event info in one place — search for it at fete.outofofficecollective.co.uk instead 🎉 Your message has been removed.`;
+    return `Hey @${mentionToken} - please use fete.outofofficecollective.co.uk to share event links 🙏`;
   }
 
   if (reason === "tiktok video (profile links only)") {
-    return `Hey @${mentionLabel} 👋 TikTok profile links only please — share their profile page instead of a specific video 🎵 Your message has been removed.`;
+    return `Hey @${mentionToken} - TikTok profile links only please. Share their profile page instead of a specific video 🎵`;
   }
 
   if (reason === "youtube (music.youtube.com only)") {
-    return `Hey @${mentionLabel} 👋 For YouTube, only YouTube Music links are allowed (music.youtube.com) 🎵 Your message has been removed.`;
+    return `Hey @${mentionToken} - only YouTube Music links are allowed for YouTube (music.youtube.com) 🎵`;
   }
 
   if (reason === "url shortener") {
-    return `Hey @${mentionLabel} 👋 Shortened links aren't allowed — please share the full URL instead 🙏 Your message has been removed.`;
+    return `Hey @${mentionToken} - shortened links aren't allowed. Please share the full URL instead 🙏`;
   }
 
-  return `Hey @${mentionLabel} 👋 Only social media profiles or music links are allowed in here please 🙏 Your message has been removed.`;
+  return `Hey @${mentionToken} - only social media profiles or music links are allowed in this group 🙏`;
 };
 
 const getSpamWarningText = (
@@ -215,17 +211,17 @@ const getSpamWarningText = (
   reason: SpamReason,
   phoneJid?: string | null,
 ): string => {
-  const mentionLabel = getMentionLabel(senderJid, pushName, phoneJid);
+  const mentionToken = getMentionTextToken(senderJid, pushName, phoneJid);
 
   if (reason === "duplicate_message") {
-    return `Hey @${mentionLabel} 👋 Please don't send the same message multiple times 🙏 Your message has been removed.`;
+    return `Hey @${mentionToken} - please don't send the same message multiple times 🙏`;
   }
 
   if (reason === "message_flood") {
-    return `Hey @${mentionLabel} 👋 You're sending messages too quickly — slow down please 🙏 Your message has been removed.`;
+    return `Hey @${mentionToken} - you're sending messages too quickly. Slow down please 🙏`;
   }
 
-  return `Hey @${mentionLabel} 👋 Please don't share phone numbers in the group — for event info use fete.outofofficecollective.co.uk 🙏`;
+  return `Hey @${mentionToken} - please don't share phone numbers in the group. For event info use fete.outofofficecollective.co.uk 🙏`;
 };
 
 const appendStrikeWarning = (warningText: string, strikeCount: number): string => {
@@ -251,6 +247,7 @@ User: ${pushName ?? "Unknown"} (${phoneJid ?? senderJid})
 Group: ${groupName} (${groupJid})
 Last offence: ${reason}
 Active strikes: 3
+${config.muteOnStrike3 ? "\nStatus: Auto-muted until an owner or moderator reviews this case" : ""}
 
 Reply with:
 !remove ${phoneJid ?? senderJid} ${groupJid} — to remove them
@@ -389,6 +386,10 @@ export const handleMessage = async (
 
     try {
       if (isMuted(senderJid, groupJid) || (phoneJid ? isMuted(phoneJid, groupJid) : false)) {
+        const mutedCounterKey = getMutedCounterKey(canonicalSenderJid, groupJid);
+        const mutedAttemptCount = (mutedMessageCounts.get(mutedCounterKey) ?? 0) + 1;
+        mutedMessageCounts.set(mutedCounterKey, mutedAttemptCount);
+
         if (!config.dryRun) {
           await sock.sendMessage(groupJid, { delete: msg.key as WAMessageKey });
         }
@@ -404,6 +405,46 @@ export const handleMessage = async (
           action: config.dryRun ? "DRY_RUN" : "DELETED",
           reason: "muted user",
         });
+
+        if (mutedAttemptCount >= 3) {
+          mutedMessageCounts.delete(mutedCounterKey);
+
+          if (!config.dryRun) {
+            try {
+              addBan(
+                canonicalSenderJid,
+                groupJid,
+                "system",
+                "repeated attempts to post while muted pending review",
+                lidJid,
+              );
+              await sock.groupParticipantsUpdate(groupJid, [senderJid], "remove");
+              clearReviewQueueEntry(canonicalSenderJid, groupJid);
+              await sock.sendMessage(groupJid, {
+                text: "A muted member has been banned and removed after repeatedly attempting to post while muted.",
+              });
+            } catch (removeMutedError) {
+              error("Failed to ban and remove muted user after repeated attempts", {
+                senderJid: canonicalSenderJid,
+                groupJid,
+                error: removeMutedError,
+              });
+            }
+          }
+
+          for (const ownerJid of config.ownerJids) {
+            await sock.sendMessage(ownerJid, {
+              text: `🔇 Muted user escalation
+
+User: ${canonicalSenderJid}
+Group: ${groupJid}
+Attempts while muted: ${mutedAttemptCount}
+
+They have been banned and removed after repeatedly trying to post while muted.`,
+            }).catch(() => {});
+          }
+        }
+
         return;
       }
     } catch (muteError) {
@@ -469,14 +510,44 @@ export const handleMessage = async (
           groupJid,
           moderationResult.reason ?? "unknown",
         );
+        log("Mention debug", {
+          text: appendStrikeWarning(warningText, strikeCount),
+          mentions: [mentionTargetJid],
+          tokenInText: appendStrikeWarning(warningText, strikeCount).match(/@([^ ]+)/)?.[1] ?? null,
+          jidUserPart: mentionTargetJid.split("@")[0] ?? null,
+        });
         await sock.sendMessage(groupJid, {
           text: appendStrikeWarning(warningText, strikeCount),
           mentions: [mentionTargetJid],
         });
 
         if (strikeCount >= 3) {
+          upsertReviewQueueEntry(
+            canonicalSenderJid,
+            groupJid,
+            pushName,
+            moderationResult.reason ?? "unknown",
+            text,
+          );
+          if (config.muteOnStrike3) {
+            addMute(
+              canonicalSenderJid,
+              groupJid,
+              "system",
+              null,
+              "auto-muted after strike 3 pending review",
+              lidJid,
+            );
+          }
+          const flaggedText = `@${getMentionTextToken(senderJid, pushName, phoneJid)} has been flagged for removal after repeated violations. An owner or moderator will review shortly.${config.muteOnStrike3 ? " They have been muted until review." : ""}`;
+          log("Mention debug", {
+            text: flaggedText,
+            mentions: [mentionTargetJid],
+            tokenInText: flaggedText.match(/@([^ ]+)/)?.[1] ?? null,
+            jidUserPart: mentionTargetJid.split("@")[0] ?? null,
+          });
           await sock.sendMessage(groupJid, {
-            text: `@${getMentionLabel(senderJid, pushName, phoneJid)} has been flagged for removal after repeated violations. An owner or moderator will review shortly.`,
+            text: flaggedText,
             mentions: [mentionTargetJid],
           });
           await notifyOwnersOfStrikeThree(
@@ -561,14 +632,44 @@ export const handleMessage = async (
       if (spamResult.action === "delete") {
         await sock.sendMessage(groupJid, { delete: msg.key as WAMessageKey });
         const strikeCount = addStrike(canonicalSenderJid, groupJid, spamResult.reason);
+        log("Mention debug", {
+          text: appendStrikeWarning(spamWarningText, strikeCount),
+          mentions: [mentionTargetJid],
+          tokenInText: appendStrikeWarning(spamWarningText, strikeCount).match(/@([^ ]+)/)?.[1] ?? null,
+          jidUserPart: mentionTargetJid.split("@")[0] ?? null,
+        });
         await sock.sendMessage(groupJid, {
           text: appendStrikeWarning(spamWarningText, strikeCount),
           mentions: [mentionTargetJid],
         });
 
         if (strikeCount >= 3) {
+          upsertReviewQueueEntry(
+            canonicalSenderJid,
+            groupJid,
+            getPushName(msg),
+            spamResult.reason,
+            text,
+          );
+          if (config.muteOnStrike3) {
+            addMute(
+              canonicalSenderJid,
+              groupJid,
+              "system",
+              null,
+              "auto-muted after strike 3 pending review",
+              lidJid,
+            );
+          }
+          const flaggedText = `@${getMentionTextToken(senderJid, getPushName(msg), phoneJid)} has been flagged for removal after repeated violations. An owner or moderator will review shortly.${config.muteOnStrike3 ? " They have been muted until review." : ""}`;
+          log("Mention debug", {
+            text: flaggedText,
+            mentions: [mentionTargetJid],
+            tokenInText: flaggedText.match(/@([^ ]+)/)?.[1] ?? null,
+            jidUserPart: mentionTargetJid.split("@")[0] ?? null,
+          });
           await sock.sendMessage(groupJid, {
-            text: `@${getMentionLabel(senderJid, getPushName(msg), phoneJid)} has been flagged for removal after repeated violations. An owner or moderator will review shortly.`,
+            text: flaggedText,
             mentions: [mentionTargetJid],
           });
           await notifyOwnersOfStrikeThree(
@@ -745,6 +846,7 @@ Group: ${update.id}
 Use !unban ${participantPhoneJid ?? participantJid} ${update.id} to lift the ban.`,
             });
           }
+          clearReviewQueueEntry(participantPhoneJid ?? participantJid, update.id);
         } catch (rejoinError) {
           error("Failed to auto-remove banned user on rejoin", rejoinError);
         }

@@ -8,6 +8,10 @@ import {
   getBans,
   initDb,
   listModerators,
+  removeAllBans,
+  removeAllMutes,
+  removeBan,
+  removeMute,
   removeModerator,
   resetAllStrikes,
   resetStrikes,
@@ -31,7 +35,11 @@ Usage:
   pnpm admin:cli strikes reset-all [groupJid]
 
   pnpm admin:cli bans list <groupJid>
+  pnpm admin:cli bans reset <number|jid> <groupJid>
+  pnpm admin:cli bans reset-all [groupJid]
   pnpm admin:cli mutes list <groupJid>
+  pnpm admin:cli mutes reset <number|jid> <groupJid>
+  pnpm admin:cli mutes reset-all [groupJid]
   pnpm admin:cli audit [limit]
 
 Notes:
@@ -199,6 +207,25 @@ const listBans = (groupJidInput: string | undefined): void => {
   }
 };
 
+const resetBan = (input: string | undefined, groupJidInput: string | undefined): void => {
+  const jid = parseUserInputToJid(input);
+  const groupJid = requireGroupJid(groupJidInput);
+  removeBan(jid, groupJid);
+  console.log(`Reset ban for ${jid} in ${groupJid}`);
+};
+
+const resetAllBans = (groupJidInput?: string): void => {
+  if (groupJidInput) {
+    const groupJid = requireGroupJid(groupJidInput);
+    removeAllBans(groupJid);
+    console.log(`Reset all bans in ${groupJid}`);
+    return;
+  }
+
+  removeAllBans();
+  console.log("Reset all bans across all groups");
+};
+
 const listMutes = (groupJidInput: string | undefined): void => {
   const groupJid = requireGroupJid(groupJidInput);
   const mutes = getActiveMutes(groupJid);
@@ -216,6 +243,25 @@ const listMutes = (groupJidInput: string | undefined): void => {
       }`,
     );
   }
+};
+
+const resetMute = (input: string | undefined, groupJidInput: string | undefined): void => {
+  const jid = parseUserInputToJid(input);
+  const groupJid = requireGroupJid(groupJidInput);
+  removeMute(jid, groupJid);
+  console.log(`Reset mute for ${jid} in ${groupJid}`);
+};
+
+const resetAllMutes = (groupJidInput?: string): void => {
+  if (groupJidInput) {
+    const groupJid = requireGroupJid(groupJidInput);
+    removeAllMutes(groupJid);
+    console.log(`Reset all mutes in ${groupJid}`);
+    return;
+  }
+
+  removeAllMutes();
+  console.log("Reset all mutes across all groups");
 };
 
 const showAudit = (limitInput?: string): void => {
@@ -305,8 +351,28 @@ const main = (): void => {
       return;
     }
 
+    if (command === "bans" && subcommand === "reset") {
+      resetBan(rest[0], rest[1]);
+      return;
+    }
+
+    if (command === "bans" && subcommand === "reset-all") {
+      resetAllBans(rest[0]);
+      return;
+    }
+
     if (command === "mutes" && subcommand === "list") {
       listMutes(rest[0]);
+      return;
+    }
+
+    if (command === "mutes" && subcommand === "reset") {
+      resetMute(rest[0], rest[1]);
+      return;
+    }
+
+    if (command === "mutes" && subcommand === "reset-all") {
+      resetAllMutes(rest[0]);
       return;
     }
 
