@@ -9,7 +9,7 @@ import makeWASocket, {
 } from "@whiskeysockets/baileys";
 import { createServer } from "node:http";
 import pino from "pino";
-import qrcodeTerminal from "qrcode-terminal";
+import QRCode from "qrcode";
 
 import { config } from "./config.js";
 import { handleAuthorisedCommand, handleGroupCommand } from "./commands.js";
@@ -926,7 +926,14 @@ export const startBot = async (): Promise<void> => {
 
     if (qr) {
       log("QR received. Scan it with the WhatsApp Business account you want to use.");
-      qrcodeTerminal.generate(qr, { small: true });
+      QRCode.toString(qr, { type: "terminal", small: true }, (err, code) => {
+        if (err) {
+          warn("Failed to render terminal QR code.", err);
+          return;
+        }
+
+        console.log(code);
+      });
       log("Raw QR string fallback. Paste this into a QR generator if the terminal QR is too large to scan.");
       console.log(qr);
     }
