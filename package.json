@@ -4,6 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "build": "tsc",
     "dev": "tsx src/index.ts",
     "start": "tsx src/index.ts",
     "admin:cli": "tsx src/adminCli.ts",
@@ -28,12 +29,12 @@
     "better-sqlite3": "^12.9.0",
     "dotenv": "^17.2.3",
     "pino": "^10.3.1",
-    "qrcode-terminal": "^0.12.0"
+    "qrcode-terminal": "^0.12.0",
+    "tsx": "^4.21.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.6.0",
-    "tsx": "^4.21.0",
     "typescript": "^6.0.3"
   }
 }

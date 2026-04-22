@@ -9,12 +9,12 @@ WORKDIR /app
 RUN corepack enable
 
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile --prod=false
-
-ENV NODE_ENV=production
+RUN pnpm install --frozen-lockfile
 
 COPY src ./src
 COPY tsconfig.json ./
+
+ENV NODE_ENV=production
 
 RUN mkdir -p /app/data /app/auth
 

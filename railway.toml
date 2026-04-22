@@ -4,3 +4,5 @@ builder = "DOCKERFILE"
 [deploy]
 restartPolicyType = "ALWAYS"
 numReplicas = 1
+healthcheckPath = "/health"
+healthcheckTimeout = 30
