@@ -69,8 +69,8 @@ export interface ReviewQueueEntry {
   flaggedAt: string;
 }
 
-const DATA_DIR = path.resolve(process.cwd(), "data");
-const DATABASE_PATH = path.join(DATA_DIR, "bot.db");
+const DATABASE_PATH = process.env.DB_PATH ?? path.join(path.resolve(process.cwd(), "data"), "bot.db");
+const DATA_DIR = path.dirname(DATABASE_PATH);
 
 let db: Database.Database | null = null;
 
@@ -87,7 +87,7 @@ export const initDb = (): void => {
     return;
   }
 
-  mkdirSync("./data", { recursive: true });
+  mkdirSync(DATA_DIR, { recursive: true });
 
   db = new Database(DATABASE_PATH);
   db.exec(`

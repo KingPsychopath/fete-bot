@@ -16,7 +16,7 @@ COPY tsconfig.json ./
 
 ENV NODE_ENV=production
 
-RUN mkdir -p /app/data /app/auth
+RUN mkdir -p /app/data
 
 EXPOSE 3000
 
