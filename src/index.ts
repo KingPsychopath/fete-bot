@@ -7,6 +7,7 @@ import makeWASocket, {
   type WAMessage,
   type WAMessageKey,
 } from "@whiskeysockets/baileys";
+import { mkdirSync } from "node:fs";
 import { createServer } from "node:http";
 import pino from "pino";
 import qrcodeTerminal from "qrcode-terminal";
@@ -887,7 +888,9 @@ export const startBot = async (): Promise<void> => {
   log(`${config.botName} ${VERSION} starting at ${STARTED_AT}`);
   logConfig();
 
-  const { state, saveCreds } = await useMultiFileAuthState("./auth");
+  const authFolder = process.env.AUTH_FOLDER ?? "./data/auth";
+  mkdirSync(authFolder, { recursive: true });
+  const { state, saveCreds } = await useMultiFileAuthState(authFolder);
   const { version, isLatest, error: versionError } = await fetchLatestBaileysVersion();
 
   if (versionError) {
@@ -952,7 +955,7 @@ export const startBot = async (): Promise<void> => {
       }
 
       if (isLoggedOut) {
-        error("WhatsApp logged the bot out. Remove ./auth and pair again.", { statusCode });
+        error(`WhatsApp logged the bot out. Remove the auth folder (${authFolder}) and pair again.`, { statusCode });
         process.exit(1);
       }
 
