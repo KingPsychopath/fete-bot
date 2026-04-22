@@ -1,11 +1,35 @@
 import "dotenv/config";
 
-const parseBoolean = (value: string | undefined, fallback: boolean): boolean => {
+const normaliseEnvValue = (value: string | undefined): string | undefined => {
   if (value === undefined) {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+
+  if (trimmed.length >= 2) {
+    const firstChar = trimmed[0];
+    const lastChar = trimmed[trimmed.length - 1];
+
+    if (
+      (firstChar === "\"" && lastChar === "\"") ||
+      (firstChar === "'" && lastChar === "'")
+    ) {
+      return trimmed.slice(1, -1).trim();
+    }
+  }
+
+  return trimmed;
+};
+
+const parseBoolean = (value: string | undefined, fallback: boolean): boolean => {
+  const normalisedValue = normaliseEnvValue(value);
+
+  if (normalisedValue === undefined) {
     return fallback;
   }
 
-  const normalised = value.trim().toLowerCase();
+  const normalised = normalisedValue.toLowerCase();
 
   if (["1", "true", "yes", "on"].includes(normalised)) {
     return true;
@@ -19,11 +43,13 @@ const parseBoolean = (value: string | undefined, fallback: boolean): boolean => 
 };
 
 const parseList = (value: string | undefined): string[] => {
-  if (!value) {
+  const normalisedValue = normaliseEnvValue(value);
+
+  if (!normalisedValue) {
     return [];
   }
 
-  return value
+  return normalisedValue
     .split(",")
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
@@ -34,7 +60,7 @@ const loadedConfig = {
   allowedGroupJids: parseList(process.env.ALLOWED_GROUP_JIDS),
   ownerJids: parseList(process.env.OWNER_JIDS),
   muteOnStrike3: parseBoolean(process.env.MUTE_ON_STRIKE_3, true),
-  botName: process.env.BOT_NAME?.trim() || "Fete Bot",
+  botName: normaliseEnvValue(process.env.BOT_NAME) || "Fete Bot",
 } as const;
 
 export const config = Object.freeze(loadedConfig);
