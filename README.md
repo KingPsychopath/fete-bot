@@ -75,6 +75,7 @@ Notes:
 
 - The volume name is a Railway label for humans; the app only depends on the mount path
 - Railway exposes `RAILWAY_VOLUME_NAME` and `RAILWAY_VOLUME_MOUNT_PATH` automatically at runtime
+- The app will prefer `RAILWAY_VOLUME_MOUNT_PATH` automatically when it is present
 - Volumes are mounted at runtime, not during build or pre-deploy steps
 
 ## Safety Defaults

@@ -32,7 +32,15 @@ import { expandCandidateJids, loadLidMappings } from "./lidMap.js";
 import { containsDisallowedUrl } from "./linkChecker.js";
 import { SpamDetector, type SpamReason } from "./spamDetector.js";
 import { error, log, warn } from "./logger.js";
-import { AUTH_DIR, ensureStorageDirs, migrateLegacyAuthDir } from "./storagePaths.js";
+import {
+  AUTH_DIR,
+  DATABASE_PATH,
+  DATA_DIR,
+  EFFECTIVE_STORAGE_MODE,
+  RAILWAY_VOLUME_ATTACHED,
+  ensureStorageDirs,
+  migrateLegacyAuthDir,
+} from "./storagePaths.js";
 import { extractAllIdentifiers, isProtectedGroupMember, parseToJid } from "./utils.js";
 import { STARTED_AT, VERSION } from "./version.js";
 
@@ -356,6 +364,21 @@ Reply with:
 
 const logConfig = (): void => {
   log("Loaded config", config);
+  log("Storage paths", {
+    dataDir: DATA_DIR,
+    databasePath: DATABASE_PATH,
+    authDir: AUTH_DIR,
+    storageMode: EFFECTIVE_STORAGE_MODE,
+    railwayVolumeMountPath: process.env.RAILWAY_VOLUME_MOUNT_PATH ?? null,
+    railwayVolumeAttached: RAILWAY_VOLUME_ATTACHED,
+  });
+
+  if (process.env.RAILWAY_VOLUME_MOUNT_PATH && RAILWAY_VOLUME_ATTACHED === false) {
+    warn(
+      "RAILWAY_VOLUME_MOUNT_PATH is set but does not exist in the container. Storage will be ephemeral until the Railway volume is attached to this service.",
+    );
+  }
+
   if (config.allowedGroupJids.length === 0) {
     warn("ALLOWED_GROUP_JIDS is empty, so the bot will act in all joined groups.");
   }
