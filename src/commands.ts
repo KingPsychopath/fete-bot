@@ -249,7 +249,7 @@ const previewWarningText = (reason: DisallowedUrlReason): string => {
     return `Hey @name - WhatsApp group invite links aren't allowed in here 🙏`;
   }
 
-  return `Hey @name - only social media profiles or music links are allowed in this group 🙏`;
+  return `Hey @name - only social media profile links or music links are allowed in this group. If you're sharing an event, please use fete.outofofficecollective.co.uk 🙏`;
 };
 
 const sendInvalidNumber = async (sock: WASocket, destinationJid: string): Promise<void> => {
@@ -363,6 +363,7 @@ async function handleBanCommand(
   }
 
   addBan(targetJid, groupJid, senderJid, reason || undefined, lidJid);
+  clearReviewQueueEntry(targetJid, groupJid);
   recordUndoAction(senderJid, {
     type: "ban",
     targetJid,

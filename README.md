@@ -71,9 +71,9 @@ Allowed:
 - `music.apple.com`
 - `outofofficecollective.co.uk` and all subdomains
 - `music.youtube.com` only
-- `instagram.com`
-- `x.com`
-- `twitter.com`
+- `instagram.com` profile URLs only
+- `x.com` profile URLs only
+- `twitter.com` profile URLs only
 - `tiktok.com` profile URLs only
 - `soundcloud.com`
 - `mixcloud.com`
@@ -91,6 +91,8 @@ Special rules:
 - TikTok only allows profile pages like `tiktok.com/@username`
 - TikTok video links like `tiktok.com/@username/video/...` are blocked
 - TikTok short share links like `tiktok.com/t/...` are blocked
+- Instagram only allows profile pages like `instagram.com/username`
+- X / Twitter only allow profile pages like `x.com/username` or `twitter.com/username`
 - Only `music.youtube.com` is allowed for YouTube
 - General `youtube.com`, `www.youtube.com`, `m.youtube.com`, and `youtu.be` are blocked
 

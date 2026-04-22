@@ -202,7 +202,7 @@ const getWarningText = (
     return `Hey @${mentionToken} - shortened links aren't allowed. Please share the full URL instead 🙏`;
   }
 
-  return `Hey @${mentionToken} - only social media profiles or music links are allowed in this group 🙏`;
+  return `Hey @${mentionToken} - only social media profile links or music links are allowed in this group. If you're sharing an event, please use fete.outofofficecollective.co.uk 🙏`;
 };
 
 const getSpamWarningText = (
@@ -362,6 +362,49 @@ export const handleMessage = async (
       return;
     }
 
+    try {
+      if (isBanned(senderJid, groupJid) || (phoneJid ? isBanned(phoneJid, groupJid) : false)) {
+        if (config.dryRun) {
+          warn("Dry run: would remove banned user who sent a message", {
+            senderJid: canonicalSenderJid,
+            lidJid,
+            groupJid,
+          });
+          return;
+        }
+
+        try {
+          await sock.groupParticipantsUpdate(groupJid, [senderJid], "remove");
+          warn("Auto-removed banned user after message attempt", {
+            senderJid: canonicalSenderJid,
+            lidJid,
+            groupJid,
+          });
+
+          for (const ownerJid of config.ownerJids) {
+            await sock.sendMessage(ownerJid, {
+              text: `🚫 Banned user tried to post and was auto-removed.
+
+User: ${canonicalSenderJid}
+Group: ${groupJid}
+
+Use !unban ${canonicalSenderJid} ${groupJid} to lift the ban.`,
+            }).catch(() => {});
+          }
+        } catch (bannedRemovalError) {
+          error("Failed to auto-remove banned user after message attempt", {
+            senderJid: canonicalSenderJid,
+            groupJid,
+            error: bannedRemovalError,
+          });
+        }
+
+        return;
+      }
+    } catch (banError) {
+      error("Failed banned-user message check", { senderJid, groupJid, error: banError });
+    }
+
     if (isForwardedMessage(msg.message)) {
       logAction({
         timestamp: new Date().toISOString(),
@@ -418,8 +461,8 @@ export const handleMessage = async (
                 "repeated attempts to post while muted pending review",
                 lidJid,
               );
-              await sock.groupParticipantsUpdate(groupJid, [senderJid], "remove");
               clearReviewQueueEntry(canonicalSenderJid, groupJid);
+              await sock.groupParticipantsUpdate(groupJid, [senderJid], "remove");
               await sock.sendMessage(groupJid, {
                 text: "A muted member has been banned and removed after repeatedly attempting to post while muted.",
               });

@@ -63,6 +63,35 @@ export type DisallowedUrlReason =
   | "youtube (music.youtube.com only)"
   | "whatsapp invite link";
 
+const INSTAGRAM_RESERVED_SEGMENTS = new Set([
+  "accounts",
+  "direct",
+  "explore",
+  "p",
+  "reel",
+  "reels",
+  "share",
+  "stories",
+  "tv",
+]);
+
+const X_RESERVED_SEGMENTS = new Set([
+  "compose",
+  "download",
+  "explore",
+  "hashtag",
+  "home",
+  "i",
+  "intent",
+  "login",
+  "messages",
+  "notifications",
+  "search",
+  "settings",
+  "share",
+  "signup",
+]);
+
 const URL_REGEX =
   /(?<![@\w])((?:(?:https?:\/\/(?:www\.)?|www\.)(?:[a-z0-9-]+\.)+[a-z]{2,}(?:[/?#][^\s<>()\[\]{}"'`]+)?|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}(?:[/?#][^\s<>()\[\]{}"'`]+)?))/gi;
 
@@ -131,7 +160,40 @@ export const isTikTokProfileUrl = (url: string): boolean => {
   return segments.length === 1 && /^@[^/]+$/i.test(segments[0] ?? "");
 };
 
-const isAllowedDomain = (domain: string): boolean => {
+const hasSingleProfileSegment = (url: string, reservedSegments: Set<string>): boolean => {
+  const parsed = parseUrl(url);
+  if (!parsed) {
+    return false;
+  }
+
+  const segments = parsed.pathname.split("/").filter(Boolean);
+  if (segments.length !== 1) {
+    return false;
+  }
+
+  const [segment] = segments;
+  return Boolean(segment) && !reservedSegments.has(segment.toLowerCase());
+};
+
+const isInstagramProfileUrl = (url: string): boolean => {
+  const domain = normaliseDomain(url);
+  if (domain !== "instagram.com") {
+    return false;
+  }
+
+  return hasSingleProfileSegment(url, INSTAGRAM_RESERVED_SEGMENTS);
+};
+
+const isXProfileUrl = (url: string, domainName: "x.com" | "twitter.com"): boolean => {
+  const domain = normaliseDomain(url);
+  if (domain !== domainName) {
+    return false;
+  }
+
+  return hasSingleProfileSegment(url, X_RESERVED_SEGMENTS);
+};
+
+const isAllowedDomain = (domain: string, url: string): boolean => {
   if (domain === "music.apple.com" || domain === "music.youtube.com") {
     return true;
   }
@@ -140,16 +202,16 @@ const isAllowedDomain = (domain: string): boolean => {
     return true;
   }
 
-  if (domain === "instagram.com" || domain.endsWith(".instagram.com")) {
-    return true;
+  if (domain === "instagram.com") {
+    return isInstagramProfileUrl(url);
   }
 
-  if (domain === "x.com" || domain.endsWith(".x.com")) {
-    return true;
+  if (domain === "x.com") {
+    return isXProfileUrl(url, "x.com");
   }
 
-  if (domain === "twitter.com" || domain.endsWith(".twitter.com")) {
-    return true;
+  if (domain === "twitter.com") {
+    return isXProfileUrl(url, "twitter.com");
   }
 
   if (domain === "soundcloud.com" || domain.endsWith(".soundcloud.com")) {
@@ -188,7 +250,7 @@ export const isAllowed = (url: string): boolean => {
     return false;
   }
 
-  return isAllowedDomain(domain);
+  return isAllowedDomain(domain, url);
 };
 
 const getDisallowedReason = (url: string): DisallowedUrlReason => {
