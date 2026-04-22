@@ -3,6 +3,7 @@ import type { GroupMetadata, GroupParticipant } from "@whiskeysockets/baileys";
 
 import type { Config } from "./config.js";
 import { isModerator } from "./db.js";
+import { expandCandidateJids } from "./lidMap.js";
 
 export function parseToJid(input: string): string | null {
   const trimmed = input.trim();
@@ -136,8 +137,22 @@ export function isGroupAdmin(
     return false;
   }
 
+  const candidateJids = new Set(expandCandidateJids([jid]));
+
   return groupMetadata.participants.some(
-    (participant) => participant.id === jid && hasAdminPrivileges(participant),
+    (participant) => {
+      if (!hasAdminPrivileges(participant)) {
+        return false;
+      }
+
+      const participantCandidateJids = expandCandidateJids([
+        participant.id,
+        participant.lid,
+        parseToJid(participant.phoneNumber ?? ""),
+      ]);
+
+      return participantCandidateJids.some((participantJid) => candidateJids.has(participantJid));
+    },
   );
 }
 
@@ -147,7 +162,9 @@ export function isProtectedGroupMember(
   config: Config,
   groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
 ): boolean {
-  return candidateJids.some(
+  const expandedCandidateJids = expandCandidateJids(candidateJids);
+
+  return expandedCandidateJids.some(
     (candidateJid) =>
       isAuthorised(candidateJid, config) || isGroupAdmin(candidateJid, groupJid, groupMetadataByJid),
   );

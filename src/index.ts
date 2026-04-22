@@ -194,17 +194,37 @@ const isForwardedMessage = (message: WAMessage["message"]): boolean => {
 
 const MENTIONABLE_JID_REGEX = /@(s\.whatsapp\.net|lid)$/i;
 
+const getMentionableToken = (senderJid: string, phoneJid?: string | null): string | null => {
+  const mentionTargetJid = getMentionTargetJid(senderJid, phoneJid);
+  return mentionTargetJid ? (mentionTargetJid.split("@")[0] ?? null) : null;
+};
+
 const getMentionTextToken = (
   senderJid: string,
   _pushName: string | null,
   phoneJid?: string | null,
 ): string => {
-  const targetJid = getMentionTargetJid(senderJid, phoneJid);
-  return targetJid.split("@")[0] ?? "";
+  return getMentionableToken(senderJid, phoneJid) ?? "there";
 };
 
-const getMentionTargetJid = (senderJid: string, phoneJid?: string | null): string =>
-  MENTIONABLE_JID_REGEX.test(senderJid) ? senderJid : "";
+const getMentionTargetJid = (senderJid: string, phoneJid?: string | null): string => {
+  for (const candidateJid of [senderJid, phoneJid]) {
+    if (candidateJid && MENTIONABLE_JID_REGEX.test(candidateJid)) {
+      return candidateJid;
+    }
+  }
+
+  return "";
+};
+
+const formatMentionLabel = (
+  senderJid: string,
+  pushName: string | null,
+  phoneJid?: string | null,
+): string => {
+  const mentionToken = getMentionTextToken(senderJid, pushName, phoneJid);
+  return mentionToken === "there" ? "there" : `@${mentionToken}`;
+};
 
 const sendModerationMessage = async (
   sock: WASocket,
@@ -239,29 +259,29 @@ const getWarningText = (
   reason?: string,
   phoneJid?: string | null,
 ): string => {
-  const mentionToken = getMentionTextToken(senderJid, pushName, phoneJid);
+  const mentionLabel = formatMentionLabel(senderJid, pushName, phoneJid);
 
   if (reason === "whatsapp invite link") {
-    return `Hey @${mentionToken} - WhatsApp group invite links aren't allowed in here 🙏`;
+    return `Hey ${mentionLabel} - WhatsApp group invite links aren't allowed in here 🙏`;
   }
 
   if (reason === "ticket platform") {
-    return `Hey @${mentionToken} - please use fete.outofofficecollective.co.uk to share event links 🙏`;
+    return `Hey ${mentionLabel} - please use fete.outofofficecollective.co.uk to share event links 🙏`;
   }
 
   if (reason === "tiktok video (profile links only)") {
-    return `Hey @${mentionToken} - TikTok profile links only please. Share their profile page instead of a specific video 🎵`;
+    return `Hey ${mentionLabel} - TikTok profile links only please. Share their profile page instead of a specific video 🎵`;
   }
 
   if (reason === "youtube (music.youtube.com only)") {
-    return `Hey @${mentionToken} - only YouTube Music links are allowed for YouTube (music.youtube.com) 🎵`;
+    return `Hey ${mentionLabel} - only YouTube Music links are allowed for YouTube (music.youtube.com) 🎵`;
   }
 
   if (reason === "url shortener") {
-    return `Hey @${mentionToken} - shortened links aren't allowed. Please share the full URL instead 🙏`;
+    return `Hey ${mentionLabel} - shortened links aren't allowed. Please share the full URL instead 🙏`;
   }
 
-  return `Hey @${mentionToken} - only social media profile links or music links are allowed in this group. If you're sharing an event, please use fete.outofofficecollective.co.uk 🙏`;
+  return `Hey ${mentionLabel} - only social media profile links or music links are allowed in this group. If you're sharing an event, please use fete.outofofficecollective.co.uk 🙏`;
 };
 
 const getSpamWarningText = (
@@ -270,17 +290,17 @@ const getSpamWarningText = (
   reason: SpamReason,
   phoneJid?: string | null,
 ): string => {
-  const mentionToken = getMentionTextToken(senderJid, pushName, phoneJid);
+  const mentionLabel = formatMentionLabel(senderJid, pushName, phoneJid);
 
   if (reason === "duplicate_message") {
-    return `Hey @${mentionToken} - please don't send the same message multiple times 🙏`;
+    return `Hey ${mentionLabel} - please don't send the same message multiple times 🙏`;
   }
 
   if (reason === "message_flood") {
-    return `Hey @${mentionToken} - you're sending messages too quickly. Slow down please 🙏`;
+    return `Hey ${mentionLabel} - you're sending messages too quickly. Slow down please 🙏`;
   }
 
-  return `Hey @${mentionToken} - please don't share phone numbers in the group. For event info use fete.outofofficecollective.co.uk 🙏`;
+  return `Hey ${mentionLabel} - please don't share phone numbers in the group. For event info use fete.outofofficecollective.co.uk 🙏`;
 };
 
 const appendStrikeWarning = (warningText: string, strikeCount: number): string => {
@@ -313,16 +333,28 @@ Reply with:
 !pardon ${phoneJid ?? senderJid} ${groupJid} — to reset their strikes`;
 
   for (const ownerJid of config.ownerJids) {
-    await sock.sendMessage(ownerJid, { text: dmText });
+    try {
+      await sock.sendMessage(ownerJid, { text: dmText });
+    } catch (dmError) {
+      error("Failed to DM owner about strike three escalation", {
+        ownerJid,
+        senderJid,
+        groupJid,
+        error: dmError,
+      });
+    }
   }
 };
 
 const logConfig = (): void => {
   log("Loaded config", config);
   if (config.allowedGroupJids.length === 0) {
-    warn("ALLOWED_GROUP_JIDS is empty, so the bot will not act in any groups.");
+    warn("ALLOWED_GROUP_JIDS is empty, so the bot will act in all joined groups.");
   }
 };
+
+const isManagedGroup = (groupJid: string): boolean =>
+  config.allowedGroupJids.length === 0 || config.allowedGroupJids.includes(groupJid);
 
 const listDiscoveredGroups = async (
   sock: WASocket,
@@ -404,7 +436,7 @@ export const handleMessage = async (
 
     log(`Seen message from group JID: ${groupJid} — ${getPushName(msg) ?? "Unknown"}`);
 
-    if (!config.allowedGroupJids.includes(groupJid)) {
+    if (!isManagedGroup(groupJid)) {
       return;
     }
 
@@ -674,7 +706,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
               lidJid,
             );
           }
-          const flaggedText = `@${getMentionTextToken(senderJid, pushName, phoneJid)} has been flagged for removal after repeated violations. An owner or moderator will review shortly.${config.muteOnStrike3 ? " They have been muted until review." : ""}`;
+          const flaggedText = `${formatMentionLabel(senderJid, pushName, phoneJid)} has been flagged for removal after repeated violations. An owner or moderator will review shortly.${config.muteOnStrike3 ? " They have been muted until review." : ""}`;
           await sendModerationMessage(sock, groupJid, flaggedText, mentionTargetJid);
           await notifyOwnersOfStrikeThree(
             sock,
@@ -783,7 +815,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
               lidJid,
             );
           }
-          const flaggedText = `@${getMentionTextToken(senderJid, getPushName(msg), phoneJid)} has been flagged for removal after repeated violations. An owner or moderator will review shortly.${config.muteOnStrike3 ? " They have been muted until review." : ""}`;
+          const flaggedText = `${formatMentionLabel(senderJid, getPushName(msg), phoneJid)} has been flagged for removal after repeated violations. An owner or moderator will review shortly.${config.muteOnStrike3 ? " They have been muted until review." : ""}`;
           await sendModerationMessage(sock, groupJid, flaggedText, mentionTargetJid);
           await notifyOwnersOfStrikeThree(
             sock,
@@ -940,7 +972,7 @@ export const startBot = async (): Promise<void> => {
   });
 
   sock.ev.on("group-participants.update", async (update) => {
-    if (!config.allowedGroupJids.includes(update.id)) {
+    if (!isManagedGroup(update.id)) {
       return;
     }
 

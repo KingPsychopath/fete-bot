@@ -1,10 +1,11 @@
 # fete-bot
 
-WhatsApp moderation bot for the Fete event groups. It runs through Baileys, watches only explicitly allowed groups, applies hardcoded link and spam rules, logs everything to SQLite, and exposes a small Railway health endpoint.
+WhatsApp moderation bot for the Fete event groups. It runs through Baileys, applies hardcoded link and spam rules, logs everything to SQLite, and exposes a small Railway health endpoint.
 
 ## What It Does
 
-- Moderates only `ALLOWED_GROUP_JIDS`
+- Moderates all joined groups by default
+- Can optionally restrict moderation to `ALLOWED_GROUP_JIDS`
 - Defaults to `DRY_RUN=true` so nothing is deleted by accident
 - Deletes blocked links and selected spam when live
 - Warns users with friendlier reason-specific messages
@@ -29,7 +30,7 @@ WhatsApp moderation bot for the Fete event groups. It runs through Baileys, watc
 
 ### WhatsApp surfaces
 
-- Group moderation in allowlisted groups only
+- Group moderation in joined groups by default, or in `ALLOWED_GROUP_JIDS` when set
 - Owner / moderator DM command interface
 - Reply-based owner / moderator commands inside allowed groups
 
@@ -55,7 +56,7 @@ WhatsApp moderation bot for the Fete event groups. It runs through Baileys, watc
 ## Safety Defaults
 
 - `DRY_RUN=true` by default
-- `ALLOWED_GROUP_JIDS` defaults to empty, so the bot acts in zero groups until you opt in
+- `ALLOWED_GROUP_JIDS` is optional; when empty, the bot acts in all joined groups
 - `OWNER_JIDS`, database moderators, and WhatsApp group admins are never moderated
 - The bot never responds in 1:1 chats unless the sender is an owner or moderator using a command
 - The bot never acts on its own messages, with an extra self-ID check as defence in depth
@@ -137,10 +138,26 @@ WhatsApp group traffic may come through as `@lid` JIDs instead of `@s.whatsapp.n
 
 ## Owner And Moderator Commands
 
+Permission levels work like this:
+
+- Owners come from `OWNER_JIDS` in the environment
+- Moderators come from the SQLite `moderators` table
+- WhatsApp group admins are protected from moderation, but do not automatically get bot command access
+
+In practice:
+
+- Owners can run all bot commands and manage moderators with `!addmod` and `!removemod`
+- Moderators can run moderation and info commands, but cannot manage moderators
+- WhatsApp group admins are exempt from bot moderation actions unless they are also an owner or moderator
+
+Command note:
+
+- `!pardon` and `!resetstrikes` currently do the same thing: clear active strikes and remove any pending review entry for that user in the targeted group(s)
+
 Owners and moderators can control the bot in two ways:
 
 - By DM to the bot
-- By replying to a message in an allowed group
+- By replying to a message in a managed group
 
 `OWNER_JIDS` must be full WhatsApp user JIDs such as:
 
@@ -162,15 +179,15 @@ Owners and moderators can control the bot in two ways:
 - `!ban {jid or number} {groupJid?} {reason?}`
 - `!unban {jid or number} {groupJid}`
 - `!bans {groupJid}`
-- `!mute {jid or number} {groupJid?} {duration?}`
+- `!mute {jid or number} {duration?} {groupJid?}`
 - `!unmute {jid or number} {groupJid}`
 - `!mutes {groupJid}`
 - `!remove {jid or number} {groupJid}`
 - `!pardon {jid or number} {groupJid?}`
 - `!strikes {jid or number}`
-- `!strike {jid or number} {groupJid?} {reason?}`
+- `!strike {jid or number} {reason?} {groupJid?}`
 
-If exactly one group is configured, commands that take `{groupJid?}` can omit it. If multiple groups are configured, pass the raw group JID.
+If exactly one managed group is available, commands that take `{groupJid?}` can omit it. If multiple managed groups are available, pass the raw group JID.
 
 ### Reply-based commands in groups
 
@@ -232,7 +249,7 @@ Notes:
 
 After the bot connects, it runs a non-fatal health check:
 
-- every `ALLOWED_GROUP_JIDS` entry exists in fetched groups
+- every monitored group can be resolved
 - the bot is an admin in each monitored group
 - every `OWNER_JIDS` entry is valid
 - SQLite is writable
@@ -302,7 +319,7 @@ On startup the bot logs:
 - version
 - started timestamp
 - current mode
-- configured groups
+- monitored groups
 - configured owner count
 - configured moderator count
 - strikes issued today
@@ -395,7 +412,7 @@ Notes:
 Seen message from group JID: 120363XXXXXXXXXX@g.us
 ```
 
-5. Add the chosen JIDs to `ALLOWED_GROUP_JIDS`
+5. Optionally add the chosen JIDs to `ALLOWED_GROUP_JIDS` if you want to restrict moderation to specific groups
 
 ## Railway Deploy
 
@@ -436,5 +453,5 @@ Notes:
 ## Type Check
 
 ```bash
-mise exec -- pnpm tsc --noEmit
+mise exec -- pnpm test
 ```

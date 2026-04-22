@@ -43,14 +43,17 @@ export async function runStartupHealthCheck(
 ): Promise<HealthResult> {
   const criticalFailures: string[] = [];
   const botIdentifiers = getBotIdentifiers(sock);
+  const monitoredGroupJids = config.allowedGroupJids.length > 0
+    ? config.allowedGroupJids
+    : Array.from(groups.keys());
 
-  for (const allowedGroupJid of config.allowedGroupJids) {
+  for (const allowedGroupJid of monitoredGroupJids) {
     if (!groups.has(allowedGroupJid)) {
       criticalFailures.push(`Configured group missing from fetched groups: ${allowedGroupJid}`);
     }
   }
 
-  for (const allowedGroupJid of config.allowedGroupJids) {
+  for (const allowedGroupJid of monitoredGroupJids) {
     const group = groups.get(allowedGroupJid);
     if (!group) {
       continue;
@@ -91,7 +94,7 @@ export async function runStartupHealthCheck(
 
   if (criticalFailures.length === 0) {
     log("Health check passed", {
-      monitoredGroups: config.allowedGroupJids.length,
+      monitoredGroups: monitoredGroupJids.length,
       ownerJids: config.ownerJids.length,
     });
     return { criticalFailures };

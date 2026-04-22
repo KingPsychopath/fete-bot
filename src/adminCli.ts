@@ -331,9 +331,23 @@ const testUrl = (url: string | undefined): void => {
   console.log(`URL: ${result.url ?? candidateUrl}`);
 };
 
-const main = (): void => {
-  initDb();
+const initDbOrExit = (): void => {
+  try {
+    initDb();
+  } catch (dbError) {
+    const message = dbError instanceof Error ? dbError.message : String(dbError);
 
+    if (message.includes("compiled against a different Node.js version")) {
+      fail(
+        "SQLite native module is built for a different Node.js version. Run this repo with the pinned toolchain, for example: mise exec -- pnpm admin:cli ...",
+      );
+    }
+
+    fail(`failed to initialise SQLite: ${message}`);
+  }
+};
+
+const main = (): void => {
   try {
     const [command, subcommand, ...rest] = process.argv.slice(2);
 
@@ -342,13 +356,15 @@ const main = (): void => {
       return;
     }
 
-    if (command === "status") {
-      printStatus();
+    if (command === "test-url") {
+      testUrl(subcommand);
       return;
     }
 
-    if (command === "test-url") {
-      testUrl(subcommand);
+    initDbOrExit();
+
+    if (command === "status") {
+      printStatus();
       return;
     }
 
