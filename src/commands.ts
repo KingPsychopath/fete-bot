@@ -580,8 +580,8 @@ export async function handleGroupCommand(
   }
 
   if (command === "!help") {
-    await sock.sendMessage(groupJid, {
-      text: `Owner and moderator commands work best in DM.\n\nReply to a message in-group for: !mute, !unmute, !ban, !strike, !pardon, !resetstrikes, !strikes\n\nDM me !help for the full command list.`,
+    await sock.sendMessage(senderJid, {
+      text: actorRole === "owner" ? `${HELP_MESSAGE}${OWNER_HELP_BLOCK}` : HELP_MESSAGE,
     });
     logAudit(senderJid, actorRole, command, null, groupJid, text, "success");
     return true;

@@ -28,6 +28,7 @@ import {
   upsertReviewQueueEntry,
 } from "./db.js";
 import { runStartupHealthCheck } from "./healthCheck.js";
+import { loadLidMappings, normalizeJid } from "./lidMap.js";
 import { containsDisallowedUrl } from "./linkChecker.js";
 import { SpamDetector, type SpamReason } from "./spamDetector.js";
 import { error, log, warn } from "./logger.js";
@@ -136,8 +137,62 @@ const getPushName = (msg: WAMessage): string | null => msg.pushName ?? null;
 const getPhoneJid = (phoneNumber: string | null): string | null =>
   phoneNumber ? parseToJid(phoneNumber) : null;
 
-const getActorCandidateJids = (senderJid: string, phoneJid?: string | null): string[] =>
-  Array.from(new Set([senderJid, phoneJid].filter((value): value is string => Boolean(value))));
+const getActorCandidateJids = (senderJid: string | null, phoneJid: string | null): string[] => {
+  const candidateJids = new Set<string>();
+
+  for (const jid of [senderJid, phoneJid]) {
+    if (!jid) {
+      continue;
+    }
+
+    candidateJids.add(jid);
+
+    const normalizedJid = normalizeJid(jid);
+    if (normalizedJid !== jid) {
+      candidateJids.add(normalizedJid);
+    }
+  }
+
+  return Array.from(candidateJids);
+};
+
+const getDirectActorCandidateJids = (sock: WASocket, msg: WAMessage): string[] => {
+  const { senderJid, phoneNumber, lidJid } = extractAllIdentifiers(msg);
+  const phoneJid = getPhoneJid(phoneNumber);
+  const participantJid = msg.key.participant ?? null;
+  const remoteJid = msg.key.remoteJid ?? null;
+  const participantPn =
+    (msg.key as { participantPn?: string | null }).participantPn ??
+    (msg as { key?: { participantPn?: string | null } }).key?.participantPn ??
+    null;
+  const participantPnJid = participantPn ? parseToJid(participantPn) : null;
+
+  const candidateJids = new Set<string>();
+  for (const jid of [
+    participantJid,
+    remoteJid,
+    senderJid || null,
+    lidJid,
+    participantPnJid,
+    phoneJid,
+  ]) {
+    if (!jid) {
+      continue;
+    }
+
+    candidateJids.add(jid);
+
+    const normalizedJid = normalizeJid(jid);
+    if (normalizedJid !== jid) {
+      candidateJids.add(normalizedJid);
+    }
+  }
+
+  const botIdentifiers = getBotIdentifiers(sock);
+  const nonBotCandidateJids = Array.from(candidateJids).filter((jid) => !botIdentifiers.has(jid));
+
+  return nonBotCandidateJids.length > 0 ? nonBotCandidateJids : Array.from(candidateJids);
+};
 
 const getBotIdentifiers = (sock: WASocket): Set<string> => {
   const identifiers = new Set<string>();
@@ -354,12 +409,22 @@ export const handleMessage = async (
     const text = extractMessageText(msg);
 
     if (remoteJid.endsWith("@s.whatsapp.net") || remoteJid.endsWith("@lid")) {
-      const { senderJid, phoneNumber } = extractAllIdentifiers(msg);
-      const phoneJid = getPhoneJid(phoneNumber);
+      const actorCandidateJids = getDirectActorCandidateJids(sock, msg);
+
       if (text) {
+        warn("Direct message auth candidates", {
+          remoteJid,
+          participant: msg.key.participant ?? null,
+          participantPn:
+            (msg.key as { participantPn?: string | null }).participantPn ??
+            (msg as { key?: { participantPn?: string | null } }).key?.participantPn ??
+            null,
+          actorCandidateJids,
+        });
+
         await handleAuthorisedCommand(
           sock,
-          getActorCandidateJids(senderJid, phoneJid),
+          actorCandidateJids,
           text,
           config,
           discoveredGroups,
@@ -803,6 +868,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
 export const startBot = async (): Promise<void> => {
   const socketInstanceId = ++socketInstanceCounter;
   initDb();
+  await loadLidMappings();
   purgeExpiredStrikes();
   purgeExpiredMutes();
   if (!healthServerStarted && !healthServerErrored) {
