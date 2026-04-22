@@ -36,52 +36,73 @@ import {
   parseDuration,
   parseToJid,
 } from "./utils.js";
+import { normalizeJid } from "./lidMap.js";
 
-const HELP_MESSAGE = `Fete Bot Commands 🤖
+const HELP_MESSAGE = `Fete Bot admin help
 
-── Reply-based (easiest) ──
-Reply to any message, then send:
-  !mute {duration?}    e.g. !mute / !mute 2h / !mute perm
+Fastest way
+Reply to a user's message in the group, then send:
+  !mute {duration?}
   !unmute
   !ban {reason?}
-  !strike
+  !strike {reason?}
   !pardon
   !resetstrikes
   !strikes
   !undo
 
-── Moderator + Owner ──
-Works with any number format:
-  !mute 07911123456 120363XXX@g.us 2h
-  !ban 07911123456 120363XXX@g.us reason here
-  !unban 07911123456 120363XXX@g.us
-  !remove 07911123456 120363XXX@g.us
-  !strike 07911123456 120363XXX@g.us reason here
-  !strikes 07911123456
-  !pardon 07911123456
-  !resetstrikes 07911123456
+DM targeting
+Use DM when you want to target someone by number instead of replying.
 
-Number formats accepted:
-  UK:            07911123456 or +447911123456
-  International: always use + and country code
-  e.g. +1 212 555 0123 (US), +33 6 12 34 56 78 (France)
-  Tip: when in doubt, reply to their message instead
+Targeted actions
+  !mute
+  !unmute
+  !ban
+  !unban
+  !remove
+  !strike
+  !strikes
+  !pardon
+  !resetstrikes
+  !undo
 
-── Info commands (DM only) ──
+Info commands
   !status
   !reviews
-  !bans {groupJid}
-  !mutes {groupJid}
-  !audit {limit?}
-  !test {url}
-  !help`;
+  !bans
+  !mutes
+  !audit
+  !test
+  !help
+
+Examples
+  !mute 07911123456 2h
+  !ban 07911123456 repeated promo links
+  !strike 07911123456 ignored warning
+  !unmute 07911123456
+  !remove 07911123456
+  !bans
+  !audit 20
+
+How targeting works
+  Start with the command, then the person's number.
+  Add a reason or duration after that if needed.
+  Add {groupJid} only when needed, and you can put it at the end.
+  If only one group is configured, you can usually leave {groupJid} out.
+  If more than one group is configured, use !status to find the right group.
+  To get a group's JID, DM !status and copy it from the group list.
+
+Number format
+  UK: 07911123456 or +447911123456
+  International: always use + and country code
+  Tip: if you're unsure, reply to their message instead.`;
 
 const OWNER_HELP_BLOCK = `
 
-── Owner only ──
-!addmod {number} {note?}   — add a moderator
-!removemod {number}        — remove a moderator
-!mods                      — list all moderators and owners`;
+Owner only
+  !addmod {number} {note?}
+  !removemod {number}
+  !mods`;
 
 const INVALID_NUMBER_MESSAGE = `❌ Couldn't parse that as a phone number.
 
@@ -134,6 +155,22 @@ const getActorIdentity = (
 
 const formatGroupName = (groupJid: string, groups: Map<string, string>): string =>
   groups.get(groupJid) ?? groupJid;
+
+const formatPersonDisplay = (jid: string, pushName?: string | null): string => {
+  const normalizedJid = normalizeJid(jid);
+  const formatted = formatJidForDisplay(normalizedJid);
+
+  if (pushName?.trim()) {
+    return formatted === "internal user (lid)" ? pushName.trim() : `${pushName.trim()} (${formatted})`;
+  }
+
+  return formatted;
+};
+
+const formatCommandTarget = (jid: string): string => {
+  const normalizedJid = normalizeJid(jid);
+  return normalizedJid.endsWith("@s.whatsapp.net") ? formatJidForDisplay(normalizedJid) : normalizedJid;
+};
 
 const formatReason = (reason?: string | null): string => reason?.trim() || "none";
 
@@ -211,10 +248,14 @@ const parseCommandArgs = (text: string): ParsedCommandArgs => {
     }
   }
 
-  const rawGroupCandidate = tokens[consumedTokens + 1];
-  const groupJid = rawGroupCandidate?.endsWith("@g.us") ? rawGroupCandidate : null;
-  const restStartIndex = groupJid ? consumedTokens + 2 : consumedTokens + 1;
-  const rest = tokens.slice(restStartIndex).join(" ");
+  const remainingTokens = tokens.slice(consumedTokens + 1);
+  const groupTokenIndex = remainingTokens.findIndex((token) => token.endsWith("@g.us"));
+  const groupJid = groupTokenIndex >= 0 ? remainingTokens[groupTokenIndex] ?? null : null;
+  const restTokens =
+    groupTokenIndex >= 0
+      ? remainingTokens.filter((_, index) => index !== groupTokenIndex)
+      : remainingTokens;
+  const rest = restTokens.join(" ");
 
   return {
     command,
@@ -414,13 +455,13 @@ async function handleBanCommand(
   try {
     await sock.groupParticipantsUpdate(groupJid, [lidJid ?? targetJid], "remove");
     await sock.sendMessage(senderJid, {
-      text: `✅ Banned and removed ${targetJid} from ${groupJid}
+      text: `✅ Banned and removed ${formatPersonDisplay(targetJid)} from ${groupJid}
 Reason: ${formatReason(reason)}
 They will be auto-removed if they try to rejoin.`,
     });
   } catch {
     await sock.sendMessage(senderJid, {
-      text: `✅ Ban saved for ${targetJid} in ${groupJid}
+      text: `✅ Ban saved for ${formatPersonDisplay(targetJid)} in ${groupJid}
 (They weren't in the group — ban is active for if they rejoin)`,
     });
   }
@@ -469,23 +510,23 @@ async function handleMuteCommand(
 
   if (expiresAt) {
     await sock.sendMessage(senderJid, {
-      text: `🔇 Muted ${targetJid} in ${formatGroupName(groupJid, groups)}
+      text: `🔇 Muted ${formatPersonDisplay(targetJid)} in ${formatGroupName(groupJid, groups)}
 Duration: ${formatDurationLabel(durationInput)}
 Expires: ${formatDate(expiresAt.toISOString())}
 Reason: none given
 
 Their messages will be silently deleted until then.
-Use !unmute ${targetJid} ${groupJid} to lift early.`,
+Use !unmute ${formatCommandTarget(targetJid)} ${groupJid} to lift early.`,
     });
     return;
   }
 
   await sock.sendMessage(senderJid, {
-    text: `🔇 Permanently muted ${targetJid} in ${formatGroupName(groupJid, groups)}
+    text: `🔇 Permanently muted ${formatPersonDisplay(targetJid)} in ${formatGroupName(groupJid, groups)}
 Reason: none given
 
 Their messages will be silently deleted indefinitely.
-Use !unmute ${targetJid} ${groupJid} to lift.`,
+Use !unmute ${formatCommandTarget(targetJid)} ${groupJid} to lift.`,
   });
 }
 
@@ -528,7 +569,7 @@ async function handleStrikeCommand(
   });
 
   await sock.sendMessage(groupJid, {
-    text: `⚠️ Added a strike for ${targetJid}. Active strikes in this group: ${count}`,
+    text: `⚠️ Added a strike for ${formatPersonDisplay(targetJid)}. Active strikes in this group: ${count}`,
   });
 }
 
@@ -547,7 +588,7 @@ async function handleUndoCommand(
 
   await action.undo();
   await sock.sendMessage(destinationJid, {
-    text: `✅ Undid ${action.type} for ${action.targetJid} in ${action.groupJid}`,
+    text: `✅ Undid ${action.type} for ${formatPersonDisplay(action.targetJid)} in ${action.groupJid}`,
   });
 }
 
@@ -621,7 +662,7 @@ export async function handleGroupCommand(
   if (command === "!unmute") {
     removeMute(quotedParticipant, groupJid);
     await sock.sendMessage(groupJid, {
-      text: `🔊 Unmuted ${quotedParticipant} in ${formatGroupName(groupJid, groups)}
+      text: `🔊 Unmuted ${formatPersonDisplay(quotedParticipant)} in ${formatGroupName(groupJid, groups)}
 They can now send messages again.`,
     });
     logAudit(senderJid, actorRole, command, quotedParticipant, groupJid, text, "success");
@@ -661,7 +702,7 @@ They can now send messages again.`,
     resetStrikes(quotedParticipant, groupJid);
     clearReviewQueueEntry(quotedParticipant, groupJid);
     await sock.sendMessage(groupJid, {
-      text: `✅ Strikes cleared for ${quotedParticipant}`,
+      text: `✅ Strikes cleared for ${formatPersonDisplay(quotedParticipant)}`,
     });
     logAudit(senderJid, actorRole, command, quotedParticipant, groupJid, text, "success");
     return true;
@@ -671,7 +712,7 @@ They can now send messages again.`,
     resetStrikes(quotedParticipant, groupJid);
     clearReviewQueueEntry(quotedParticipant, groupJid);
     await sock.sendMessage(groupJid, {
-      text: `✅ Strikes reset for ${quotedParticipant}`,
+      text: `✅ Strikes reset for ${formatPersonDisplay(quotedParticipant)}`,
     });
     logAudit(senderJid, actorRole, command, quotedParticipant, groupJid, text, "success");
     return true;
@@ -680,7 +721,7 @@ They can now send messages again.`,
   if (command === "!strikes") {
     const count = getActiveStrikes(quotedParticipant, groupJid);
     await sock.sendMessage(groupJid, {
-      text: `Strikes for ${quotedParticipant} in ${formatGroupName(groupJid, groups)}: ${count}`,
+      text: `Strikes for ${formatPersonDisplay(quotedParticipant)} in ${formatGroupName(groupJid, groups)}: ${count}`,
     });
     logAudit(senderJid, actorRole, command, quotedParticipant, groupJid, text, "success");
     return true;
@@ -759,8 +800,8 @@ Forwarded messages seen today: ${getForwardedMessagesSeenToday()}`;
 
     const lines = entries.map(
       (entry, index) =>
-        `${index + 1}. ${entry.pushName ?? entry.userJid}
-   User: ${entry.userJid}
+        `${index + 1}. ${formatPersonDisplay(entry.userJid, entry.pushName)}
+   User: ${formatPersonDisplay(entry.userJid, entry.pushName)}
    Group: ${formatGroupName(entry.groupJid, groups)} (${entry.groupJid})
    Last offence: ${entry.reason}
    Last message: ${entry.messageText?.trim() || "(no message text recorded)"}
@@ -784,8 +825,8 @@ Forwarded messages seen today: ${getForwardedMessagesSeenToday()}`;
         ? entries.map(
             (entry, index) =>
               `${index + 1}. ${entry.timestamp} ${entry.command} [${entry.result}]
-   Actor: ${entry.actorJid} (${entry.actorRole})
-   Target: ${entry.targetJid ?? "n/a"}
+   Actor: ${formatPersonDisplay(entry.actorJid)} (${entry.actorRole})
+   Target: ${entry.targetJid ? formatPersonDisplay(entry.targetJid) : "n/a"}
    Group: ${entry.groupJid ?? "n/a"}
    Input: ${entry.rawInput ?? ""}`,
           )
@@ -830,7 +871,7 @@ Would send: "${previewWarningText(result.reason)}"`
 
     addModerator(targetJid, senderJid, parsed.rest || undefined);
     await sock.sendMessage(senderJid, {
-      text: `✅ Added ${targetJid} as moderator
+      text: `✅ Added ${formatPersonDisplay(targetJid)} as moderator
 Note: ${parsed.rest.trim() || "none"}
 They can now use all moderation commands.`,
     });
@@ -862,7 +903,7 @@ They can now use all moderation commands.`,
     }
 
     removeModerator(targetJid);
-    await sock.sendMessage(senderJid, { text: `✅ Removed ${targetJid} as moderator` });
+    await sock.sendMessage(senderJid, { text: `✅ Removed ${formatPersonDisplay(targetJid)} as moderator` });
     logAudit(senderJid, actorRole, "!removemod", targetJid, null, text, "success");
     return;
   }
@@ -871,13 +912,13 @@ They can now use all moderation commands.`,
     const moderators = listModerators();
     const ownerLines =
       config.ownerJids.length > 0
-        ? config.ownerJids.map((jid) => `• ${formatJidForDisplay(jid)}`)
+        ? config.ownerJids.map((jid) => `• ${formatPersonDisplay(jid)}`)
         : ["• None configured"];
     const moderatorLines =
       moderators.length > 0
         ? moderators.map(
             (moderator) =>
-              `• ${formatJidForDisplay(moderator.jid)} (added by ${formatJidForDisplay(
+              `• ${formatPersonDisplay(moderator.jid)} (added by ${formatPersonDisplay(
                 moderator.addedBy,
               )}, note: "${moderator.note ?? "none"}")`,
           )
@@ -924,7 +965,7 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
     const groupJid = resolveGroupArgument(parsed.groupJid, config);
 
     if (!targetJid || !groupJid) {
-      await sock.sendMessage(senderJid, { text: "Usage: !remove {jid} {groupJid}" });
+      await sock.sendMessage(senderJid, { text: "Usage: !remove {number} {groupJid}" });
       logAudit(senderJid, actorRole, parsed.command, targetJid, groupJid, text, "error");
       return;
     }
@@ -946,7 +987,9 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
       await sock.groupParticipantsUpdate(groupJid, [targetJid], "remove");
       resetStrikes(targetJid, groupJid);
       clearReviewQueueEntry(targetJid, groupJid);
-      await sock.sendMessage(senderJid, { text: `✅ ${targetJid} removed from ${groupJid}` });
+      await sock.sendMessage(senderJid, {
+        text: `✅ Removed ${formatPersonDisplay(targetJid)} from ${formatGroupName(groupJid, groups)}`,
+      });
       await sock.sendMessage(groupJid, {
         text: "A member has been removed for repeated violations.",
       });
@@ -965,7 +1008,7 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
     const groupJid = resolveGroupArgument(parsed.groupJid, config);
 
     if (!targetJid) {
-      await sock.sendMessage(senderJid, { text: "Usage: !pardon {jid} {groupJid?}" });
+      await sock.sendMessage(senderJid, { text: "Usage: !pardon {number} {groupJid?}" });
       logAudit(senderJid, actorRole, parsed.command, null, groupJid, text, "error");
       return;
     }
@@ -980,7 +1023,7 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
       }
     }
 
-    await sock.sendMessage(senderJid, { text: `✅ Strikes cleared for ${targetJid}` });
+    await sock.sendMessage(senderJid, { text: `✅ Strikes cleared for ${formatPersonDisplay(targetJid)}` });
     logAudit(senderJid, actorRole, parsed.command, targetJid, groupJid, text, "success");
     return;
   }
@@ -990,7 +1033,7 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
     const groupJid = resolveGroupArgument(parsed.groupJid, config);
 
     if (!targetJid) {
-      await sock.sendMessage(senderJid, { text: "Usage: !resetstrikes {jid} {groupJid?}" });
+      await sock.sendMessage(senderJid, { text: "Usage: !resetstrikes {number} {groupJid?}" });
       logAudit(senderJid, actorRole, parsed.command, null, groupJid, text, "error");
       return;
     }
@@ -1005,7 +1048,7 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
       }
     }
 
-    await sock.sendMessage(senderJid, { text: `✅ Strikes reset for ${targetJid}` });
+    await sock.sendMessage(senderJid, { text: `✅ Strikes reset for ${formatPersonDisplay(targetJid)}` });
     logAudit(senderJid, actorRole, parsed.command, targetJid, groupJid, text, "success");
     return;
   }
@@ -1014,7 +1057,7 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
     const targetJid = parsed.targetJid;
 
     if (!targetJid) {
-      await sock.sendMessage(senderJid, { text: "Usage: !strikes {jid}" });
+      await sock.sendMessage(senderJid, { text: "Usage: !strikes {number}" });
       logAudit(senderJid, actorRole, parsed.command, null, null, text, "error");
       return;
     }
@@ -1032,7 +1075,7 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
         : ["• No known groups"];
 
     await sock.sendMessage(senderJid, {
-      text: `Strikes for ${targetJid}:\n${lines.join("\n")}`,
+      text: `Strikes for ${formatPersonDisplay(targetJid)}:\n${lines.join("\n")}`,
     });
     logAudit(senderJid, actorRole, parsed.command, targetJid, null, text, "success");
     return;
@@ -1042,7 +1085,7 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
     const targetJid = parsed.targetJid;
     const groupJid = resolveGroupArgument(parsed.groupJid, config);
     if (!targetJid || !groupJid) {
-      await sock.sendMessage(senderJid, { text: "Usage: !ban {jid} {groupJid?} {reason?}" });
+      await sock.sendMessage(senderJid, { text: "Usage: !ban {number} {groupJid?} {reason?}" });
       logAudit(senderJid, actorRole, parsed.command, targetJid, groupJid, text, "error");
       return;
     }
@@ -1064,13 +1107,13 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
     const targetJid = parsed.targetJid;
     const groupJid = resolveGroupArgument(parsed.groupJid, config);
     if (!targetJid || !groupJid) {
-      await sock.sendMessage(senderJid, { text: "Usage: !unban {jid} {groupJid}" });
+      await sock.sendMessage(senderJid, { text: "Usage: !unban {number} {groupJid}" });
       logAudit(senderJid, actorRole, parsed.command, targetJid, groupJid, text, "error");
       return;
     }
     removeBan(targetJid, groupJid);
     await sock.sendMessage(senderJid, {
-      text: `✅ Ban lifted for ${targetJid} in ${groupJid}
+      text: `✅ Ban lifted for ${formatPersonDisplay(targetJid)} in ${formatGroupName(groupJid, groups)}
 They can now rejoin the group.`,
     });
     logAudit(senderJid, actorRole, parsed.command, targetJid, groupJid, text, "success");
@@ -1087,13 +1130,13 @@ They can now rejoin the group.`,
     }
     const bans = getBans(groupJid);
     if (bans.length === 0) {
-      await sock.sendMessage(senderJid, { text: `No active bans in ${groupJid}` });
+      await sock.sendMessage(senderJid, { text: `No active bans in ${formatGroupName(groupJid, groups)}` });
       logAudit(senderJid, actorRole, parsed.command, null, groupJid, text, "success");
       return;
     }
     const lines = bans.map(
-      (ban, index) => `${index + 1}. ${ban.userJid}
-   Banned by: ${ban.bannedBy}
+      (ban, index) => `${index + 1}. ${formatPersonDisplay(ban.userJid)}
+   Banned by: ${formatPersonDisplay(ban.bannedBy)}
    Reason: ${formatReason(ban.reason)}
    Date: ${ban.timestamp}`,
     );
@@ -1108,7 +1151,7 @@ They can now rejoin the group.`,
     const targetJid = parsed.targetJid;
     const groupJid = resolveGroupArgument(parsed.groupJid, config);
     if (!targetJid || !groupJid) {
-      await sock.sendMessage(senderJid, { text: "Usage: !mute {jid} {groupJid?} {duration?}" });
+      await sock.sendMessage(senderJid, { text: "Usage: !mute {number} {groupJid?} {duration?}" });
       logAudit(senderJid, actorRole, parsed.command, targetJid, groupJid, text, "error");
       return;
     }
@@ -1130,13 +1173,13 @@ They can now rejoin the group.`,
     const targetJid = parsed.targetJid;
     const groupJid = resolveGroupArgument(parsed.groupJid, config);
     if (!targetJid || !groupJid) {
-      await sock.sendMessage(senderJid, { text: "Usage: !unmute {jid} {groupJid}" });
+      await sock.sendMessage(senderJid, { text: "Usage: !unmute {number} {groupJid}" });
       logAudit(senderJid, actorRole, parsed.command, targetJid, groupJid, text, "error");
       return;
     }
     removeMute(targetJid, groupJid);
     await sock.sendMessage(senderJid, {
-      text: `🔊 Unmuted ${targetJid} in ${formatGroupName(groupJid, groups)}
+      text: `🔊 Unmuted ${formatPersonDisplay(targetJid)} in ${formatGroupName(groupJid, groups)}
 They can now send messages again.`,
     });
     logAudit(senderJid, actorRole, parsed.command, targetJid, groupJid, text, "success");
@@ -1160,8 +1203,8 @@ They can now send messages again.`,
       return;
     }
     const lines = mutes.map(
-      (mute, index) => `${index + 1}. ${mute.userJid}
-   Muted by: ${mute.mutedBy}
+      (mute, index) => `${index + 1}. ${formatPersonDisplay(mute.userJid)}
+   Muted by: ${formatPersonDisplay(mute.mutedBy)}
    Reason: ${formatReason(mute.reason)}
    Expires: ${formatDate(mute.expiresAt)}`,
     );
@@ -1176,7 +1219,7 @@ They can now send messages again.`,
     const targetJid = parsed.targetJid;
     const groupJid = resolveGroupArgument(parsed.groupJid, config);
     if (!targetJid || !groupJid) {
-      await sock.sendMessage(senderJid, { text: "Usage: !strike {jid} {groupJid?} {reason?}" });
+      await sock.sendMessage(senderJid, { text: "Usage: !strike {number} {groupJid?} {reason?}" });
       logAudit(senderJid, actorRole, parsed.command, targetJid, groupJid, text, "error");
       return;
     }

@@ -28,7 +28,7 @@ import {
   upsertReviewQueueEntry,
 } from "./db.js";
 import { runStartupHealthCheck } from "./healthCheck.js";
-import { loadLidMappings, normalizeJid } from "./lidMap.js";
+import { expandCandidateJids, loadLidMappings } from "./lidMap.js";
 import { containsDisallowedUrl } from "./linkChecker.js";
 import { SpamDetector, type SpamReason } from "./spamDetector.js";
 import { error, log, warn } from "./logger.js";
@@ -138,22 +138,7 @@ const getPhoneJid = (phoneNumber: string | null): string | null =>
   phoneNumber ? parseToJid(phoneNumber) : null;
 
 const getActorCandidateJids = (senderJid: string | null, phoneJid: string | null): string[] => {
-  const candidateJids = new Set<string>();
-
-  for (const jid of [senderJid, phoneJid]) {
-    if (!jid) {
-      continue;
-    }
-
-    candidateJids.add(jid);
-
-    const normalizedJid = normalizeJid(jid);
-    if (normalizedJid !== jid) {
-      candidateJids.add(normalizedJid);
-    }
-  }
-
-  return Array.from(candidateJids);
+  return expandCandidateJids([senderJid, phoneJid]);
 };
 
 const getDirectActorCandidateJids = (sock: WASocket, msg: WAMessage): string[] => {
@@ -167,31 +152,19 @@ const getDirectActorCandidateJids = (sock: WASocket, msg: WAMessage): string[] =
     null;
   const participantPnJid = participantPn ? parseToJid(participantPn) : null;
 
-  const candidateJids = new Set<string>();
-  for (const jid of [
+  const candidateJids = expandCandidateJids([
     participantJid,
     remoteJid,
     senderJid || null,
     lidJid,
     participantPnJid,
     phoneJid,
-  ]) {
-    if (!jid) {
-      continue;
-    }
-
-    candidateJids.add(jid);
-
-    const normalizedJid = normalizeJid(jid);
-    if (normalizedJid !== jid) {
-      candidateJids.add(normalizedJid);
-    }
-  }
+  ]);
 
   const botIdentifiers = getBotIdentifiers(sock);
-  const nonBotCandidateJids = Array.from(candidateJids).filter((jid) => !botIdentifiers.has(jid));
+  const nonBotCandidateJids = candidateJids.filter((jid) => !botIdentifiers.has(jid));
 
-  return nonBotCandidateJids.length > 0 ? nonBotCandidateJids : Array.from(candidateJids);
+  return nonBotCandidateJids.length > 0 ? nonBotCandidateJids : candidateJids;
 };
 
 const getBotIdentifiers = (sock: WASocket): Set<string> => {
@@ -412,16 +385,6 @@ export const handleMessage = async (
       const actorCandidateJids = getDirectActorCandidateJids(sock, msg);
 
       if (text) {
-        warn("Direct message auth candidates", {
-          remoteJid,
-          participant: msg.key.participant ?? null,
-          participantPn:
-            (msg.key as { participantPn?: string | null }).participantPn ??
-            (msg as { key?: { participantPn?: string | null } }).key?.participantPn ??
-            null,
-          actorCandidateJids,
-        });
-
         await handleAuthorisedCommand(
           sock,
           actorCandidateJids,

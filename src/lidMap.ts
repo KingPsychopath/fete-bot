@@ -67,3 +67,22 @@ export function normalizeJid(jid: string): string {
 
   return `${phoneUser}@s.whatsapp.net`;
 }
+
+export function expandCandidateJids(candidateJids: ReadonlyArray<string | null | undefined>): string[] {
+  const expandedJids = new Set<string>();
+
+  for (const jid of candidateJids) {
+    if (!jid) {
+      continue;
+    }
+
+    expandedJids.add(jid);
+
+    const normalizedJid = normalizeJid(jid);
+    if (normalizedJid !== jid) {
+      expandedJids.add(normalizedJid);
+    }
+  }
+
+  return Array.from(expandedJids);
+}
