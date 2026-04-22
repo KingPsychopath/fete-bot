@@ -1,7 +1,5 @@
 FROM node:24-slim
 
-ENV NODE_ENV=production
-
 RUN apt-get update \
   && apt-get install -y --no-install-recommends python3 make g++ \
   && rm -rf /var/lib/apt/lists/*
@@ -11,7 +9,9 @@ WORKDIR /app
 RUN corepack enable
 
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile --prod=false
+
+ENV NODE_ENV=production
 
 COPY src ./src
 COPY tsconfig.json ./

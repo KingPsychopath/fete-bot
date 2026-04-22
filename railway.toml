@@ -1,6 +1,6 @@
 [build]
-builder = "dockerfile"
+builder = "DOCKERFILE"
 
 [deploy]
-restartPolicyType = "always"
+restartPolicyType = "ALWAYS"
 numReplicas = 1
