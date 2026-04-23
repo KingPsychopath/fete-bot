@@ -7,6 +7,7 @@ import makeWASocket, {
   type WAMessage,
   type WAMessageKey,
 } from "@whiskeysockets/baileys";
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import pino from "pino";
 import QRCode from "qrcode";
@@ -28,7 +29,7 @@ import {
   upsertReviewQueueEntry,
 } from "./db.js";
 import { runStartupHealthCheck } from "./healthCheck.js";
-import { expandCandidateJids, loadLidMappings } from "./lidMap.js";
+import { loadLidMappings, recordLidMapping } from "./lidMap.js";
 import { containsDisallowedUrl } from "./linkChecker.js";
 import { SpamDetector, type SpamReason } from "./spamDetector.js";
 import { error, log, warn } from "./logger.js";
@@ -41,6 +42,7 @@ import {
   ensureStorageDirs,
   migrateLegacyAuthDir,
 } from "./storagePaths.js";
+import { buildSelfJids, findParticipantJidForUser, resolveUser, type ResolvedUser } from "./identity.js";
 import { extractAllIdentifiers, isProtectedGroupMember, parseToJid } from "./utils.js";
 import { STARTED_AT, VERSION } from "./version.js";
 
@@ -55,6 +57,7 @@ let shuttingDown = false;
 let reconnecting = false;
 let reconnectAttempts = 0;
 let socketInstanceCounter = 0;
+let botSelfJids = new Set<string>();
 
 const healthPort = Number(process.env.PORT ?? "3000");
 const healthServer = createServer((req, res) => {
@@ -153,54 +156,17 @@ const getPushName = (msg: WAMessage): string | null => msg.pushName ?? null;
 const getPhoneJid = (phoneNumber: string | null): string | null =>
   phoneNumber ? parseToJid(phoneNumber) : null;
 
-const getActorCandidateJids = (senderJid: string | null, phoneJid: string | null): string[] => {
-  return expandCandidateJids([senderJid, phoneJid]);
+const refreshSelfJids = (sock: WASocket): ReadonlySet<string> => {
+  botSelfJids = buildSelfJids(sock.user);
+  return botSelfJids;
 };
 
-const getDirectActorCandidateJids = (sock: WASocket, msg: WAMessage): string[] => {
-  const { senderJid, phoneNumber, lidJid } = extractAllIdentifiers(msg);
-  const phoneJid = getPhoneJid(phoneNumber);
-  const participantJid = msg.key.participant ?? null;
-  const remoteJid = msg.key.remoteJid ?? null;
-  const participantPn =
-    (msg.key as { participantPn?: string | null }).participantPn ??
-    (msg as { key?: { participantPn?: string | null } }).key?.participantPn ??
-    null;
-  const participantPnJid = participantPn ? parseToJid(participantPn) : null;
-
-  const candidateJids = expandCandidateJids([
-    participantJid,
-    remoteJid,
-    senderJid || null,
-    lidJid,
-    participantPnJid,
-    phoneJid,
-  ]);
-
-  const botIdentifiers = getBotIdentifiers(sock);
-  const nonBotCandidateJids = candidateJids.filter((jid) => !botIdentifiers.has(jid));
-
-  return nonBotCandidateJids.length > 0 ? nonBotCandidateJids : candidateJids;
-};
-
-const getBotIdentifiers = (sock: WASocket): Set<string> => {
-  const identifiers = new Set<string>();
-  const user = sock.user;
-
-  if (user?.id) {
-    identifiers.add(user.id);
+const getSelfJids = (sock: WASocket): ReadonlySet<string> => {
+  if (botSelfJids.size === 0) {
+    return refreshSelfJids(sock);
   }
 
-  if (typeof user?.lid === "string" && user.lid.length > 0) {
-    identifiers.add(user.lid);
-  }
-
-  const phoneJid = getPhoneJid(user?.phoneNumber ?? null);
-  if (phoneJid) {
-    identifiers.add(phoneJid);
-  }
-
-  return identifiers;
+  return botSelfJids;
 };
 
 const isForwardedMessage = (message: WAMessage["message"]): boolean => {
@@ -387,6 +353,55 @@ const logConfig = (): void => {
 const isManagedGroup = (groupJid: string): boolean =>
   config.allowedGroupJids.length === 0 || config.allowedGroupJids.includes(groupJid);
 
+const syncLidMappingIdentity = async (
+  lidJid: string | null | undefined,
+  phoneNumber: string | null | undefined,
+  sock: WASocket,
+): Promise<void> => {
+  const normalizedPhoneJid = phoneNumber ? parseToJid(phoneNumber) : null;
+  if (!lidJid || !normalizedPhoneJid) {
+    return;
+  }
+
+  try {
+    recordLidMapping(normalizedPhoneJid, lidJid);
+    await resolveUser({
+      participantJid: lidJid,
+      phoneJid: normalizedPhoneJid,
+      lidJid,
+      selfJids: getSelfJids(sock),
+      reason: "metadata_sync",
+    });
+  } catch (mappingError) {
+    warn("Failed to sync lid mapping identity", {
+      lidJid,
+      phoneJid: normalizedPhoneJid,
+      error: mappingError,
+    });
+  }
+};
+
+const syncGroupParticipantIdentities = async (metadata: GroupMetadata): Promise<void> => {
+  const selfJids = botSelfJids;
+  for (const participant of metadata.participants) {
+    try {
+      await resolveUser({
+        participantJid: participant.id ?? null,
+        phoneJid: participant.phoneNumber ? parseToJid(participant.phoneNumber) : null,
+        lidJid: participant.lid ?? null,
+        selfJids,
+        reason: "metadata_sync",
+      });
+    } catch (participantError) {
+      warn("Failed to sync participant identity from group metadata", {
+        groupJid: metadata.id,
+        participantId: participant.id,
+        error: participantError,
+      });
+    }
+  }
+};
+
 const listDiscoveredGroups = async (
   sock: WASocket,
 ): Promise<void> => {
@@ -399,6 +414,9 @@ const listDiscoveredGroups = async (
       discoveredGroups.set(jid, metadata.subject);
       discoveredGroupMetadata.set(jid, metadata);
       log("Discovered group", { jid, subject: metadata.subject });
+      if (botSelfJids.size > 0) {
+        await syncGroupParticipantIdentities(metadata);
+      }
     }
   } catch (groupError) {
     warn("Unable to fetch participating groups", groupError);
@@ -410,6 +428,9 @@ const refreshGroupMetadata = async (sock: WASocket, groupJid: string): Promise<v
     const metadata = await sock.groupMetadata(groupJid);
     discoveredGroups.set(groupJid, metadata.subject);
     discoveredGroupMetadata.set(groupJid, metadata);
+    if (botSelfJids.size > 0) {
+      await syncGroupParticipantIdentities(metadata);
+    }
   } catch (groupError) {
     warn("Unable to refresh group metadata", { groupJid, error: groupError });
   }
@@ -443,18 +464,34 @@ export const handleMessage = async (
     }
 
     const text = extractMessageText(msg);
+    const selfJids = getSelfJids(sock);
+    const { senderJid, phoneNumber, lidJid } = extractAllIdentifiers(msg);
+    const phoneJid = getPhoneJid(phoneNumber);
+    const sender = await resolveUser({
+      participantJid: senderJid || null,
+      phoneJid,
+      lidJid,
+      pushName: getPushName(msg),
+      selfJids,
+    });
+
+    if (!sender || !sender.participantJid) {
+      return;
+    }
+
+    const liveSenderJid = sender.participantJid;
+    const canonicalSenderAlias = phoneJid ?? liveSenderJid;
 
     if (remoteJid.endsWith("@s.whatsapp.net") || remoteJid.endsWith("@lid")) {
-      const actorCandidateJids = getDirectActorCandidateJids(sock, msg);
-
       if (text) {
         await handleAuthorisedCommand(
           sock,
-          actorCandidateJids,
+          sender,
           text,
           config,
           discoveredGroups,
           discoveredGroupMetadata,
+          selfJids,
         );
       }
       return;
@@ -471,27 +508,17 @@ export const handleMessage = async (
       return;
     }
 
-    const { senderJid, phoneNumber, lidJid } = extractAllIdentifiers(msg);
-    const phoneJid = getPhoneJid(phoneNumber);
-    const canonicalSenderJid = phoneJid ?? senderJid;
-    if (!senderJid) {
-      return;
-    }
-
-    if (getBotIdentifiers(sock).has(senderJid) || (phoneJid && getBotIdentifiers(sock).has(phoneJid))) {
-      return;
-    }
-
     if (text) {
       const handledGroupCommand = await handleGroupCommand(
         sock,
-        getActorCandidateJids(senderJid, phoneJid),
+        sender,
         groupJid,
         text,
         getQuotedParticipant(msg.message),
         config,
         discoveredGroups,
         discoveredGroupMetadata,
+        selfJids,
       );
 
       if (handledGroupCommand) {
@@ -501,7 +528,8 @@ export const handleMessage = async (
 
     if (
       isProtectedGroupMember(
-        getActorCandidateJids(senderJid, phoneJid),
+        sender.userId,
+        sender.knownAliases,
         groupJid,
         config,
         discoveredGroupMetadata,
@@ -513,7 +541,7 @@ export const handleMessage = async (
     if (text.startsWith("!")) {
       warn("Ignored in-group command from unauthorised sender", {
         groupJid,
-        senderJid,
+        senderJid: liveSenderJid,
         phoneJid,
         lidJid,
         pushName: getPushName(msg),
@@ -522,10 +550,10 @@ export const handleMessage = async (
     }
 
     try {
-      if (isBanned(senderJid, groupJid) || (phoneJid ? isBanned(phoneJid, groupJid) : false)) {
+      if (isBanned(sender.userId, groupJid)) {
         if (config.dryRun) {
           warn("Dry run: would remove banned user who sent a message", {
-            senderJid: canonicalSenderJid,
+            senderJid: canonicalSenderAlias,
             lidJid,
             groupJid,
           });
@@ -533,9 +561,9 @@ export const handleMessage = async (
         }
 
         try {
-          await sock.groupParticipantsUpdate(groupJid, [senderJid], "remove");
+          await sock.groupParticipantsUpdate(groupJid, [liveSenderJid], "remove");
           warn("Auto-removed banned user after message attempt", {
-            senderJid: canonicalSenderJid,
+            senderJid: canonicalSenderAlias,
             lidJid,
             groupJid,
           });
@@ -544,15 +572,15 @@ export const handleMessage = async (
             await sock.sendMessage(ownerJid, {
               text: `🚫 Banned user tried to post and was auto-removed.
 
-User: ${canonicalSenderJid}
+User: ${canonicalSenderAlias}
 Group: ${groupJid}
 
-Use !unban ${canonicalSenderJid} ${groupJid} to lift the ban.`,
+Use !unban ${canonicalSenderAlias} ${groupJid} to lift the ban.`,
             }).catch(() => {});
           }
         } catch (bannedRemovalError) {
           error("Failed to auto-remove banned user after message attempt", {
-            senderJid: canonicalSenderJid,
+            senderJid: canonicalSenderAlias,
             groupJid,
             error: bannedRemovalError,
           });
@@ -568,7 +596,8 @@ Use !unban ${canonicalSenderJid} ${groupJid} to lift the ban.`,
       logAction({
         timestamp: new Date().toISOString(),
         group_jid: groupJid,
-        user_jid: canonicalSenderJid,
+        user_id: sender.userId,
+        participant_jid: liveSenderJid,
         push_name: getPushName(msg),
         message_text: text || null,
         url_found: null,
@@ -577,7 +606,7 @@ Use !unban ${canonicalSenderJid} ${groupJid} to lift the ban.`,
       });
       log("Forwarded message observed", {
         groupJid,
-        senderJid: canonicalSenderJid,
+        senderJid: canonicalSenderAlias,
         pushName: getPushName(msg),
       });
     }
@@ -587,8 +616,8 @@ Use !unban ${canonicalSenderJid} ${groupJid} to lift the ban.`,
     }
 
     try {
-      if (isMuted(senderJid, groupJid) || (phoneJid ? isMuted(phoneJid, groupJid) : false)) {
-        const mutedCounterKey = getMutedCounterKey(canonicalSenderJid, groupJid);
+      if (isMuted(sender.userId, groupJid)) {
+        const mutedCounterKey = getMutedCounterKey(sender.userId, groupJid);
         const mutedAttemptCount = (mutedMessageCounts.get(mutedCounterKey) ?? 0) + 1;
         mutedMessageCounts.set(mutedCounterKey, mutedAttemptCount);
 
@@ -596,11 +625,12 @@ Use !unban ${canonicalSenderJid} ${groupJid} to lift the ban.`,
           await sock.sendMessage(groupJid, { delete: msg.key as WAMessageKey });
         }
 
-        warn("Deleted message from muted user", { senderJid: canonicalSenderJid, lidJid, groupJid });
+        warn("Deleted message from muted user", { senderJid: canonicalSenderAlias, lidJid, groupJid });
         logAction({
           timestamp: new Date().toISOString(),
           group_jid: groupJid,
-          user_jid: canonicalSenderJid,
+          user_id: sender.userId,
+          participant_jid: liveSenderJid,
           push_name: msg.pushName ?? "",
           message_text: text,
           url_found: null,
@@ -614,20 +644,19 @@ Use !unban ${canonicalSenderJid} ${groupJid} to lift the ban.`,
           if (!config.dryRun) {
             try {
               addBan(
-                canonicalSenderJid,
+                sender.userId,
                 groupJid,
-                "system",
+                { userId: null, label: "system" },
                 "repeated attempts to post while muted pending review",
-                lidJid,
               );
-              clearReviewQueueEntry(canonicalSenderJid, groupJid);
-              await sock.groupParticipantsUpdate(groupJid, [senderJid], "remove");
+              clearReviewQueueEntry(sender.userId, groupJid);
+              await sock.groupParticipantsUpdate(groupJid, [liveSenderJid], "remove");
               await sock.sendMessage(groupJid, {
                 text: "A muted member has been banned and removed after repeatedly attempting to post while muted.",
               });
             } catch (removeMutedError) {
               error("Failed to ban and remove muted user after repeated attempts", {
-                senderJid: canonicalSenderJid,
+                senderJid: canonicalSenderAlias,
                 groupJid,
                 error: removeMutedError,
               });
@@ -638,7 +667,7 @@ Use !unban ${canonicalSenderJid} ${groupJid} to lift the ban.`,
             await sock.sendMessage(ownerJid, {
               text: `🔇 Muted user escalation
 
-User: ${canonicalSenderJid}
+User: ${canonicalSenderAlias}
 Group: ${groupJid}
 Attempts while muted: ${mutedAttemptCount}
 
@@ -655,7 +684,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
 
     log("Allowed group message", {
       groupJid,
-      senderJid: canonicalSenderJid,
+      senderJid: canonicalSenderAlias,
       lidJid,
       pushName: getPushName(msg),
       text,
@@ -665,7 +694,8 @@ They have been banned and removed after repeatedly trying to post while muted.`,
     const baseLogEntry = {
       timestamp: new Date().toISOString(),
       group_jid: groupJid,
-      user_jid: canonicalSenderJid,
+      user_id: sender.userId,
+      participant_jid: liveSenderJid,
       push_name: getPushName(msg),
       message_text: text,
       url_found: null as string | null,
@@ -685,7 +715,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
       if (config.dryRun) {
         log("Dry run matched disallowed link in allowed group", {
           groupJid,
-          senderJid: canonicalSenderJid,
+          senderJid: canonicalSenderAlias,
           url: moderationResult.url,
           reason: moderationResult.reason,
           wouldSendText: warningText,
@@ -698,7 +728,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
 
         warn("Dry run: would delete disallowed link", {
           groupJid,
-          senderJid: canonicalSenderJid,
+          senderJid: canonicalSenderAlias,
           url: moderationResult.url,
           reason: moderationResult.reason,
         });
@@ -708,9 +738,10 @@ They have been banned and removed after repeatedly trying to post while muted.`,
       try {
         await sock.sendMessage(groupJid, { delete: msg.key as WAMessageKey });
         const strikeCount = addStrike(
-          canonicalSenderJid,
+          sender.userId,
           groupJid,
           moderationResult.reason ?? "unknown",
+          randomUUID(),
         );
         await sendModerationMessage(
           sock,
@@ -721,7 +752,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
 
         if (strikeCount >= 3) {
           upsertReviewQueueEntry(
-            canonicalSenderJid,
+            sender.userId,
             groupJid,
             pushName,
             moderationResult.reason ?? "unknown",
@@ -729,19 +760,18 @@ They have been banned and removed after repeatedly trying to post while muted.`,
           );
           if (config.muteOnStrike3) {
             addMute(
-              canonicalSenderJid,
+              sender.userId,
               groupJid,
-              "system",
+              { userId: null, label: "system" },
               null,
               "auto-muted after strike 3 pending review",
-              lidJid,
             );
           }
           const flaggedText = `${formatMentionLabel(senderJid, pushName, phoneJid)} has been flagged for removal after repeated violations. An owner or moderator will review shortly.${config.muteOnStrike3 ? " They have been muted until review." : ""}`;
           await sendModerationMessage(sock, groupJid, flaggedText, mentionTargetJid);
           await notifyOwnersOfStrikeThree(
             sock,
-            canonicalSenderJid,
+            canonicalSenderAlias,
             groupJid,
             pushName,
             moderationResult.reason ?? "unknown",
@@ -756,7 +786,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
 
         warn("Deleted disallowed link", {
           groupJid,
-          senderJid: canonicalSenderJid,
+          senderJid: canonicalSenderAlias,
           url: moderationResult.url,
           reason: moderationResult.reason,
         });
@@ -769,7 +799,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
 
         error("Failed to moderate message", {
           groupJid,
-          senderJid: canonicalSenderJid,
+          senderJid: canonicalSenderAlias,
           url: moderationResult.url,
           error: moderationError,
         });
@@ -777,7 +807,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
       return;
     }
 
-    const spamResult = spamDetector.check(canonicalSenderJid, text);
+    const spamResult = spamDetector.check(sender.userId, text);
     if (!spamResult.spam) {
       return;
     }
@@ -795,12 +825,12 @@ They have been banned and removed after repeatedly trying to post while muted.`,
     };
 
     if (config.dryRun) {
-      log("Dry run matched spam rule in allowed group", {
-        groupJid,
-        senderJid: canonicalSenderJid,
-        reason: spamResult.reason,
-        action: spamResult.action,
-        wouldSendText: spamWarningText,
+        log("Dry run matched spam rule in allowed group", {
+          groupJid,
+          senderJid: canonicalSenderAlias,
+          reason: spamResult.reason,
+          action: spamResult.action,
+          wouldSendText: spamWarningText,
       });
 
       logAction({
@@ -810,7 +840,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
 
       warn("Dry run: would moderate spam detection", {
         groupJid,
-        senderJid: canonicalSenderJid,
+        senderJid: canonicalSenderAlias,
         reason: spamResult.reason,
         action: spamResult.action,
       });
@@ -820,7 +850,12 @@ They have been banned and removed after repeatedly trying to post while muted.`,
     try {
       if (spamResult.action === "delete") {
         await sock.sendMessage(groupJid, { delete: msg.key as WAMessageKey });
-        const strikeCount = addStrike(canonicalSenderJid, groupJid, spamResult.reason);
+        const strikeCount = addStrike(
+          sender.userId,
+          groupJid,
+          spamResult.reason,
+          randomUUID(),
+        );
         await sendModerationMessage(
           sock,
           groupJid,
@@ -830,7 +865,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
 
         if (strikeCount >= 3) {
           upsertReviewQueueEntry(
-            canonicalSenderJid,
+            sender.userId,
             groupJid,
             getPushName(msg),
             spamResult.reason,
@@ -838,19 +873,18 @@ They have been banned and removed after repeatedly trying to post while muted.`,
           );
           if (config.muteOnStrike3) {
             addMute(
-              canonicalSenderJid,
+              sender.userId,
               groupJid,
-              "system",
+              { userId: null, label: "system" },
               null,
               "auto-muted after strike 3 pending review",
-              lidJid,
             );
           }
           const flaggedText = `${formatMentionLabel(senderJid, getPushName(msg), phoneJid)} has been flagged for removal after repeated violations. An owner or moderator will review shortly.${config.muteOnStrike3 ? " They have been muted until review." : ""}`;
           await sendModerationMessage(sock, groupJid, flaggedText, mentionTargetJid);
           await notifyOwnersOfStrikeThree(
             sock,
-            canonicalSenderJid,
+            canonicalSenderAlias,
             groupJid,
             getPushName(msg),
             spamResult.reason,
@@ -868,7 +902,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
 
       warn("Moderated spam detection", {
         groupJid,
-        senderJid: canonicalSenderJid,
+        senderJid: canonicalSenderAlias,
         reason: spamResult.reason,
         action: spamResult.action,
       });
@@ -881,7 +915,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
 
       error("Failed to moderate spam detection", {
         groupJid,
-        senderJid: canonicalSenderJid,
+        senderJid: canonicalSenderAlias,
         reason: spamResult.reason,
         error: moderationError,
       });
@@ -937,8 +971,12 @@ export const startBot = async (): Promise<void> => {
     logger: pino({ level: "silent" }),
   });
   activeSocket = sock;
+  refreshSelfJids(sock);
 
   sock.ev.on("creds.update", saveCreds);
+  sock.ev.on("lid-mapping.update", ({ lid, pn }) => {
+    void syncLidMappingIdentity(lid, pn, sock);
+  });
 
   sock.ev.on("connection.update", (update) => {
     if (socketInstanceId !== socketInstanceCounter) {
@@ -973,6 +1011,7 @@ export const startBot = async (): Promise<void> => {
     if (connection === "open") {
       reconnecting = false;
       reconnectAttempts = 0;
+      refreshSelfJids(sock);
       log("Bot connected");
       void (async () => {
         await listDiscoveredGroups(sock);
@@ -1034,13 +1073,22 @@ export const startBot = async (): Promise<void> => {
       return;
     }
 
-    for (const participant of update.participants) {
-      const participantJid = participant.id;
-      const participantPhoneJid = getPhoneJid(participant.phoneNumber ?? null);
+    for (const rawParticipant of update.participants) {
+      const participant = await resolveUser({
+        participantJid: rawParticipant.id ?? null,
+        phoneJid: rawParticipant.phoneNumber ? parseToJid(rawParticipant.phoneNumber) : null,
+        lidJid: rawParticipant.lid ?? null,
+        selfJids: getSelfJids(sock),
+        reason: "metadata_sync",
+      });
+      if (!participant) {
+        continue;
+      }
 
       if (
         isProtectedGroupMember(
-          [participantJid, participantPhoneJid].filter((value): value is string => Boolean(value)),
+          participant.userId,
+          participant.knownAliases,
           update.id,
           config,
           discoveredGroupMetadata,
@@ -1050,17 +1098,18 @@ export const startBot = async (): Promise<void> => {
       }
 
       try {
-        if (
-          !isBanned(participantJid, update.id) &&
-          !(participantPhoneJid ? isBanned(participantPhoneJid, update.id) : false)
-        ) {
+        if (!isBanned(participant.userId, update.id)) {
           continue;
         }
 
         try {
-          await sock.groupParticipantsUpdate(update.id, [participantJid], "remove");
+          await sock.groupParticipantsUpdate(
+            update.id,
+            [findParticipantJidForUser(participant.userId, discoveredGroupMetadata.get(update.id)) ?? participant.participantJid ?? rawParticipant.id],
+            "remove",
+          );
           warn("Auto-removed banned user on rejoin", {
-            userJid: participantJid,
+            userJid: participant.participantJid,
             groupJid: update.id,
           });
 
@@ -1068,13 +1117,13 @@ export const startBot = async (): Promise<void> => {
             await sock.sendMessage(ownerJid, {
               text: `🚫 Banned user attempted to rejoin and was auto-removed.
 
-User: ${participantPhoneJid ?? participantJid}
+User: ${participant.knownAliases[0] ?? participant.userId}
 Group: ${update.id}
 
-Use !unban ${participantPhoneJid ?? participantJid} ${update.id} to lift the ban.`,
+Use !unban ${participant.knownAliases[0] ?? participant.userId} ${update.id} to lift the ban.`,
             });
           }
-          clearReviewQueueEntry(participantPhoneJid ?? participantJid, update.id);
+          clearReviewQueueEntry(participant.userId, update.id);
         } catch (rejoinError) {
           error("Failed to auto-remove banned user on rejoin", rejoinError);
         }

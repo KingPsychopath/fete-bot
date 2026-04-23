@@ -1,4 +1,5 @@
 import type { GroupMetadata, WASocket } from "@whiskeysockets/baileys";
+import { randomUUID } from "node:crypto";
 
 import type { Config } from "./config.js";
 import {
@@ -13,20 +14,34 @@ import {
   getAuditEntries,
   getBans,
   getForwardedMessagesSeenToday,
-  isMuted,
-  listReviewQueueEntries,
-  listModerators,
   getStrikesIssuedToday,
   getTotalActiveBans,
   getTotalActiveMutes,
   getTotalActiveStrikes,
+  isMuted,
+  listModerators,
+  listReviewQueueEntries,
   logAuditEntry,
   removeBan,
   removeLatestStrike,
   removeModerator,
   removeMute,
   resetStrikes,
+  type ActorReference,
+  type AuditResult,
+  type ReviewQueueEntry,
 } from "./db.js";
+import {
+  describeUser,
+  findParticipantJidForUser,
+  findUserByIdentifier,
+  getShortUserId,
+  parseIdentifier,
+  resolveParticipantTarget,
+  resolveTargetFromIdentifier,
+  type ResolvedUser,
+  type UserSummary,
+} from "./identity.js";
 import { containsDisallowedUrl, type DisallowedUrlReason } from "./linkChecker.js";
 import { STARTED_AT, VERSION } from "./version.js";
 import {
@@ -34,28 +49,27 @@ import {
   isAuthorised,
   isProtectedGroupMember,
   parseDuration,
-  parseToJid,
 } from "./utils.js";
-import { normalizeJid } from "./lidMap.js";
 
 const HELP_MESSAGE = `*Fete Bot — Admin Help*
 
 *Targeting*
   • Reply to a group message — fastest, no extra args needed
-  • DM by number — include {groupJid} if you have more than one group
+  • DM by number, WhatsApp JID, or LID — include {groupJid} if needed
   • !status shows group JIDs and your full config
 
 *Action commands*
   Syntax: reply args | DM args
 
-  !mute         {duration?}     | {number} {duration?} {groupJid?}
-  !unmute       —               | {number} {groupJid?}
-  !ban          {reason?}       | {number} {reason?} {groupJid?}
-  !unban        DM only         | {number} {groupJid?}
-  !remove       DM only         | {number} {groupJid?}
-  !strike       {reason?}       | {number} {reason?} {groupJid?}
-  !strikes      —               | {number}
-  !pardon       —               | {number} {groupJid?}
+  !mute         {duration?}     | {identifier} {duration?} {groupJid?}
+  !unmute       —               | {identifier} {groupJid?}
+  !ban          {reason?}       | {identifier} {reason?} {groupJid?}
+  !unban        DM only         | {identifier} {groupJid?}
+  !remove       DM only         | {identifier} {groupJid?}
+  !strike       {reason?}       | {identifier} {reason?} {groupJid?}
+  !strikes      —               | {identifier}
+  !pardon       —               | {identifier} {groupJid?}
+  !whois        —               | {identifier}
   !undo         —               | —
 
 *Info commands*
@@ -70,11 +84,11 @@ const HELP_MESSAGE = `*Fete Bot — Admin Help*
 *Examples*
   Reply: !mute 2h
   Reply: !ban repeated promo links
+  Reply: !whois
   DM:    !mute 07911123456 2h
   DM:    !strike +447911123456 ignored warning
-  DM:    !remove +12125550123
-  DM:    !bans
-  DM:    !audit 20
+  DM:    !remove lid:abc123def456
+  DM:    !whois 447911123456@s.whatsapp.net
 
 *Number format*
   UK:            07911123456  or  +447911123456
@@ -84,22 +98,31 @@ const HELP_MESSAGE = `*Fete Bot — Admin Help*
 const OWNER_HELP_BLOCK = `
 
 *Owner only*
-  !addmod {number} {note?}
-  !removemod {number}
+  !addmod {identifier} {note?}
+  !removemod {identifier}
   !mods`;
 
-const INVALID_NUMBER_MESSAGE = `❌ Couldn't parse that as a phone number.
+const INVALID_IDENTIFIER_MESSAGE = `❌ Couldn't parse that as a user identifier.
 
 Try:
   07911 123456
   +447911123456
-  447911123456
+  447911123456@s.whatsapp.net
+  lid:abc123def456
+  abc123def456@lid
 
 Or reply directly to the user's message instead.`;
 
+type ActorContext = {
+  userId: string;
+  participantJid: string | null;
+  knownAliases: string[];
+  actorRole: "owner" | "moderator";
+};
+
 type ParsedCommandArgs = {
   command: string;
-  targetJid: string | null;
+  targetIdentifier: string | null;
   groupJid: string | null;
   rest: string;
   parseFailed: boolean;
@@ -107,8 +130,7 @@ type ParsedCommandArgs = {
 
 type UndoableAction = {
   type: "ban" | "mute" | "strike";
-  targetJid: string;
-  groupJids: string[];
+  targetUserId: string;
   scopeLabel: string;
   expiresAt: number;
   undo: () => Promise<void>;
@@ -118,52 +140,9 @@ const undoableActions = new Map<string, UndoableAction>();
 const destructiveCommandTimestamps = new Map<string, number[]>();
 
 const normaliseCommand = (text: string): string => text.trim().toLowerCase();
-const isOwner = (jid: string, config: Config): boolean => config.ownerJids.includes(jid);
-const getActorIdentity = (
-  candidateJids: readonly string[],
-  config: Config,
-): { actorJid: string; actorRole: "owner" | "moderator" } | null => {
-  for (const candidateJid of candidateJids) {
-    if (isOwner(candidateJid, config)) {
-      return { actorJid: candidateJid, actorRole: "owner" };
-    }
-  }
-
-  for (const candidateJid of candidateJids) {
-    if (isAuthorised(candidateJid, config)) {
-      return { actorJid: candidateJid, actorRole: "moderator" };
-    }
-  }
-
-  return null;
-};
 
 const formatGroupName = (groupJid: string, groups: Map<string, string>): string =>
   groups.get(groupJid) ?? groupJid;
-
-const formatPersonDisplay = (jid: string, pushName?: string | null): string => {
-  const normalizedJid = normalizeJid(jid);
-  const formatted = formatJidForDisplay(normalizedJid);
-
-  if (pushName?.trim()) {
-    return formatted === "internal user (lid)" ? pushName.trim() : `${pushName.trim()} (${formatted})`;
-  }
-
-  return formatted;
-};
-
-const formatCommandTarget = (jid: string): string => {
-  const normalizedJid = normalizeJid(jid);
-  return normalizedJid.endsWith("@s.whatsapp.net") ? formatJidForDisplay(normalizedJid) : normalizedJid;
-};
-
-const formatGroupScope = (groupJids: readonly string[], groups: Map<string, string>): string => {
-  if (groupJids.length === 1) {
-    return formatGroupName(groupJids[0] ?? "", groups);
-  }
-
-  return "all managed groups";
-};
 
 const getManagedGroupJids = (
   config: Config,
@@ -174,6 +153,14 @@ const getManagedGroupJids = (
   }
 
   return Array.from(groups.keys());
+};
+
+const formatGroupScope = (groupJids: readonly string[], groups: Map<string, string>): string => {
+  if (groupJids.length === 1) {
+    return formatGroupName(groupJids[0] ?? "", groups);
+  }
+
+  return "all managed groups";
 };
 
 const formatReason = (reason?: string | null): string => reason?.trim() || "none";
@@ -214,96 +201,112 @@ const formatDurationLabel = (input?: string): string => {
   return `${value} ${labels[match[2] as keyof typeof labels]}`;
 };
 
-const resolveGroupTargets = (
-  requestedGroupJid: string | null,
-  config: Config,
-  groups: ReadonlyMap<string, string> | ReadonlyMap<string, GroupMetadata>,
-): { groupJids: string[]; explicit: boolean; invalid: boolean } => {
-  const managedGroupJids = getManagedGroupJids(config, groups);
+const formatUserSummary = (summary: UserSummary, fallbackPushName?: string | null): string => {
+  const phoneAlias = summary.aliases.find((alias) => alias.aliasType === "phone")?.alias ?? null;
+  const lidAlias = summary.aliases.find((alias) => alias.aliasType === "lid")?.alias ?? null;
+  const primaryAlias = phoneAlias ?? lidAlias ?? summary.userId;
+  const primaryLabel = primaryAlias.includes("@") ? formatJidForDisplay(primaryAlias) : primaryAlias;
+  const displayName = summary.displayName?.trim() || fallbackPushName?.trim() || null;
 
-  if (requestedGroupJid) {
-    if (!managedGroupJids.includes(requestedGroupJid)) {
-      return { groupJids: [], explicit: true, invalid: true };
-    }
+  if (displayName) {
+    return `${displayName} (${primaryLabel}, ${summary.shortId})`;
+  }
 
-    return { groupJids: [requestedGroupJid], explicit: true, invalid: false };
+  return `${primaryLabel} (${summary.shortId})`;
+};
+
+const formatUserById = (userId: string, fallbackPushName?: string | null): string => {
+  const summary = describeUser(userId);
+  if (!summary) {
+    return `${userId} (${getShortUserId(userId)})`;
+  }
+
+  return formatUserSummary(summary, fallbackPushName);
+};
+
+const formatActorReference = (actor: ActorReference): string => {
+  if (actor.userId) {
+    return formatUserById(actor.userId);
+  }
+
+  return actor.label;
+};
+
+const getActorReference = (actor: ActorContext, fallbackLabel?: string | null): ActorReference => ({
+  userId: actor.userId,
+  label: fallbackLabel?.trim() || actor.participantJid || actor.userId,
+});
+
+const getActorRole = (actor: ResolvedUser, config: Config): "owner" | "moderator" | null => {
+  if (actor.knownAliases.some((alias) => config.ownerJids.includes(alias))) {
+    return "owner";
+  }
+
+  return isAuthorised(actor.userId, actor.knownAliases, config) ? "moderator" : null;
+};
+
+const getActorContext = (actor: ResolvedUser, config: Config): ActorContext | null => {
+  const actorRole = getActorRole(actor, config);
+  if (!actorRole) {
+    return null;
   }
 
   return {
-    groupJids: managedGroupJids,
-    explicit: false,
-    invalid: false,
+    userId: actor.userId,
+    participantJid: actor.participantJid,
+    knownAliases: actor.knownAliases,
+    actorRole,
+  };
+};
+
+const parseTargetSpecifier = (
+  text: string,
+): { targetIdentifier: string | null; rest: string; parseFailed: boolean } => {
+  const tokens = text.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length <= 1) {
+    return { targetIdentifier: null, rest: "", parseFailed: false };
+  }
+
+  let targetIdentifier: string | null = null;
+  let consumedTokens = 0;
+
+  for (let index = 1; index < tokens.length; index += 1) {
+    const candidate = tokens.slice(1, index + 1).join(" ");
+    if (parseIdentifier(candidate)) {
+      targetIdentifier = candidate;
+      consumedTokens = index;
+    }
+  }
+
+  return {
+    targetIdentifier,
+    rest: tokens.slice(consumedTokens + 1).join(" "),
+    parseFailed: tokens.length > 1 && !targetIdentifier,
   };
 };
 
 const parseCommandArgs = (text: string): ParsedCommandArgs => {
   const tokens = text.trim().split(/\s+/).filter(Boolean);
   const command = (tokens[0] ?? "").toLowerCase();
+  const parsed = parseTargetSpecifier(text);
+  const remainingTokens = parsed.targetIdentifier
+    ? tokens.slice((text.trim().split(/\s+/).findIndex((token) => token === parsed.targetIdentifier?.split(/\s+/)[0]) || 0) + 1)
+    : tokens.slice(1);
 
-  if (tokens.length <= 1) {
-    return {
-      command,
-      targetJid: null,
-      groupJid: null,
-      rest: "",
-      parseFailed: false,
-    };
-  }
-
-  let targetJid: string | null = null;
-  let consumedTokens = 0;
-
-  for (let index = 1; index < tokens.length; index += 1) {
-    const candidate = tokens.slice(1, index + 1).join(" ");
-    const parsed = parseToJid(candidate);
-    if (parsed) {
-      targetJid = parsed;
-      consumedTokens = index;
-    }
-  }
-
-  const remainingTokens = tokens.slice(consumedTokens + 1);
-  const groupTokenIndex = remainingTokens.findIndex((token) => token.endsWith("@g.us"));
-  const groupJid = groupTokenIndex >= 0 ? remainingTokens[groupTokenIndex] ?? null : null;
-  const restTokens =
+  const restTokens = parsed.rest.trim().split(/\s+/).filter(Boolean);
+  const groupTokenIndex = restTokens.findIndex((token) => token.endsWith("@g.us"));
+  const groupJid = groupTokenIndex >= 0 ? restTokens[groupTokenIndex] ?? null : null;
+  const rest =
     groupTokenIndex >= 0
-      ? remainingTokens.filter((_, index) => index !== groupTokenIndex)
-      : remainingTokens;
-  const rest = restTokens.join(" ");
+      ? restTokens.filter((_, index) => index !== groupTokenIndex).join(" ")
+      : parsed.rest;
 
   return {
     command,
-    targetJid,
+    targetIdentifier: parsed.targetIdentifier,
     groupJid,
-    rest,
-    parseFailed: tokens.length > 1 && !targetJid && !tokens[1]?.endsWith("@g.us"),
-  };
-};
-
-const parseDirectTargetAndRest = (
-  text: string,
-): { targetJid: string | null; rest: string; parseFailed: boolean } => {
-  const tokens = text.trim().split(/\s+/).filter(Boolean);
-  if (tokens.length <= 1) {
-    return { targetJid: null, rest: "", parseFailed: false };
-  }
-
-  let targetJid: string | null = null;
-  let consumedTokens = 0;
-
-  for (let index = 1; index < tokens.length; index += 1) {
-    const candidate = tokens.slice(1, index + 1).join(" ");
-    const parsed = parseToJid(candidate);
-    if (parsed) {
-      targetJid = parsed;
-      consumedTokens = index;
-    }
-  }
-
-  return {
-    targetJid,
-    rest: tokens.slice(consumedTokens + 1).join(" "),
-    parseFailed: tokens.length > 1 && !targetJid,
+    rest: rest.trim(),
+    parseFailed: parsed.parseFailed,
   };
 };
 
@@ -331,44 +334,57 @@ const previewWarningText = (reason: DisallowedUrlReason): string => {
   return `Hey @name - only social media profile links or music links are allowed in this group. If you're sharing an event, please use fete.outofofficecollective.co.uk 🙏`;
 };
 
-const sendInvalidNumber = async (sock: WASocket, destinationJid: string): Promise<void> => {
-  await sock.sendMessage(destinationJid, { text: INVALID_NUMBER_MESSAGE });
+const sendInvalidIdentifier = async (sock: WASocket, destinationJid: string): Promise<void> => {
+  await sock.sendMessage(destinationJid, { text: INVALID_IDENTIFIER_MESSAGE });
+};
+
+const resolveGroupTargets = (
+  requestedGroupJid: string | null,
+  config: Config,
+  groups: ReadonlyMap<string, string> | ReadonlyMap<string, GroupMetadata>,
+): { groupJids: string[]; invalid: boolean } => {
+  const managedGroupJids = getManagedGroupJids(config, groups);
+  if (!requestedGroupJid) {
+    return { groupJids: managedGroupJids, invalid: false };
+  }
+
+  if (!managedGroupJids.includes(requestedGroupJid)) {
+    return { groupJids: [], invalid: true };
+  }
+
+  return { groupJids: [requestedGroupJid], invalid: false };
 };
 
 const ensureAllowedGroup = async (
   sock: WASocket,
-  senderJid: string,
+  replyJid: string,
   groupJid: string,
   config: Config,
 ): Promise<boolean> => {
-  if (config.allowedGroupJids.length === 0) {
+  if (config.allowedGroupJids.length === 0 || config.allowedGroupJids.includes(groupJid)) {
     return true;
   }
 
-  if (!config.allowedGroupJids.includes(groupJid)) {
-    await sock.sendMessage(senderJid, {
-      text: `❌ ${groupJid} is not one of this bot's managed groups.`,
-    });
-    return false;
-  }
-
-  return true;
+  await sock.sendMessage(replyJid, {
+    text: `❌ ${groupJid} is not one of this bot's managed groups.`,
+  });
+  return false;
 };
 
-const ensureTargetNotAuthorised = async (
+const ensureTargetNotProtected = async (
   sock: WASocket,
-  senderJid: string,
-  targetJid: string,
+  destinationJid: string,
+  target: ResolvedUser,
   groupJid: string,
   config: Config,
   groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
-  action: "ban" | "mute" | "strike",
+  action: "ban" | "mute" | "strike" | "remove",
 ): Promise<boolean> => {
-  if (!isProtectedGroupMember([targetJid], groupJid, config, groupMetadataByJid)) {
+  if (!isProtectedGroupMember(target.userId, target.knownAliases, groupJid, config, groupMetadataByJid)) {
     return true;
   }
 
-  await sock.sendMessage(senderJid, {
+  await sock.sendMessage(destinationJid, {
     text: `❌ Can't ${action} an owner, moderator, or group admin.`,
   });
   return false;
@@ -376,16 +392,16 @@ const ensureTargetNotAuthorised = async (
 
 const ensureTargetNotProtectedAcrossGroups = async (
   sock: WASocket,
-  senderJid: string,
-  targetJid: string,
+  destinationJid: string,
+  target: ResolvedUser,
   groupJids: readonly string[],
   config: Config,
   groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
   groups: Map<string, string>,
-  action: "ban" | "mute" | "strike",
+  action: "ban" | "mute" | "strike" | "remove",
 ): Promise<boolean> => {
   const protectedGroupJids = groupJids.filter((groupJid) =>
-    isProtectedGroupMember([targetJid], groupJid, config, groupMetadataByJid),
+    isProtectedGroupMember(target.userId, target.knownAliases, groupJid, config, groupMetadataByJid),
   );
 
   if (protectedGroupJids.length === 0) {
@@ -397,61 +413,63 @@ const ensureTargetNotProtectedAcrossGroups = async (
       ? formatGroupName(protectedGroupJids[0] ?? "", groups)
       : formatGroupScope(protectedGroupJids, groups);
 
-  await sock.sendMessage(senderJid, {
+  await sock.sendMessage(destinationJid, {
     text: `❌ Can't ${action} an owner, moderator, or group admin in ${scope}.`,
   });
   return false;
 };
 
-const recordUndoAction = (actorJid: string, action: UndoableAction): void => {
-  undoableActions.set(actorJid, action);
+const recordUndoAction = (actorUserId: string, action: UndoableAction): void => {
+  undoableActions.set(actorUserId, action);
 };
 
-const consumeUndoAction = (actorJid: string): UndoableAction | null => {
-  const action = undoableActions.get(actorJid);
+const consumeUndoAction = (actorUserId: string): UndoableAction | null => {
+  const action = undoableActions.get(actorUserId);
   if (!action) {
     return null;
   }
 
   if (Date.now() > action.expiresAt) {
-    undoableActions.delete(actorJid);
+    undoableActions.delete(actorUserId);
     return null;
   }
 
-  undoableActions.delete(actorJid);
+  undoableActions.delete(actorUserId);
   return action;
 };
 
-const checkDestructiveCommandRateLimit = (actorJid: string): boolean => {
+const checkDestructiveCommandRateLimit = (actorUserId: string): boolean => {
   const now = Date.now();
-  const timestamps = (destructiveCommandTimestamps.get(actorJid) ?? []).filter(
+  const timestamps = (destructiveCommandTimestamps.get(actorUserId) ?? []).filter(
     (timestamp) => now - timestamp < 60 * 1000,
   );
 
   if (timestamps.length >= 10) {
-    destructiveCommandTimestamps.set(actorJid, timestamps);
+    destructiveCommandTimestamps.set(actorUserId, timestamps);
     return false;
   }
 
   timestamps.push(now);
-  destructiveCommandTimestamps.set(actorJid, timestamps);
+  destructiveCommandTimestamps.set(actorUserId, timestamps);
   return true;
 };
 
 const logAudit = (
-  actorJid: string,
-  actorRole: "owner" | "moderator",
+  actor: ActorContext,
   command: string,
+  targetUserId: string | null,
   targetJid: string | null,
   groupJid: string | null,
   rawInput: string,
-  result: "success" | "error" | "pending",
+  result: AuditResult,
 ): void => {
   logAuditEntry({
     timestamp: new Date().toISOString(),
-    actorJid,
-    actorRole,
+    actorUserId: actor.userId,
+    actorJid: actor.participantJid,
+    actorRole: actor.actorRole,
     command,
+    targetUserId,
     targetJid,
     groupJid,
     rawInput,
@@ -459,130 +477,167 @@ const logAudit = (
   });
 };
 
+const resolveIdentifierTarget = async (
+  identifier: string,
+  selfJids: ReadonlySet<string>,
+): Promise<ResolvedUser | null> => resolveTargetFromIdentifier(identifier, selfJids);
+
+const resolveQuotedTarget = async (
+  quotedParticipant: string,
+  groupJid: string,
+  groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
+  selfJids: ReadonlySet<string>,
+): Promise<ResolvedUser | null> =>
+  resolveParticipantTarget(
+    quotedParticipant,
+    groupMetadataByJid.get(groupJid),
+    selfJids,
+  );
+
+const buildWhoisText = (summary: ReturnType<typeof describeUser>): string => {
+  if (!summary) {
+    return "No user found for that identifier.";
+  }
+
+  const aliasLines =
+    summary.aliases.length > 0
+      ? summary.aliases.map((alias) => {
+          const label = alias.alias.includes("@") ? formatJidForDisplay(alias.alias) : alias.alias;
+          return `• ${alias.aliasType}: ${label} (${alias.alias})`;
+        })
+      : ["• none"];
+  const mergeLines =
+    summary.mergeHistory.length > 0
+      ? summary.mergeHistory.map(
+          (entry) =>
+            `• ${entry.reason} | ${new Date(entry.mergedAt).toLocaleString("en-GB", {
+              dateStyle: "medium",
+              timeStyle: "short",
+            })} | survivor ${entry.survivorUserId} | merged ${entry.mergedUserId}`,
+        )
+      : ["• none"];
+
+  return `User summary
+
+Name: ${summary.displayName ?? "unknown"}
+User ID: ${summary.userId}
+Short ID: ${summary.shortId}
+Created: ${new Date(summary.createdAt).toLocaleString("en-GB", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  })}
+Merged into: ${summary.mergedInto ?? "active"}
+
+Aliases:
+${aliasLines.join("\n")}
+
+Merge history:
+${mergeLines.join("\n")}`;
+};
+
 async function handleBanCommand(
   sock: WASocket,
-  senderJid: string,
-  targetJid: string,
+  actor: ActorContext,
+  destinationJid: string,
+  target: ResolvedUser,
   groupJid: string,
   reason: string,
   config: Config,
   groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
-  lidJid: string | null = null,
 ): Promise<void> {
-  if (!(await ensureAllowedGroup(sock, senderJid, groupJid, config))) {
+  if (!(await ensureAllowedGroup(sock, destinationJid, groupJid, config))) {
     return;
   }
 
-  if (
-    !(await ensureTargetNotAuthorised(
-      sock,
-      senderJid,
-      targetJid,
-      groupJid,
-      config,
-      groupMetadataByJid,
-      "ban",
-    ))
-  ) {
+  if (!(await ensureTargetNotProtected(sock, destinationJid, target, groupJid, config, groupMetadataByJid, "ban"))) {
     return;
   }
 
-  addBan(targetJid, groupJid, senderJid, reason || undefined, lidJid);
-  clearReviewQueueEntry(targetJid, groupJid);
-  recordUndoAction(senderJid, {
+  addBan(target.userId, groupJid, getActorReference(actor), reason || undefined);
+  clearReviewQueueEntry(target.userId, groupJid);
+  recordUndoAction(actor.userId, {
     type: "ban",
-    targetJid,
-    groupJids: [groupJid],
+    targetUserId: target.userId,
     scopeLabel: groupJid,
     expiresAt: Date.now() + 5 * 60 * 1000,
     undo: async () => {
-      removeBan(targetJid, groupJid);
+      removeBan(target.userId, groupJid);
     },
   });
 
-  try {
-    await sock.groupParticipantsUpdate(groupJid, [lidJid ?? targetJid], "remove");
-    await sock.sendMessage(senderJid, {
-      text: `✅ Banned and removed ${formatPersonDisplay(targetJid)} from ${groupJid}
+  const liveParticipantJid = findParticipantJidForUser(target.userId, groupMetadataByJid.get(groupJid));
+  if (liveParticipantJid) {
+    try {
+      await sock.groupParticipantsUpdate(groupJid, [liveParticipantJid], "remove");
+      await sock.sendMessage(destinationJid, {
+        text: `✅ Banned and removed ${formatUserSummary(target)} from ${groupJid}
 Reason: ${formatReason(reason)}
 They will be auto-removed if they try to rejoin.`,
-    });
-  } catch {
-    await sock.sendMessage(senderJid, {
-      text: `✅ Ban saved for ${formatPersonDisplay(targetJid)} in ${groupJid}
-(They weren't in the group — ban is active for if they rejoin)`,
-    });
+      });
+      return;
+    } catch {
+      // Fall through to the saved-ban message.
+    }
   }
+
+  await sock.sendMessage(destinationJid, {
+    text: `✅ Ban saved for ${formatUserSummary(target)} in ${groupJid}
+(They weren't in the group — ban is active for if they rejoin)`,
+  });
 }
 
 async function handleMuteCommand(
   sock: WASocket,
-  senderJid: string,
-  targetJid: string,
+  actor: ActorContext,
+  destinationJid: string,
+  target: ResolvedUser,
   groupJid: string,
   durationInput: string | undefined,
   config: Config,
   groups: Map<string, string>,
   groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
-  lidJid: string | null = null,
 ): Promise<void> {
-  if (!(await ensureAllowedGroup(sock, senderJid, groupJid, config))) {
+  if (!(await ensureAllowedGroup(sock, destinationJid, groupJid, config))) {
     return;
   }
 
-  if (
-    !(await ensureTargetNotAuthorised(
-      sock,
-      senderJid,
-      targetJid,
-      groupJid,
-      config,
-      groupMetadataByJid,
-      "mute",
-    ))
-  ) {
+  if (!(await ensureTargetNotProtected(sock, destinationJid, target, groupJid, config, groupMetadataByJid, "mute"))) {
     return;
   }
 
   const expiresAt = parseDuration(durationInput);
-  addMute(targetJid, groupJid, senderJid, expiresAt, undefined, lidJid);
-  recordUndoAction(senderJid, {
+  addMute(target.userId, groupJid, getActorReference(actor), expiresAt, undefined);
+  recordUndoAction(actor.userId, {
     type: "mute",
-    targetJid,
-    groupJids: [groupJid],
+    targetUserId: target.userId,
     scopeLabel: formatGroupName(groupJid, groups),
     expiresAt: Date.now() + 5 * 60 * 1000,
     undo: async () => {
-      removeMute(targetJid, groupJid);
+      removeMute(target.userId, groupJid);
     },
   });
 
-  if (expiresAt) {
-    await sock.sendMessage(senderJid, {
-      text: `🔇 Muted ${formatPersonDisplay(targetJid)} in ${formatGroupName(groupJid, groups)}
-Duration: ${formatDurationLabel(durationInput)}
-Expires: ${formatDate(expiresAt.toISOString())}
-Reason: none given
+  const headline = expiresAt ? `🔇 Muted ${formatUserSummary(target)} in ${formatGroupName(groupJid, groups)}` : `🔇 Permanently muted ${formatUserSummary(target)} in ${formatGroupName(groupJid, groups)}`;
+  const detailLines = expiresAt
+    ? [
+        `Duration: ${formatDurationLabel(durationInput)}`,
+        `Expires: ${formatDate(expiresAt.toISOString())}`,
+      ]
+    : [];
 
-Their messages will be silently deleted until then.
-Use !unmute ${formatCommandTarget(targetJid)} ${groupJid} to lift early.`,
-    });
-    return;
-  }
+  await sock.sendMessage(destinationJid, {
+    text: `${headline}
+${detailLines.join("\n")}${detailLines.length > 0 ? "\n" : ""}Reason: none given
 
-  await sock.sendMessage(senderJid, {
-    text: `🔇 Permanently muted ${formatPersonDisplay(targetJid)} in ${formatGroupName(groupJid, groups)}
-Reason: none given
-
-Their messages will be silently deleted indefinitely.
-Use !unmute ${formatCommandTarget(targetJid)} ${groupJid} to lift.`,
+Their messages will be silently deleted until lifted.`,
   });
 }
 
 async function handleStrikeCommand(
   sock: WASocket,
-  replyJid: string,
-  targetJid: string,
+  actor: ActorContext,
+  destinationJid: string,
+  target: ResolvedUser,
   groupJid: string,
   reason: string,
   config: Config,
@@ -592,43 +647,32 @@ async function handleStrikeCommand(
     return;
   }
 
-  if (
-    !(await ensureTargetNotAuthorised(
-      sock,
-      replyJid,
-      targetJid,
-      groupJid,
-      config,
-      groupMetadataByJid,
-      "strike",
-    ))
-  ) {
+  if (!(await ensureTargetNotProtected(sock, destinationJid, target, groupJid, config, groupMetadataByJid, "strike"))) {
     return;
   }
 
-  const count = addStrike(targetJid, groupJid, reason || "manual strike");
-  recordUndoAction(replyJid, {
+  const count = addStrike(target.userId, groupJid, reason || "manual strike", randomUUID());
+  recordUndoAction(actor.userId, {
     type: "strike",
-    targetJid,
-    groupJids: [groupJid],
+    targetUserId: target.userId,
     scopeLabel: groupJid,
     expiresAt: Date.now() + 5 * 60 * 1000,
     undo: async () => {
-      removeLatestStrike(targetJid, groupJid);
+      removeLatestStrike(target.userId, groupJid);
     },
   });
 
-  await sock.sendMessage(groupJid, {
-    text: `⚠️ Added a strike for ${formatPersonDisplay(targetJid)}. Active strikes in this group: ${count}`,
+  await sock.sendMessage(destinationJid, {
+    text: `⚠️ Added a strike for ${formatUserSummary(target)}. Active strikes in this group: ${count}`,
   });
 }
 
 async function handleUndoCommand(
   sock: WASocket,
   destinationJid: string,
-  actorJid: string,
+  actor: ActorContext,
 ): Promise<void> {
-  const action = consumeUndoAction(actorJid);
+  const action = consumeUndoAction(actor.userId);
   if (!action) {
     await sock.sendMessage(destinationJid, {
       text: "❌ Nothing to undo, or the undo window has expired.",
@@ -638,26 +682,35 @@ async function handleUndoCommand(
 
   await action.undo();
   await sock.sendMessage(destinationJid, {
-    text: `✅ Undid ${action.type} for ${formatPersonDisplay(action.targetJid)} in ${action.scopeLabel}`,
+    text: `✅ Undid ${action.type} for ${formatUserById(action.targetUserId)} in ${action.scopeLabel}`,
   });
 }
 
+const buildReviewText = (entry: ReviewQueueEntry, groups: Map<string, string>): string =>
+  `${formatUserById(entry.userId, entry.pushName)}
+   User: ${formatUserById(entry.userId, entry.pushName)}
+   Group: ${formatGroupName(entry.groupJid, groups)} (${entry.groupJid})
+   Last offence: ${entry.reason}
+   Last message: ${entry.messageText?.trim() || "(no message text recorded)"}
+   Active strikes: ${getActiveStrikes(entry.userId, entry.groupJid)}
+   Currently muted: ${isMuted(entry.userId, entry.groupJid) ? "yes" : "no"}
+   Flagged: ${entry.flaggedAt}`;
+
 export async function handleGroupCommand(
   sock: WASocket,
-  actorCandidateJids: readonly string[],
+  actor: ResolvedUser,
   groupJid: string,
   text: string,
   quotedParticipant: string | null,
   config: Config,
   groups: Map<string, string>,
   groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
+  selfJids: ReadonlySet<string>,
 ): Promise<boolean> {
-  const actorIdentity = getActorIdentity(actorCandidateJids, config);
-  if (!actorIdentity) {
+  const actorContext = getActorContext(actor, config);
+  if (!actorContext) {
     return false;
   }
-
-  const { actorJid: senderJid, actorRole } = actorIdentity;
 
   const command = normaliseCommand(text).split(/\s+/)[0] ?? "";
   if (!command.startsWith("!")) {
@@ -665,16 +718,16 @@ export async function handleGroupCommand(
   }
 
   if (command === "!undo") {
-    await handleUndoCommand(sock, groupJid, senderJid);
-    logAudit(senderJid, actorRole, command, null, groupJid, text, "success");
+    await handleUndoCommand(sock, groupJid, actorContext);
+    logAudit(actorContext, command, null, null, groupJid, text, "success");
     return true;
   }
 
   if (command === "!help") {
-    await sock.sendMessage(senderJid, {
-      text: actorRole === "owner" ? `${HELP_MESSAGE}${OWNER_HELP_BLOCK}` : HELP_MESSAGE,
+    await sock.sendMessage(actorContext.participantJid ?? groupJid, {
+      text: actorContext.actorRole === "owner" ? `${HELP_MESSAGE}${OWNER_HELP_BLOCK}` : HELP_MESSAGE,
     });
-    logAudit(senderJid, actorRole, command, null, groupJid, text, "success");
+    logAudit(actorContext, command, null, null, groupJid, text, "success");
     return true;
   }
 
@@ -682,13 +735,20 @@ export async function handleGroupCommand(
     return false;
   }
 
+  const target = await resolveQuotedTarget(quotedParticipant, groupJid, groupMetadataByJid, selfJids);
+  if (!target) {
+    await sendInvalidIdentifier(sock, groupJid);
+    logAudit(actorContext, command, null, quotedParticipant, groupJid, text, "error");
+    return true;
+  }
+
   const rest = text.trim().split(/\s+/).slice(1).join(" ").trim();
 
-  if (["!ban", "!mute", "!strike"].includes(command) && !checkDestructiveCommandRateLimit(senderJid)) {
+  if (["!ban", "!mute", "!strike"].includes(command) && !checkDestructiveCommandRateLimit(actorContext.userId)) {
     await sock.sendMessage(groupJid, {
       text: "Slow down — you've run 10 commands in the last minute. Try again shortly.",
     });
-    logAudit(senderJid, actorRole, command, quotedParticipant, groupJid, text, "error");
+    logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "error");
     return true;
   }
 
@@ -696,84 +756,83 @@ export async function handleGroupCommand(
     const durationToken = rest.split(/\s+/)[0];
     await handleMuteCommand(
       sock,
-      senderJid,
-      quotedParticipant,
+      actorContext,
+      groupJid,
+      target,
       groupJid,
       durationToken || undefined,
       config,
       groups,
       groupMetadataByJid,
-      quotedParticipant.endsWith("@lid") ? quotedParticipant : null,
     );
-    logAudit(senderJid, actorRole, command, quotedParticipant, groupJid, text, "success");
+    logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "success");
     return true;
   }
 
   if (command === "!unmute") {
-    removeMute(quotedParticipant, groupJid);
+    removeMute(target.userId, groupJid);
     await sock.sendMessage(groupJid, {
-      text: `🔊 Unmuted ${formatPersonDisplay(quotedParticipant)} in ${formatGroupName(groupJid, groups)}
+      text: `🔊 Unmuted ${formatUserSummary(target)} in ${formatGroupName(groupJid, groups)}
 They can now send messages again.`,
     });
-    logAudit(senderJid, actorRole, command, quotedParticipant, groupJid, text, "success");
+    logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "success");
     return true;
   }
 
   if (command === "!ban") {
     await handleBanCommand(
       sock,
-      senderJid,
-      quotedParticipant,
+      actorContext,
+      groupJid,
+      target,
       groupJid,
       rest,
       config,
       groupMetadataByJid,
-      quotedParticipant.endsWith("@lid") ? quotedParticipant : null,
     );
-    logAudit(senderJid, actorRole, command, quotedParticipant, groupJid, text, "success");
+    logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "success");
     return true;
   }
 
   if (command === "!strike") {
     await handleStrikeCommand(
       sock,
-      senderJid,
-      quotedParticipant,
+      actorContext,
+      groupJid,
+      target,
       groupJid,
       rest,
       config,
       groupMetadataByJid,
     );
-    logAudit(senderJid, actorRole, command, quotedParticipant, groupJid, text, "success");
+    logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "success");
     return true;
   }
 
-  if (command === "!pardon") {
-    resetStrikes(quotedParticipant, groupJid);
-    clearReviewQueueEntry(quotedParticipant, groupJid);
+  if (command === "!pardon" || command === "!resetstrikes") {
+    resetStrikes(target.userId, groupJid);
+    clearReviewQueueEntry(target.userId, groupJid);
     await sock.sendMessage(groupJid, {
-      text: `✅ Strikes cleared for ${formatPersonDisplay(quotedParticipant)}`,
+      text: `✅ Strikes cleared for ${formatUserSummary(target)}`,
     });
-    logAudit(senderJid, actorRole, command, quotedParticipant, groupJid, text, "success");
-    return true;
-  }
-
-  if (command === "!resetstrikes") {
-    resetStrikes(quotedParticipant, groupJid);
-    clearReviewQueueEntry(quotedParticipant, groupJid);
-    await sock.sendMessage(groupJid, {
-      text: `✅ Strikes reset for ${formatPersonDisplay(quotedParticipant)}`,
-    });
-    logAudit(senderJid, actorRole, command, quotedParticipant, groupJid, text, "success");
+    logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "success");
     return true;
   }
 
   if (command === "!strikes") {
-    const count = getActiveStrikes(quotedParticipant, groupJid);
+    const count = getActiveStrikes(target.userId, groupJid);
     await sock.sendMessage(groupJid, {
-      text: `Strikes for ${formatPersonDisplay(quotedParticipant)} in ${formatGroupName(groupJid, groups)}: ${count}`,
+      text: `Strikes for ${formatUserSummary(target)} in ${formatGroupName(groupJid, groups)}: ${count}`,
     });
-    logAudit(senderJid, actorRole, command, quotedParticipant, groupJid, text, "success");
+    logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "success");
+    return true;
+  }
+
+  if (command === "!whois") {
+    await sock.sendMessage(groupJid, {
+      text: buildWhoisText(describeUser(target.userId)),
+    });
+    logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "success");
     return true;
   }
 
@@ -782,44 +841,43 @@ They can now send messages again.`,
 
 export async function handleAuthorisedCommand(
   sock: WASocket,
-  actorCandidateJids: readonly string[],
+  actor: ResolvedUser,
   text: string,
   config: Config,
   groups: Map<string, string>,
   groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
+  selfJids: ReadonlySet<string>,
 ): Promise<void> {
-  const actorIdentity = getActorIdentity(actorCandidateJids, config);
-  if (!actorIdentity) {
+  const actorContext = getActorContext(actor, config);
+  if (!actorContext) {
     return;
   }
 
-  const { actorJid: senderJid, actorRole } = actorIdentity;
+  const replyJid = actorContext.participantJid ?? actor.userId;
   const command = normaliseCommand(text);
 
   if (command === "!help") {
-    await sock.sendMessage(senderJid, {
-      text: actorRole === "owner" ? `${HELP_MESSAGE}${OWNER_HELP_BLOCK}` : HELP_MESSAGE,
+    await sock.sendMessage(replyJid, {
+      text: actorContext.actorRole === "owner" ? `${HELP_MESSAGE}${OWNER_HELP_BLOCK}` : HELP_MESSAGE,
     });
-    logAudit(senderJid, actorRole, "!help", null, null, text, "success");
+    logAudit(actorContext, "!help", null, null, null, text, "success");
     return;
   }
 
   if (command === "!undo") {
-    await handleUndoCommand(sock, senderJid, senderJid);
-    logAudit(senderJid, actorRole, "!undo", null, null, text, "success");
+    await handleUndoCommand(sock, replyJid, actorContext);
+    logAudit(actorContext, "!undo", null, null, null, text, "success");
     return;
   }
 
   if (command === "!status") {
-    const dbModerators = listModerators();
+    const moderators = listModerators();
     const managedGroupJids = getManagedGroupJids(config, groups);
-    const configuredGroups = managedGroupJids.map((jid) => {
-      const subject = groups.get(jid) ?? "Unknown Group";
-      return `• ${subject} (${jid})`;
-    });
+    const configuredGroups = managedGroupJids.map((jid) => `• ${formatGroupName(jid, groups)} (${jid})`);
     const groupSource = config.allowedGroupJids.length > 0 ? "config allowlist" : "joined groups";
 
-    const statusMessage = `Fete Bot Status 🤖
+    await sock.sendMessage(replyJid, {
+      text: `Fete Bot Status
 
 Version: ${VERSION}
 Started: ${STARTED_AT}
@@ -830,42 +888,25 @@ ${configuredGroups.length > 0 ? configuredGroups.join("\n") : "• None configur
 
 Watching ${managedGroupJids.length} group JIDs from ${groupSource}.
 Owners: ${config.ownerJids.length} configured.
-Moderators: ${dbModerators.length} configured.
+Moderators: ${moderators.length} configured.
 Strikes issued today: ${getStrikesIssuedToday()}
 Total active strikes: ${getTotalActiveStrikes()}
 Total active bans: ${getTotalActiveBans()}
 Total active mutes: ${getTotalActiveMutes()}
-Forwarded messages seen today: ${getForwardedMessagesSeenToday()}`;
-
-    await sock.sendMessage(senderJid, { text: statusMessage });
-    logAudit(senderJid, actorRole, "!status", null, null, text, "success");
+Forwarded messages seen today: ${getForwardedMessagesSeenToday()}`,
+    });
+    logAudit(actorContext, "!status", null, null, null, text, "success");
     return;
   }
 
   if (command === "!reviews") {
     const entries = listReviewQueueEntries();
-    if (entries.length === 0) {
-      await sock.sendMessage(senderJid, { text: "No pending review items right now." });
-      logAudit(senderJid, actorRole, "!reviews", null, null, text, "success");
-      return;
-    }
-
-    const lines = entries.map(
-      (entry, index) =>
-        `${index + 1}. ${formatPersonDisplay(entry.userJid, entry.pushName)}
-   User: ${formatPersonDisplay(entry.userJid, entry.pushName)}
-   Group: ${formatGroupName(entry.groupJid, groups)} (${entry.groupJid})
-   Last offence: ${entry.reason}
-   Last message: ${entry.messageText?.trim() || "(no message text recorded)"}
-   Active strikes: ${getActiveStrikes(entry.userJid, entry.groupJid)}
-   Currently muted: ${isMuted(entry.userJid, entry.groupJid) ? "yes" : "no"}
-   Flagged: ${entry.flaggedAt}`,
-    );
-
-    await sock.sendMessage(senderJid, {
-      text: `Pending review queue:\n\n${lines.join("\n\n")}`,
+    await sock.sendMessage(replyJid, {
+      text: entries.length > 0
+        ? `Pending review queue:\n\n${entries.map((entry, index) => `${index + 1}. ${buildReviewText(entry, groups)}`).join("\n\n")}`
+        : "No pending review items right now.",
     });
-    logAudit(senderJid, actorRole, "!reviews", null, null, text, "success");
+    logAudit(actorContext, "!reviews", null, null, null, text, "success");
     return;
   }
 
@@ -877,86 +918,100 @@ Forwarded messages seen today: ${getForwardedMessagesSeenToday()}`;
         ? entries.map(
             (entry, index) =>
               `${index + 1}. ${entry.timestamp} ${entry.command} [${entry.result}]
-   Actor: ${formatPersonDisplay(entry.actorJid)} (${entry.actorRole})
-   Target: ${entry.targetJid ? formatPersonDisplay(entry.targetJid) : "n/a"}
+   Actor: ${entry.actorUserId ? formatUserById(entry.actorUserId) : entry.actorJid ?? "n/a"} (${entry.actorRole})
+   Target: ${entry.targetUserId ? formatUserById(entry.targetUserId) : entry.targetJid ?? "n/a"}
    Group: ${entry.groupJid ?? "n/a"}
    Input: ${entry.rawInput ?? ""}`,
           )
         : ["No audit entries found."];
-    await sock.sendMessage(senderJid, { text: lines.join("\n\n") });
-    logAudit(senderJid, actorRole, "!audit", null, null, text, "success");
+    await sock.sendMessage(replyJid, { text: lines.join("\n\n") });
+    logAudit(actorContext, "!audit", null, null, null, text, "success");
     return;
   }
 
   if (command.startsWith("!test ")) {
     const candidate = text.trim().slice("!test".length).trim();
     const result = containsDisallowedUrl(candidate);
-    const response = result.found && result.reason
-      ? `❌ Would block (reason: ${result.reason})
-Would send: "${previewWarningText(result.reason)}"`
-      : "✅ Would allow";
-    await sock.sendMessage(senderJid, { text: response });
-    logAudit(senderJid, actorRole, "!test", null, null, text, "success");
+    await sock.sendMessage(replyJid, {
+      text: result.found && result.reason
+        ? `❌ Would block (reason: ${result.reason})\nWould send: "${previewWarningText(result.reason)}"`
+        : "✅ Would allow",
+    });
+    logAudit(actorContext, "!test", null, null, null, text, "success");
     return;
   }
 
   if (command === "!test") {
-    await sock.sendMessage(senderJid, { text: "Usage: !test {url}" });
-    logAudit(senderJid, actorRole, "!test", null, null, text, "error");
+    await sock.sendMessage(replyJid, { text: "Usage: !test {url}" });
+    logAudit(actorContext, "!test", null, null, null, text, "error");
     return;
   }
 
   if (command.startsWith("!addmod")) {
-    if (!isOwner(senderJid, config)) {
-      await sock.sendMessage(senderJid, { text: "❌ Only owners can add moderators." });
-      logAudit(senderJid, actorRole, "!addmod", null, null, text, "error");
+    if (actorContext.actorRole !== "owner") {
+      await sock.sendMessage(replyJid, { text: "❌ Only owners can add moderators." });
+      logAudit(actorContext, "!addmod", null, null, null, text, "error");
       return;
     }
 
-    const parsed = parseDirectTargetAndRest(text);
-    const targetJid = parsed.targetJid;
-    if (!targetJid) {
-      await sendInvalidNumber(sock, senderJid);
-      logAudit(senderJid, actorRole, "!addmod", null, null, text, "error");
+    const parsed = parseTargetSpecifier(text);
+    if (!parsed.targetIdentifier) {
+      await sendInvalidIdentifier(sock, replyJid);
+      logAudit(actorContext, "!addmod", null, null, null, text, "error");
       return;
     }
 
-    addModerator(targetJid, senderJid, parsed.rest || undefined);
-    await sock.sendMessage(senderJid, {
-      text: `✅ Added ${formatPersonDisplay(targetJid)} as moderator
+    const target = await resolveIdentifierTarget(parsed.targetIdentifier, selfJids);
+    if (!target) {
+      await sendInvalidIdentifier(sock, replyJid);
+      logAudit(actorContext, "!addmod", null, null, null, text, "error");
+      return;
+    }
+
+    addModerator(target.userId, getActorReference(actorContext), parsed.rest || undefined);
+    await sock.sendMessage(replyJid, {
+      text: `✅ Added ${formatUserSummary(target)} as moderator
 Note: ${parsed.rest.trim() || "none"}
 They can now use all moderation commands.`,
     });
-    logAudit(senderJid, actorRole, "!addmod", targetJid, null, text, "success");
+    logAudit(actorContext, "!addmod", target.userId, target.participantJid, null, text, "success");
     return;
   }
 
   if (command.startsWith("!removemod")) {
-    if (!isOwner(senderJid, config)) {
-      await sock.sendMessage(senderJid, { text: "❌ Only owners can remove moderators." });
-      logAudit(senderJid, actorRole, "!removemod", null, null, text, "error");
+    if (actorContext.actorRole !== "owner") {
+      await sock.sendMessage(replyJid, { text: "❌ Only owners can remove moderators." });
+      logAudit(actorContext, "!removemod", null, null, null, text, "error");
       return;
     }
 
-    const parsed = parseDirectTargetAndRest(text);
-    const targetJid = parsed.targetJid;
-    if (!targetJid) {
-      await sendInvalidNumber(sock, senderJid);
-      logAudit(senderJid, actorRole, "!removemod", null, null, text, "error");
+    const parsed = parseTargetSpecifier(text);
+    if (!parsed.targetIdentifier) {
+      await sendInvalidIdentifier(sock, replyJid);
+      logAudit(actorContext, "!removemod", null, null, null, text, "error");
       return;
     }
 
-    if (config.ownerJids.includes(targetJid)) {
-      await sock.sendMessage(senderJid, {
+    const target = await resolveIdentifierTarget(parsed.targetIdentifier, selfJids);
+    if (!target) {
+      await sendInvalidIdentifier(sock, replyJid);
+      logAudit(actorContext, "!removemod", null, null, null, text, "error");
+      return;
+    }
+
+    if (target.knownAliases.some((alias) => config.ownerJids.includes(alias))) {
+      await sock.sendMessage(replyJid, {
         text: "❌ Can't remove an owner via commands. Change OWNER_JIDS and redeploy instead.",
       });
-      logAudit(senderJid, actorRole, "!removemod", targetJid, null, text, "error");
+      logAudit(actorContext, "!removemod", target.userId, target.participantJid, null, text, "error");
       return;
     }
 
-    removeModerator(targetJid);
-    await sock.sendMessage(senderJid, { text: `✅ Removed ${formatPersonDisplay(targetJid)} as moderator` });
-    logAudit(senderJid, actorRole, "!removemod", targetJid, null, text, "success");
+    removeModerator(target.userId);
+    await sock.sendMessage(replyJid, {
+      text: `✅ Removed ${formatUserSummary(target)} as moderator`,
+    });
+    logAudit(actorContext, "!removemod", target.userId, target.participantJid, null, text, "success");
     return;
   }
 
@@ -964,20 +1019,21 @@ They can now use all moderation commands.`,
     const moderators = listModerators();
     const ownerLines =
       config.ownerJids.length > 0
-        ? config.ownerJids.map((jid) => `• ${formatPersonDisplay(jid)}`)
+        ? config.ownerJids.map((jid) => `• ${formatJidForDisplay(jid)}`)
         : ["• None configured"];
     const moderatorLines =
       moderators.length > 0
         ? moderators.map(
             (moderator) =>
-              `• ${formatPersonDisplay(moderator.jid)} (added by ${formatPersonDisplay(
-                moderator.addedBy,
-              )}, note: "${moderator.note ?? "none"}")`,
+              `• ${formatUserById(moderator.userId)} (added by ${formatActorReference({
+                userId: moderator.addedByUserId,
+                label: moderator.addedByLabel,
+              })}, note: "${moderator.note ?? "none"}")`,
           )
         : ["• None"];
 
-    await sock.sendMessage(senderJid, {
-      text: `Fete Bot Moderators 🤖
+    await sock.sendMessage(replyJid, {
+      text: `Fete Bot Moderators
 
 Owners (config):
 ${ownerLines.join("\n")}
@@ -987,483 +1043,382 @@ ${moderatorLines.join("\n")}
 
 Total: ${config.ownerJids.length + moderators.length} authorised users`,
     });
-    logAudit(senderJid, actorRole, "!mods", null, null, text, "success");
+    logAudit(actorContext, "!mods", null, null, null, text, "success");
     return;
   }
 
   const parsed = parseCommandArgs(text);
 
   if (
-    ["!ban", "!mute", "!unban", "!unmute", "!strikes", "!pardon", "!resetstrikes", "!strike", "!remove"].includes(
+    ["!ban", "!mute", "!unban", "!unmute", "!strikes", "!pardon", "!resetstrikes", "!strike", "!remove", "!whois"].includes(
       parsed.command,
     ) &&
     parsed.parseFailed
   ) {
-    await sendInvalidNumber(sock, senderJid);
-    logAudit(senderJid, actorRole, parsed.command, null, parsed.groupJid, text, "error");
+    await sendInvalidIdentifier(sock, replyJid);
+    logAudit(actorContext, parsed.command, null, null, parsed.groupJid, text, "error");
     return;
   }
 
-  if (["!ban", "!mute", "!strike"].includes(parsed.command) && !checkDestructiveCommandRateLimit(senderJid)) {
-    await sock.sendMessage(senderJid, {
+  if (["!ban", "!mute", "!strike"].includes(parsed.command) && !checkDestructiveCommandRateLimit(actorContext.userId)) {
+    await sock.sendMessage(replyJid, {
       text: "Slow down — you've run 10 commands in the last minute. Try again shortly.",
     });
-    logAudit(senderJid, actorRole, parsed.command, parsed.targetJid, parsed.groupJid, text, "error");
+    logAudit(actorContext, parsed.command, null, null, parsed.groupJid, text, "error");
+    return;
+  }
+
+  if (parsed.command === "!whois") {
+    if (!parsed.targetIdentifier) {
+      await sock.sendMessage(replyJid, { text: "Usage: !whois {identifier}" });
+      logAudit(actorContext, parsed.command, null, null, null, text, "error");
+      return;
+    }
+
+    const found = findUserByIdentifier(parsed.targetIdentifier);
+    await sock.sendMessage(replyJid, {
+      text: buildWhoisText(found ? describeUser(found.userId) : null),
+    });
+    logAudit(actorContext, parsed.command, found?.userId ?? null, null, null, text, "success");
+    return;
+  }
+
+  const target = parsed.targetIdentifier ? await resolveIdentifierTarget(parsed.targetIdentifier, selfJids) : null;
+
+  if (
+    ["!remove", "!pardon", "!resetstrikes", "!strikes", "!ban", "!unban", "!mute", "!unmute", "!strike"].includes(parsed.command) &&
+    !target
+  ) {
+    await sendInvalidIdentifier(sock, replyJid);
+    logAudit(actorContext, parsed.command, null, null, parsed.groupJid, text, "error");
     return;
   }
 
   if (parsed.command === "!remove") {
-    const targetJid = parsed.targetJid;
     const { groupJids, invalid } = resolveGroupTargets(parsed.groupJid, config, groups);
-
-    if (!targetJid || groupJids.length === 0) {
-      await sock.sendMessage(
-        senderJid,
-        { text: invalid ? "❌ That group isn't one of this bot's managed groups." : "Usage: !remove {number} {groupJid?}" },
-      );
-      logAudit(senderJid, actorRole, parsed.command, targetJid, parsed.groupJid, text, "error");
-      return;
-    }
-
-    if (groupJids.some((groupJid) => isProtectedGroupMember([targetJid], groupJid, config, groupMetadataByJid))) {
-      await sock.sendMessage(senderJid, {
-        text: "❌ Can't remove an owner, moderator, or group admin.",
+    if (!target || groupJids.length === 0) {
+      await sock.sendMessage(replyJid, {
+        text: invalid ? "❌ That group isn't one of this bot's managed groups." : "Usage: !remove {identifier} {groupJid?}",
       });
-      logAudit(senderJid, actorRole, parsed.command, targetJid, parsed.groupJid, text, "error");
+      logAudit(actorContext, parsed.command, target?.userId ?? null, target?.participantJid ?? null, parsed.groupJid, text, "error");
       return;
     }
 
-    try {
-      const removedFromGroupJids: string[] = [];
-      for (const groupJid of groupJids) {
+    if (!(await ensureTargetNotProtectedAcrossGroups(sock, replyJid, target, groupJids, config, groupMetadataByJid, groups, "remove"))) {
+      logAudit(actorContext, parsed.command, target.userId, target.participantJid, parsed.groupJid, text, "error");
+      return;
+    }
+
+    const removedFromGroupJids: string[] = [];
+    for (const groupJid of groupJids) {
+      const liveParticipantJid = findParticipantJidForUser(target.userId, groupMetadataByJid.get(groupJid));
+      if (liveParticipantJid) {
         try {
-          await sock.groupParticipantsUpdate(groupJid, [targetJid], "remove");
+          await sock.groupParticipantsUpdate(groupJid, [liveParticipantJid], "remove");
           removedFromGroupJids.push(groupJid);
         } catch {
-          // Keep going so one missing-membership case doesn't block the rest.
+          // Keep clearing state even if the participant was not present.
         }
-        resetStrikes(targetJid, groupJid);
-        clearReviewQueueEntry(targetJid, groupJid);
       }
-      await sock.sendMessage(senderJid, {
-        text: `✅ Removed ${formatPersonDisplay(targetJid)} from ${formatGroupScope(groupJids, groups)}`,
-      });
-      for (const groupJid of removedFromGroupJids) {
-        await sock.sendMessage(groupJid, {
-          text: "A member has been removed for repeated violations.",
-        });
-      }
-      logAudit(senderJid, actorRole, parsed.command, targetJid, parsed.groupJid, text, "success");
-    } catch {
-      await sock.sendMessage(senderJid, {
-        text: "❌ Failed to remove user — make sure I'm an admin in that group",
-      });
-      logAudit(senderJid, actorRole, parsed.command, targetJid, parsed.groupJid, text, "error");
+
+      resetStrikes(target.userId, groupJid);
+      clearReviewQueueEntry(target.userId, groupJid);
     }
+
+    await sock.sendMessage(replyJid, {
+      text: `✅ Removed ${formatUserSummary(target)} from ${formatGroupScope(groupJids, groups)}`,
+    });
+    for (const groupJid of removedFromGroupJids) {
+      await sock.sendMessage(groupJid, {
+        text: "A member has been removed for repeated violations.",
+      });
+    }
+    logAudit(actorContext, parsed.command, target.userId, target.participantJid, parsed.groupJid, text, "success");
     return;
   }
 
-  if (parsed.command === "!pardon") {
-    const targetJid = parsed.targetJid;
+  if (parsed.command === "!pardon" || parsed.command === "!resetstrikes") {
     const { groupJids, invalid } = resolveGroupTargets(parsed.groupJid, config, groups);
-
-    if (!targetJid || groupJids.length === 0) {
-      await sock.sendMessage(
-        senderJid,
-        { text: invalid ? "❌ That group isn't one of this bot's managed groups." : "Usage: !pardon {number} {groupJid?}" },
-      );
-      logAudit(senderJid, actorRole, parsed.command, null, parsed.groupJid, text, "error");
+    if (!target || groupJids.length === 0) {
+      await sock.sendMessage(replyJid, {
+        text: invalid ? "❌ That group isn't one of this bot's managed groups." : `Usage: ${parsed.command} {identifier} {groupJid?}`,
+      });
+      logAudit(actorContext, parsed.command, target?.userId ?? null, target?.participantJid ?? null, parsed.groupJid, text, "error");
       return;
     }
 
     for (const groupJid of groupJids) {
-      resetStrikes(targetJid, groupJid);
-      clearReviewQueueEntry(targetJid, groupJid);
+      resetStrikes(target.userId, groupJid);
+      clearReviewQueueEntry(target.userId, groupJid);
     }
 
-    await sock.sendMessage(
-      senderJid,
-      { text: `✅ Strikes cleared for ${formatPersonDisplay(targetJid)} in ${formatGroupScope(groupJids, groups)}` },
-    );
-    logAudit(senderJid, actorRole, parsed.command, targetJid, parsed.groupJid, text, "success");
-    return;
-  }
-
-  if (parsed.command === "!resetstrikes") {
-    const targetJid = parsed.targetJid;
-    const { groupJids, invalid } = resolveGroupTargets(parsed.groupJid, config, groups);
-
-    if (!targetJid || groupJids.length === 0) {
-      await sock.sendMessage(
-        senderJid,
-        { text: invalid ? "❌ That group isn't one of this bot's managed groups." : "Usage: !resetstrikes {number} {groupJid?}" },
-      );
-      logAudit(senderJid, actorRole, parsed.command, null, parsed.groupJid, text, "error");
-      return;
-    }
-
-    for (const groupJid of groupJids) {
-      resetStrikes(targetJid, groupJid);
-      clearReviewQueueEntry(targetJid, groupJid);
-    }
-
-    await sock.sendMessage(
-      senderJid,
-      { text: `✅ Strikes reset for ${formatPersonDisplay(targetJid)} in ${formatGroupScope(groupJids, groups)}` },
-    );
-    logAudit(senderJid, actorRole, parsed.command, targetJid, parsed.groupJid, text, "success");
+    await sock.sendMessage(replyJid, {
+      text: `✅ Strikes cleared for ${formatUserSummary(target)} in ${formatGroupScope(groupJids, groups)}`,
+    });
+    logAudit(actorContext, parsed.command, target.userId, target.participantJid, parsed.groupJid, text, "success");
     return;
   }
 
   if (parsed.command === "!strikes") {
-    const targetJid = parsed.targetJid;
-
-    if (!targetJid) {
-      await sock.sendMessage(senderJid, { text: "Usage: !strikes {number}" });
-      logAudit(senderJid, actorRole, parsed.command, null, null, text, "error");
+    if (!target) {
+      await sock.sendMessage(replyJid, { text: "Usage: !strikes {identifier}" });
+      logAudit(actorContext, parsed.command, null, null, null, text, "error");
       return;
     }
 
     const strikeMap = new Map(
-      getActiveStrikesAcrossGroups(targetJid).map((row) => [row.group_jid, row.count]),
+      getActiveStrikesAcrossGroups(target.userId).map((row) => [row.group_jid, row.count]),
     );
     const groupJids = Array.from(new Set([...getManagedGroupJids(config, groups), ...strikeMap.keys()]));
     const lines =
       groupJids.length > 0
-        ? groupJids.map(
-            (groupJid) =>
-              `• ${formatGroupName(groupJid, groups)}: ${strikeMap.get(groupJid) ?? 0} active strikes`,
-          )
+        ? groupJids.map((groupJid) => `• ${formatGroupName(groupJid, groups)}: ${strikeMap.get(groupJid) ?? 0} active strikes`)
         : ["• No known groups"];
 
-    await sock.sendMessage(senderJid, {
-      text: `Strikes for ${formatPersonDisplay(targetJid)}:\n${lines.join("\n")}`,
+    await sock.sendMessage(replyJid, {
+      text: `Strikes for ${formatUserSummary(target)}:\n${lines.join("\n")}`,
     });
-    logAudit(senderJid, actorRole, parsed.command, targetJid, null, text, "success");
+    logAudit(actorContext, parsed.command, target.userId, target.participantJid, null, text, "success");
     return;
   }
 
   if (parsed.command === "!ban") {
-    const targetJid = parsed.targetJid;
     const { groupJids, invalid } = resolveGroupTargets(parsed.groupJid, config, groups);
-    if (!targetJid || groupJids.length === 0) {
-      await sock.sendMessage(
-        senderJid,
-        { text: invalid ? "❌ That group isn't one of this bot's managed groups." : "Usage: !ban {number} {reason?} {groupJid?}" },
-      );
-      logAudit(senderJid, actorRole, parsed.command, targetJid, parsed.groupJid, text, "error");
-      return;
-    }
-
-    if (
-      groupJids.length > 1 &&
-      !(await ensureTargetNotProtectedAcrossGroups(
-        sock,
-        senderJid,
-        targetJid,
-        groupJids,
-        config,
-        groupMetadataByJid,
-        groups,
-        "ban",
-      ))
-    ) {
-      logAudit(senderJid, actorRole, parsed.command, targetJid, parsed.groupJid, text, "error");
-      return;
-    }
-
-    if (groupJids.length === 1) {
-      await handleBanCommand(
-        sock,
-        senderJid,
-        targetJid,
-        groupJids[0] ?? "",
-        parsed.rest,
-        config,
-        groupMetadataByJid,
-      );
-      clearReviewQueueEntry(targetJid, groupJids[0] ?? "");
-    } else {
-      for (const groupJid of groupJids) {
-        addBan(targetJid, groupJid, senderJid, parsed.rest || undefined);
-        clearReviewQueueEntry(targetJid, groupJid);
-      }
-      recordUndoAction(senderJid, {
-        type: "ban",
-        targetJid,
-        groupJids,
-        scopeLabel: formatGroupScope(groupJids, groups),
-        expiresAt: Date.now() + 5 * 60 * 1000,
-        undo: async () => {
-          for (const groupJid of groupJids) {
-            removeBan(targetJid, groupJid);
-          }
-        },
+    if (!target || groupJids.length === 0) {
+      await sock.sendMessage(replyJid, {
+        text: invalid ? "❌ That group isn't one of this bot's managed groups." : "Usage: !ban {identifier} {reason?} {groupJid?}",
       });
-      for (const groupJid of groupJids) {
+      logAudit(actorContext, parsed.command, target?.userId ?? null, target?.participantJid ?? null, parsed.groupJid, text, "error");
+      return;
+    }
+
+    if (groupJids.length > 1 && !(await ensureTargetNotProtectedAcrossGroups(sock, replyJid, target, groupJids, config, groupMetadataByJid, groups, "ban"))) {
+      logAudit(actorContext, parsed.command, target.userId, target.participantJid, parsed.groupJid, text, "error");
+      return;
+    }
+
+    for (const groupJid of groupJids) {
+      addBan(target.userId, groupJid, getActorReference(actorContext), parsed.rest || undefined);
+      clearReviewQueueEntry(target.userId, groupJid);
+      const liveParticipantJid = findParticipantJidForUser(target.userId, groupMetadataByJid.get(groupJid));
+      if (liveParticipantJid) {
         try {
-          await sock.groupParticipantsUpdate(groupJid, [targetJid], "remove");
+          await sock.groupParticipantsUpdate(groupJid, [liveParticipantJid], "remove");
         } catch {
-          // Ban remains active even if they are not currently in one of the groups.
+          // Ban remains active even if they are not currently present.
         }
       }
-      await sock.sendMessage(senderJid, {
-        text: `✅ Banned ${formatPersonDisplay(targetJid)} in ${formatGroupScope(groupJids, groups)}
+    }
+
+    recordUndoAction(actorContext.userId, {
+      type: "ban",
+      targetUserId: target.userId,
+      scopeLabel: formatGroupScope(groupJids, groups),
+      expiresAt: Date.now() + 5 * 60 * 1000,
+      undo: async () => {
+        for (const groupJid of groupJids) {
+          removeBan(target.userId, groupJid);
+        }
+      },
+    });
+
+    await sock.sendMessage(replyJid, {
+      text: `✅ Banned ${formatUserSummary(target)} in ${formatGroupScope(groupJids, groups)}
 Reason: ${formatReason(parsed.rest)}
 They will be auto-removed if they try to rejoin.`,
-      });
-    }
-    logAudit(senderJid, actorRole, parsed.command, targetJid, parsed.groupJid, text, "success");
+    });
+    logAudit(actorContext, parsed.command, target.userId, target.participantJid, parsed.groupJid, text, "success");
     return;
   }
 
   if (parsed.command === "!unban") {
-    const targetJid = parsed.targetJid;
     const { groupJids, invalid } = resolveGroupTargets(parsed.groupJid, config, groups);
-    if (!targetJid || groupJids.length === 0) {
-      await sock.sendMessage(
-        senderJid,
-        { text: invalid ? "❌ That group isn't one of this bot's managed groups." : "Usage: !unban {number} {groupJid?}" },
-      );
-      logAudit(senderJid, actorRole, parsed.command, targetJid, parsed.groupJid, text, "error");
+    if (!target || groupJids.length === 0) {
+      await sock.sendMessage(replyJid, {
+        text: invalid ? "❌ That group isn't one of this bot's managed groups." : "Usage: !unban {identifier} {groupJid?}",
+      });
+      logAudit(actorContext, parsed.command, target?.userId ?? null, target?.participantJid ?? null, parsed.groupJid, text, "error");
       return;
     }
+
     for (const groupJid of groupJids) {
-      removeBan(targetJid, groupJid);
+      removeBan(target.userId, groupJid);
     }
-    await sock.sendMessage(senderJid, {
-      text: `✅ Ban lifted for ${formatPersonDisplay(targetJid)} in ${formatGroupScope(groupJids, groups)}
+
+    await sock.sendMessage(replyJid, {
+      text: `✅ Ban lifted for ${formatUserSummary(target)} in ${formatGroupScope(groupJids, groups)}
 They can now rejoin the group.`,
     });
-    logAudit(senderJid, actorRole, parsed.command, targetJid, parsed.groupJid, text, "success");
+    logAudit(actorContext, parsed.command, target.userId, target.participantJid, parsed.groupJid, text, "success");
     return;
   }
 
   if (parsed.command === "!bans") {
     const { groupJids, invalid } = resolveGroupTargets(parsed.groupJid, config, groups);
     if (groupJids.length === 0) {
-      await sock.sendMessage(
-        senderJid,
-        { text: invalid ? "❌ That group isn't one of this bot's managed groups." : "Usage: !bans {groupJid?}" },
-      );
-      logAudit(senderJid, actorRole, parsed.command, null, parsed.groupJid, text, "error");
+      await sock.sendMessage(replyJid, {
+        text: invalid ? "❌ That group isn't one of this bot's managed groups." : "Usage: !bans {groupJid?}",
+      });
+      logAudit(actorContext, parsed.command, null, null, parsed.groupJid, text, "error");
       return;
     }
+
     const sections = groupJids
       .map((groupJid) => ({ groupJid, bans: getBans(groupJid) }))
       .filter((section) => section.bans.length > 0);
-    if (sections.length === 0) {
-      await sock.sendMessage(senderJid, { text: `No active bans in ${formatGroupScope(groupJids, groups)}` });
-      logAudit(senderJid, actorRole, parsed.command, null, parsed.groupJid, text, "success");
-      return;
-    }
-    const sectionText = sections
-      .map(({ groupJid, bans }) => {
-        const lines = bans.map(
-          (ban, index) => `${index + 1}. ${formatPersonDisplay(ban.userJid)}
-   Banned by: ${formatPersonDisplay(ban.bannedBy)}
-   Reason: ${formatReason(ban.reason)}
-   Date: ${ban.timestamp}`,
-        );
 
-        return `${formatGroupName(groupJid, groups)}:\n${lines.join("\n\n")}`;
-      })
-      .join("\n\n");
-    await sock.sendMessage(senderJid, {
-      text: `Active bans in ${formatGroupScope(groupJids, groups)}:\n\n${sectionText}`,
+    await sock.sendMessage(replyJid, {
+      text: sections.length > 0
+        ? `Active bans in ${formatGroupScope(groupJids, groups)}:\n\n${sections
+            .map(({ groupJid, bans }) => {
+              const lines = bans.map(
+                (ban, index) =>
+                  `${index + 1}. ${formatUserById(ban.userId)}
+   Banned by: ${formatActorReference({ userId: ban.bannedByUserId, label: ban.bannedByLabel })}
+   Reason: ${formatReason(ban.reason)}
+   Date: ${ban.createdAt}`,
+              );
+              return `${formatGroupName(groupJid, groups)}:\n${lines.join("\n\n")}`;
+            })
+            .join("\n\n")}`
+        : `No active bans in ${formatGroupScope(groupJids, groups)}`,
     });
-    logAudit(senderJid, actorRole, parsed.command, null, parsed.groupJid, text, "success");
+    logAudit(actorContext, parsed.command, null, null, parsed.groupJid, text, "success");
     return;
   }
 
   if (parsed.command === "!mute") {
-    const targetJid = parsed.targetJid;
     const { groupJids, invalid } = resolveGroupTargets(parsed.groupJid, config, groups);
-    if (!targetJid || groupJids.length === 0) {
-      await sock.sendMessage(
-        senderJid,
-        { text: invalid ? "❌ That group isn't one of this bot's managed groups." : "Usage: !mute {number} {duration?} {groupJid?}" },
-      );
-      logAudit(senderJid, actorRole, parsed.command, targetJid, parsed.groupJid, text, "error");
+    if (!target || groupJids.length === 0) {
+      await sock.sendMessage(replyJid, {
+        text: invalid ? "❌ That group isn't one of this bot's managed groups." : "Usage: !mute {identifier} {duration?} {groupJid?}",
+      });
+      logAudit(actorContext, parsed.command, target?.userId ?? null, target?.participantJid ?? null, parsed.groupJid, text, "error");
       return;
     }
 
-    if (
-      groupJids.length > 1 &&
-      !(await ensureTargetNotProtectedAcrossGroups(
-        sock,
-        senderJid,
-        targetJid,
-        groupJids,
-        config,
-        groupMetadataByJid,
-        groups,
-        "mute",
-      ))
-    ) {
-      logAudit(senderJid, actorRole, parsed.command, targetJid, parsed.groupJid, text, "error");
+    if (groupJids.length > 1 && !(await ensureTargetNotProtectedAcrossGroups(sock, replyJid, target, groupJids, config, groupMetadataByJid, groups, "mute"))) {
+      logAudit(actorContext, parsed.command, target.userId, target.participantJid, parsed.groupJid, text, "error");
       return;
     }
 
     const durationToken = parsed.rest.split(/\s+/)[0];
-    if (groupJids.length === 1) {
-      await handleMuteCommand(
-        sock,
-        senderJid,
-        targetJid,
-        groupJids[0] ?? "",
-        durationToken,
-        config,
-        groups,
-        groupMetadataByJid,
-      );
-    } else {
-      const expiresAt = parseDuration(durationToken);
-      for (const groupJid of groupJids) {
-        addMute(targetJid, groupJid, senderJid, expiresAt, undefined);
-      }
-      recordUndoAction(senderJid, {
-        type: "mute",
-        targetJid,
-        groupJids,
-        scopeLabel: formatGroupScope(groupJids, groups),
-        expiresAt: Date.now() + 5 * 60 * 1000,
-        undo: async () => {
-          for (const groupJid of groupJids) {
-            removeMute(targetJid, groupJid);
-          }
-        },
-      });
-      await sock.sendMessage(senderJid, {
-        text: `🔇 Muted ${formatPersonDisplay(targetJid)} in ${formatGroupScope(groupJids, groups)}
+    const expiresAt = parseDuration(durationToken || undefined);
+    for (const groupJid of groupJids) {
+      addMute(target.userId, groupJid, getActorReference(actorContext), expiresAt, undefined);
+    }
+
+    recordUndoAction(actorContext.userId, {
+      type: "mute",
+      targetUserId: target.userId,
+      scopeLabel: formatGroupScope(groupJids, groups),
+      expiresAt: Date.now() + 5 * 60 * 1000,
+      undo: async () => {
+        for (const groupJid of groupJids) {
+          removeMute(target.userId, groupJid);
+        }
+      },
+    });
+
+    await sock.sendMessage(replyJid, {
+      text: `🔇 Muted ${formatUserSummary(target)} in ${formatGroupScope(groupJids, groups)}
 Duration: ${expiresAt ? formatDurationLabel(durationToken) : "permanent"}
 ${expiresAt ? `Expires: ${formatDate(expiresAt.toISOString())}\n` : ""}Reason: none given`,
-      });
-    }
-    logAudit(senderJid, actorRole, parsed.command, targetJid, parsed.groupJid, text, "success");
+    });
+    logAudit(actorContext, parsed.command, target.userId, target.participantJid, parsed.groupJid, text, "success");
     return;
   }
 
   if (parsed.command === "!unmute") {
-    const targetJid = parsed.targetJid;
     const { groupJids, invalid } = resolveGroupTargets(parsed.groupJid, config, groups);
-    if (!targetJid || groupJids.length === 0) {
-      await sock.sendMessage(
-        senderJid,
-        { text: invalid ? "❌ That group isn't one of this bot's managed groups." : "Usage: !unmute {number} {groupJid?}" },
-      );
-      logAudit(senderJid, actorRole, parsed.command, targetJid, parsed.groupJid, text, "error");
+    if (!target || groupJids.length === 0) {
+      await sock.sendMessage(replyJid, {
+        text: invalid ? "❌ That group isn't one of this bot's managed groups." : "Usage: !unmute {identifier} {groupJid?}",
+      });
+      logAudit(actorContext, parsed.command, target?.userId ?? null, target?.participantJid ?? null, parsed.groupJid, text, "error");
       return;
     }
+
     for (const groupJid of groupJids) {
-      removeMute(targetJid, groupJid);
+      removeMute(target.userId, groupJid);
     }
-    await sock.sendMessage(senderJid, {
-      text: `🔊 Unmuted ${formatPersonDisplay(targetJid)} in ${formatGroupScope(groupJids, groups)}
+
+    await sock.sendMessage(replyJid, {
+      text: `🔊 Unmuted ${formatUserSummary(target)} in ${formatGroupScope(groupJids, groups)}
 They can now send messages again.`,
     });
-    logAudit(senderJid, actorRole, parsed.command, targetJid, parsed.groupJid, text, "success");
+    logAudit(actorContext, parsed.command, target.userId, target.participantJid, parsed.groupJid, text, "success");
     return;
   }
 
   if (parsed.command === "!mutes") {
     const { groupJids, invalid } = resolveGroupTargets(parsed.groupJid, config, groups);
     if (groupJids.length === 0) {
-      await sock.sendMessage(
-        senderJid,
-        { text: invalid ? "❌ That group isn't one of this bot's managed groups." : "Usage: !mutes {groupJid?}" },
-      );
-      logAudit(senderJid, actorRole, parsed.command, null, parsed.groupJid, text, "error");
+      await sock.sendMessage(replyJid, {
+        text: invalid ? "❌ That group isn't one of this bot's managed groups." : "Usage: !mutes {groupJid?}",
+      });
+      logAudit(actorContext, parsed.command, null, null, parsed.groupJid, text, "error");
       return;
     }
+
     const sections = groupJids
       .map((groupJid) => ({ groupJid, mutes: getActiveMutes(groupJid) }))
       .filter((section) => section.mutes.length > 0);
-    if (sections.length === 0) {
-      await sock.sendMessage(senderJid, {
-        text: `No active mutes in ${formatGroupScope(groupJids, groups)}`,
-      });
-      logAudit(senderJid, actorRole, parsed.command, null, parsed.groupJid, text, "success");
-      return;
-    }
-    const sectionText = sections
-      .map(({ groupJid, mutes }) => {
-        const lines = mutes.map(
-          (mute, index) => `${index + 1}. ${formatPersonDisplay(mute.userJid)}
-   Muted by: ${formatPersonDisplay(mute.mutedBy)}
+
+    await sock.sendMessage(replyJid, {
+      text: sections.length > 0
+        ? `Active mutes in ${formatGroupScope(groupJids, groups)}:\n\n${sections
+            .map(({ groupJid, mutes }) => {
+              const lines = mutes.map(
+                (mute, index) =>
+                  `${index + 1}. ${formatUserById(mute.userId)}
+   Muted by: ${formatActorReference({ userId: mute.mutedByUserId, label: mute.mutedByLabel })}
    Reason: ${formatReason(mute.reason)}
    Expires: ${formatDate(mute.expiresAt)}`,
-        );
-
-        return `${formatGroupName(groupJid, groups)}:\n${lines.join("\n\n")}`;
-      })
-      .join("\n\n");
-    await sock.sendMessage(senderJid, {
-      text: `Active mutes in ${formatGroupScope(groupJids, groups)}:\n\n${sectionText}`,
+              );
+              return `${formatGroupName(groupJid, groups)}:\n${lines.join("\n\n")}`;
+            })
+            .join("\n\n")}`
+        : `No active mutes in ${formatGroupScope(groupJids, groups)}`,
     });
-    logAudit(senderJid, actorRole, parsed.command, null, parsed.groupJid, text, "success");
+    logAudit(actorContext, parsed.command, null, null, parsed.groupJid, text, "success");
     return;
   }
 
   if (parsed.command === "!strike") {
-    const targetJid = parsed.targetJid;
     const { groupJids, invalid } = resolveGroupTargets(parsed.groupJid, config, groups);
-    if (!targetJid || groupJids.length === 0) {
-      await sock.sendMessage(
-        senderJid,
-        { text: invalid ? "❌ That group isn't one of this bot's managed groups." : "Usage: !strike {number} {reason?} {groupJid?}" },
-      );
-      logAudit(senderJid, actorRole, parsed.command, targetJid, parsed.groupJid, text, "error");
+    if (!target || groupJids.length === 0) {
+      await sock.sendMessage(replyJid, {
+        text: invalid ? "❌ That group isn't one of this bot's managed groups." : "Usage: !strike {identifier} {reason?} {groupJid?}",
+      });
+      logAudit(actorContext, parsed.command, target?.userId ?? null, target?.participantJid ?? null, parsed.groupJid, text, "error");
       return;
     }
 
-    if (
-      groupJids.length > 1 &&
-      !(await ensureTargetNotProtectedAcrossGroups(
-        sock,
-        senderJid,
-        targetJid,
-        groupJids,
-        config,
-        groupMetadataByJid,
-        groups,
-        "strike",
-      ))
-    ) {
-      logAudit(senderJid, actorRole, parsed.command, targetJid, parsed.groupJid, text, "error");
+    if (groupJids.length > 1 && !(await ensureTargetNotProtectedAcrossGroups(sock, replyJid, target, groupJids, config, groupMetadataByJid, groups, "strike"))) {
+      logAudit(actorContext, parsed.command, target.userId, target.participantJid, parsed.groupJid, text, "error");
       return;
     }
 
-    if (groupJids.length === 1) {
-      await handleStrikeCommand(
-        sock,
-        senderJid,
-        targetJid,
-        groupJids[0] ?? "",
-        parsed.rest,
-        config,
-        groupMetadataByJid,
-      );
-    } else {
-      for (const groupJid of groupJids) {
-        addStrike(targetJid, groupJid, parsed.rest || "manual strike");
-      }
-      recordUndoAction(senderJid, {
-        type: "strike",
-        targetJid,
-        groupJids,
-        scopeLabel: formatGroupScope(groupJids, groups),
-        expiresAt: Date.now() + 5 * 60 * 1000,
-        undo: async () => {
-          for (const groupJid of groupJids) {
-            removeLatestStrike(targetJid, groupJid);
-          }
-        },
-      });
-      await sock.sendMessage(senderJid, {
-        text: `⚠️ Added a strike for ${formatPersonDisplay(targetJid)} in ${formatGroupScope(groupJids, groups)}.`,
-      });
+    for (const groupJid of groupJids) {
+      addStrike(target.userId, groupJid, parsed.rest || "manual strike", randomUUID());
     }
-    logAudit(senderJid, actorRole, parsed.command, targetJid, parsed.groupJid, text, "success");
+
+    recordUndoAction(actorContext.userId, {
+      type: "strike",
+      targetUserId: target.userId,
+      scopeLabel: formatGroupScope(groupJids, groups),
+      expiresAt: Date.now() + 5 * 60 * 1000,
+      undo: async () => {
+        for (const groupJid of groupJids) {
+          removeLatestStrike(target.userId, groupJid);
+        }
+      },
+    });
+
+    await sock.sendMessage(replyJid, {
+      text: `⚠️ Added a strike for ${formatUserSummary(target)} in ${formatGroupScope(groupJids, groups)}.`,
+    });
+    logAudit(actorContext, parsed.command, target.userId, target.participantJid, parsed.groupJid, text, "success");
   }
 }

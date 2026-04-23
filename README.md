@@ -156,10 +156,10 @@ Deleted violations add a strike for that user in that group. Strikes expire afte
 
 WhatsApp group traffic may come through as `@lid` JIDs instead of `@s.whatsapp.net`. The bot handles both:
 
-- Direct-number owner / moderator commands resolve to `@s.whatsapp.net`
+- Direct-number owner / moderator commands resolve to a canonical user identity
 - Reply-based commands can target `@lid` senders directly
-- Ban/mute records store the direct JID and the `lid_jid` when available
-- Runtime ban/mute checks try both formats
+- Phone numbers, `@s.whatsapp.net`, and `@lid` JIDs all resolve to the same user when a mapping is available
+- Strike, ban, mute, review-queue, and moderator lookups all try every known alias for that user
 
 ## Owner And Moderator Commands
 
@@ -209,8 +209,8 @@ Owners and moderators can control the bot in two ways:
 - `!mutes {groupJid}`
 - `!remove {jid or number} {groupJid}`
 - `!pardon {jid or number} {groupJid?}`
-- `!strikes {jid or number}`
-- `!strike {jid or number} {reason?} {groupJid?}`
+- `!strikes {jid, lid, or number}`
+- `!strike {jid, lid, or number} {reason?} {groupJid?}`
 
 If exactly one managed group is available, commands that take `{groupJid?}` can omit it. If multiple managed groups are available, pass the raw group JID.
 
@@ -267,7 +267,7 @@ Notes:
 
 - Local numbers beginning with `0` are assumed to be UK `+44`
 - For non-UK numbers, always use international format with `+`
-- `@lid` JIDs are internal and not accepted in direct-number commands
+- Direct commands also accept explicit `@lid` JIDs when you have them
 - When in doubt, reply to the message instead of typing the number
 
 ## Startup Health Checks
@@ -395,6 +395,7 @@ pnpm admin:cli mods list
 pnpm admin:cli mods add 07911123456 "sound team"
 pnpm admin:cli mods remove 07911123456
 pnpm admin:cli strikes list 07911123456
+pnpm admin:cli strikes list lid-user-123@lid
 pnpm admin:cli strikes clear 07911123456 120363408759548644@g.us
 pnpm admin:cli strikes clear-all 120363408759548644@g.us
 pnpm admin:cli strikes clear-all
@@ -409,6 +410,7 @@ pnpm admin:cli mutes clear-all
 pnpm admin:cli reset-all 120363408759548644@g.us
 pnpm admin:cli reset-all
 pnpm admin:cli audit 20
+pnpm admin:cli db flush --yes
 ```
 
 Notes:
@@ -466,6 +468,7 @@ Notes:
 - `railway.toml` does not create or attach volumes; volume setup still happens in Railway
 - The container listens on Railway's `PORT` env var and falls back to `3000` locally
 - Railway deploy health checks should target `/health`, not `/ready`, so the container can become active before the WhatsApp QR has been scanned
+- SQLite is opened with `PRAGMA foreign_keys = ON` and `PRAGMA journal_mode = WAL` so canonical identity merges and other `BEGIN IMMEDIATE` writes behave correctly under concurrent handlers
 - Use `/ready` only if you want to confirm that the bot is fully connected to WhatsApp
 
 ## Operational Notes

@@ -1,44 +1,12 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+
 import { AUTH_DIR } from "./storagePaths.js";
 
 const lidToPhone = new Map<string, string>();
+const phoneToLids = new Map<string, Set<string>>();
 
-export async function loadLidMappings(authDir = AUTH_DIR): Promise<void> {
-  lidToPhone.clear();
-
-  let entries: string[];
-  try {
-    entries = await fs.readdir(authDir);
-  } catch {
-    return;
-  }
-
-  const files = entries.filter(
-    (entry) =>
-      entry.startsWith("lid-mapping-") &&
-      entry.endsWith(".json") &&
-      !entry.endsWith("_reverse.json"),
-  );
-
-  for (const file of files) {
-    const phoneUser = file.slice("lid-mapping-".length, -".json".length);
-
-    try {
-      const raw = await fs.readFile(path.join(authDir, file), "utf8");
-      const parsed = JSON.parse(raw);
-      const lidUser = typeof parsed === "string" ? parsed : String(parsed ?? "").trim();
-
-      if (lidUser && phoneUser) {
-        lidToPhone.set(lidUser, phoneUser);
-      }
-    } catch {
-      // Ignore malformed or transient files so auth still works when mappings are incomplete.
-    }
-  }
-}
-
-function splitJid(jid: string): { user: string; server: string } | null {
+const splitJid = (jid: string): { user: string; server: string } | null => {
   const atIndex = jid.lastIndexOf("@");
   if (atIndex < 0) {
     return null;
@@ -48,42 +16,103 @@ function splitJid(jid: string): { user: string; server: string } | null {
     user: jid.slice(0, atIndex),
     server: jid.slice(atIndex + 1),
   };
-}
+};
 
-function baseUser(user: string): string {
+const stripDeviceSuffix = (user: string): string => {
   const colonIndex = user.indexOf(":");
   return colonIndex >= 0 ? user.slice(0, colonIndex) : user;
-}
+};
 
-export function normalizeJid(jid: string): string {
-  const parts = splitJid(jid);
-  if (!parts || parts.server !== "lid") {
-    return jid;
+const normalizeAlias = (alias: string): string => {
+  const trimmed = alias.trim().toLowerCase();
+  const parts = splitJid(trimmed);
+  if (!parts) {
+    return trimmed;
   }
 
-  const phoneUser = lidToPhone.get(baseUser(parts.user));
-  if (!phoneUser) {
-    return jid;
+  if (parts.server === "s.whatsapp.net" || parts.server === "lid") {
+    return `${stripDeviceSuffix(parts.user)}@${parts.server}`;
   }
 
-  return `${phoneUser}@s.whatsapp.net`;
-}
+  return `${parts.user}@${parts.server}`;
+};
 
-export function expandCandidateJids(candidateJids: ReadonlyArray<string | null | undefined>): string[] {
-  const expandedJids = new Set<string>();
+export async function loadLidMappings(authDir = AUTH_DIR): Promise<void> {
+  lidToPhone.clear();
+  phoneToLids.clear();
 
-  for (const jid of candidateJids) {
-    if (!jid) {
+  let entries: string[];
+  try {
+    entries = await fs.readdir(authDir);
+  } catch {
+    return;
+  }
+
+  for (const entry of entries) {
+    if (!entry.startsWith("lid-mapping-") || !entry.endsWith(".json") || entry.endsWith("_reverse.json")) {
       continue;
     }
 
-    expandedJids.add(jid);
+    const phoneUser = entry.slice("lid-mapping-".length, -".json".length).trim();
+    if (!phoneUser) {
+      continue;
+    }
 
-    const normalizedJid = normalizeJid(jid);
-    if (normalizedJid !== jid) {
-      expandedJids.add(normalizedJid);
+    try {
+      const raw = await fs.readFile(path.join(authDir, entry), "utf8");
+      const parsed = JSON.parse(raw);
+      const lidUser = typeof parsed === "string" ? parsed.trim() : String(parsed ?? "").trim();
+      if (!lidUser) {
+        continue;
+      }
+
+      const phoneAlias = normalizeAlias(`${phoneUser}@s.whatsapp.net`);
+      const lidAlias = normalizeAlias(`${lidUser}@lid`);
+      lidToPhone.set(lidAlias, phoneAlias);
+      const lids = phoneToLids.get(phoneAlias) ?? new Set<string>();
+      lids.add(lidAlias);
+      phoneToLids.set(phoneAlias, lids);
+    } catch {
+      // Ignore malformed or transient mapping files.
+    }
+  }
+}
+
+export const recordLidMapping = (phoneAlias: string, lidAlias: string): void => {
+  const normalizedPhoneAlias = normalizeAlias(phoneAlias);
+  const normalizedLidAlias = normalizeAlias(lidAlias);
+
+  lidToPhone.set(normalizedLidAlias, normalizedPhoneAlias);
+  const lids = phoneToLids.get(normalizedPhoneAlias) ?? new Set<string>();
+  lids.add(normalizedLidAlias);
+  phoneToLids.set(normalizedPhoneAlias, lids);
+};
+
+export const getMappedPhoneAlias = (lidAlias: string): string | null => lidToPhone.get(normalizeAlias(lidAlias)) ?? null;
+
+export const getMappedLidAliases = (phoneAlias: string): string[] =>
+  Array.from(phoneToLids.get(normalizeAlias(phoneAlias)) ?? []);
+
+export const expandKnownAliases = (aliases: ReadonlyArray<string | null | undefined>): string[] => {
+  const expandedAliases = new Set<string>();
+
+  for (const alias of aliases) {
+    if (!alias) {
+      continue;
+    }
+
+    const normalizedAlias = normalizeAlias(alias);
+    expandedAliases.add(normalizedAlias);
+
+    const mappedPhoneAlias = getMappedPhoneAlias(normalizedAlias);
+    if (mappedPhoneAlias) {
+      expandedAliases.add(mappedPhoneAlias);
+    }
+
+    for (const mappedLidAlias of getMappedLidAliases(normalizedAlias)) {
+      expandedAliases.add(mappedLidAlias);
     }
   }
 
-  return Array.from(expandedJids);
-}
+  return Array.from(expandedAliases);
+};

@@ -2,6 +2,7 @@ import { config } from "./config.js";
 import {
   addModerator,
   closeDb,
+  flushDb,
   getActiveMutes,
   getActiveStrikesAcrossGroups,
   getAuditEntries,
@@ -11,75 +12,119 @@ import {
   removeAllBans,
   removeAllMutes,
   removeBan,
-  removeMute,
   removeModerator,
+  removeMute,
   resetAllStrikes,
   resetStrikes,
+  type ActorReference,
 } from "./db.js";
+import {
+  describeUser,
+  findUserByIdentifier,
+  getShortUserId,
+  resolveTargetFromIdentifier,
+  type UserSummary,
+} from "./identity.js";
 import { containsDisallowedUrl } from "./linkChecker.js";
-import { formatJidForDisplay, parseToJid } from "./utils.js";
+import { formatJidForDisplay } from "./utils.js";
 
 const HELP_TEXT = `Fete Bot Local Admin CLI
 
 Usage:
   pnpm admin:cli help
   pnpm admin:cli status
+  pnpm admin:cli whois <identifier>
   pnpm admin:cli test-url <url>
   pnpm admin:cli reset-all [groupJid]
+  pnpm admin:cli db flush --yes
 
 Moderators:
   pnpm admin:cli mods list
-  pnpm admin:cli mods add <number|jid> [note...]
-  pnpm admin:cli mods remove <number|jid>
+  pnpm admin:cli mods add <identifier> [note...]
+  pnpm admin:cli mods remove <identifier>
 
 Strikes:
-  pnpm admin:cli strikes list <number|jid>
-  pnpm admin:cli strikes reset <number|jid> [groupJid]
-  pnpm admin:cli strikes clear <number|jid> [groupJid]
+  pnpm admin:cli strikes list <identifier>
+  pnpm admin:cli strikes reset <identifier> [groupJid]
+  pnpm admin:cli strikes clear <identifier> [groupJid]
   pnpm admin:cli strikes reset-all [groupJid]
   pnpm admin:cli strikes clear-all [groupJid]
 
 Bans:
   pnpm admin:cli bans list <groupJid>
-  pnpm admin:cli bans reset <number|jid> <groupJid>
-  pnpm admin:cli bans clear <number|jid> <groupJid>
+  pnpm admin:cli bans reset <identifier> <groupJid>
+  pnpm admin:cli bans clear <identifier> <groupJid>
   pnpm admin:cli bans reset-all [groupJid]
   pnpm admin:cli bans clear-all [groupJid]
 
 Mutes:
   pnpm admin:cli mutes list <groupJid>
-  pnpm admin:cli mutes reset <number|jid> <groupJid>
-  pnpm admin:cli mutes clear <number|jid> <groupJid>
+  pnpm admin:cli mutes reset <identifier> <groupJid>
+  pnpm admin:cli mutes clear <identifier> <groupJid>
   pnpm admin:cli mutes reset-all [groupJid]
   pnpm admin:cli mutes clear-all [groupJid]
 
+Audit:
   pnpm admin:cli audit [limit]
 
-Quick examples:
-  pnpm admin:cli strikes clear 07911123456
-  pnpm admin:cli bans clear 07911123456 120363408759548644@g.us
-  pnpm admin:cli mutes clear-all 120363408759548644@g.us
-  pnpm admin:cli reset-all 120363408759548644@g.us
-
-Notes:
-  - This CLI is local-only and talks directly to ./data/bot.db
-  - It is intended for testing and maintenance, not remote administration
-  - For phone numbers, both UK local and international formats are accepted
-  - "clear" and "reset" mean the same thing; both are supported`;
+Database:
+  pnpm admin:cli db flush --yes`;
 
 const fail = (message: string): never => {
   console.error(`Error: ${message}`);
   process.exit(1);
 };
 
-const parseUserInputToJid = (input: string | undefined): string => {
-  const value = input ?? fail("missing user JID or phone number");
-  const jid = parseToJid(value);
-  if (!jid) {
-    fail(`could not parse "${value}" as a WhatsApp user JID`);
+const LOCAL_CLI_ACTOR: ActorReference = {
+  userId: null,
+  label: "local-cli",
+};
+
+const formatUserSummary = (summary: UserSummary | null): string => {
+  if (!summary) {
+    return "unknown user";
   }
 
-  return jid ?? fail(`could not parse "${value}" as a WhatsApp user JID`);
+  const phoneAlias = summary.aliases.find((alias) => alias.aliasType === "phone")?.alias ?? null;
+  const lidAlias = summary.aliases.find((alias) => alias.aliasType === "lid")?.alias ?? null;
+  const primaryAlias = phoneAlias ?? lidAlias ?? summary.userId;
+  const primaryLabel = primaryAlias.includes("@") ? formatJidForDisplay(primaryAlias) : primaryAlias;
+  const displayName = summary.displayName?.trim() || null;
+
+  if (displayName) {
+    return `${displayName} (${primaryLabel}, ${summary.shortId})`;
+  }
+
+  return `${primaryLabel} (${summary.shortId})`;
+};
+
+const resolveWritableUser = async (input: string | undefined): Promise<UserSummary> => {
+  const value = input ?? fail("missing user identifier");
+  const resolved = await resolveTargetFromIdentifier(value, new Set());
+  if (!resolved) {
+    fail(`could not parse "${value}" as a WhatsApp user identifier`);
+  }
+  const ensuredResolved = resolved ?? fail(`could not parse "${value}" as a WhatsApp user identifier`);
+
+  return {
+    userId: ensuredResolved.userId,
+    shortId: ensuredResolved.shortId,
+    createdAt: ensuredResolved.createdAt,
+    displayName: ensuredResolved.displayName,
+    notes: ensuredResolved.notes,
+    mergedInto: ensuredResolved.mergedInto,
+    aliases: ensuredResolved.aliases,
+  };
+};
+
+const resolveExistingUser = (input: string | undefined): UserSummary => {
+  const value = input ?? fail("missing user identifier");
+  const found = findUserByIdentifier(value);
+  if (!found) {
+    fail(`no user found for "${value}"`);
+  }
+
+  return found ?? fail(`no user found for "${value}"`);
 };
 
 const requireGroupJid = (input: string | undefined): string => {
@@ -138,52 +183,51 @@ const listMods = (): void => {
 
   for (const moderator of moderators) {
     console.log(
-      `- ${formatJidForDisplay(moderator.jid)} | added by ${formatJidForDisplay(
-        moderator.addedBy,
-      )} | note: ${moderator.note ?? "none"} | at: ${moderator.addedAt}`,
+      `- ${formatUserSummary(describeUser(moderator.userId))} | added by ${
+        moderator.addedByUserId ? formatUserSummary(describeUser(moderator.addedByUserId)) : moderator.addedByLabel
+      } | note: ${moderator.note ?? "none"} | at: ${moderator.addedAt}`,
     );
   }
 };
 
-const addMod = (input: string | undefined, noteParts: string[]): void => {
-  const jid = parseUserInputToJid(input);
+const addMod = async (input: string | undefined, noteParts: string[]): Promise<void> => {
+  const user = await resolveWritableUser(input);
   const note = noteParts.join(" ").trim() || undefined;
-  addModerator(jid, "local-cli", note);
-  console.log(`Added moderator: ${jid}`);
+  addModerator(user.userId, LOCAL_CLI_ACTOR, note);
+  console.log(`Added moderator: ${formatUserSummary(user)}`);
   console.log(`Note: ${note ?? "none"}`);
 };
 
-const removeMod = (input: string | undefined): void => {
-  const jid = parseUserInputToJid(input);
-  if (config.ownerJids.includes(jid)) {
+const removeMod = async (input: string | undefined): Promise<void> => {
+  const user = await resolveWritableUser(input);
+  if (user.aliases.some((alias) => config.ownerJids.includes(alias.alias))) {
     fail("cannot remove an owner via CLI moderator removal");
   }
 
-  removeModerator(jid);
-  console.log(`Removed moderator: ${jid}`);
+  removeModerator(user.userId);
+  console.log(`Removed moderator: ${formatUserSummary(user)}`);
 };
 
-const listStrikes = (input: string | undefined): void => {
-  const jid = parseUserInputToJid(input);
-  const rows = getActiveStrikesAcrossGroups(jid);
-
+const listStrikes = async (input: string | undefined): Promise<void> => {
+  const user = resolveExistingUser(input);
+  const rows = getActiveStrikesAcrossGroups(user.userId);
   if (rows.length === 0) {
-    console.log(`No active strikes for ${jid}`);
+    console.log(`No active strikes for ${formatUserSummary(user)}`);
     return;
   }
 
-  console.log(`Active strikes for ${jid}:`);
+  console.log(`Active strikes for ${formatUserSummary(user)}:`);
   for (const row of rows) {
     console.log(`- ${row.group_jid}: ${row.count}`);
   }
 };
 
-const resetUserStrikes = (input: string | undefined, groupJid?: string): void => {
-  const jid = parseUserInputToJid(input);
+const resetUserStrikes = async (input: string | undefined, groupJid?: string): Promise<void> => {
+  const user = await resolveWritableUser(input);
 
   if (groupJid) {
-    resetStrikes(jid, requireGroupJid(groupJid));
-    console.log(`Reset strikes for ${jid} in ${groupJid}`);
+    resetStrikes(user.userId, requireGroupJid(groupJid));
+    console.log(`Reset strikes for ${formatUserSummary(user)} in ${groupJid}`);
     return;
   }
 
@@ -192,10 +236,10 @@ const resetUserStrikes = (input: string | undefined, groupJid?: string): void =>
   }
 
   for (const allowedGroupJid of config.allowedGroupJids) {
-    resetStrikes(jid, allowedGroupJid);
+    resetStrikes(user.userId, allowedGroupJid);
   }
 
-  console.log(`Reset strikes for ${jid} across ${config.allowedGroupJids.length} configured group(s)`);
+  console.log(`Reset strikes for ${formatUserSummary(user)} across ${config.allowedGroupJids.length} configured group(s)`);
 };
 
 const resetEveryoneStrikes = (groupJid?: string): void => {
@@ -229,7 +273,6 @@ const resetAllState = (groupJidInput?: string): void => {
 const listBans = (groupJidInput: string | undefined): void => {
   const groupJid = requireGroupJid(groupJidInput);
   const bans = getBans(groupJid);
-
   if (bans.length === 0) {
     console.log(`No bans in ${groupJid}`);
     return;
@@ -238,16 +281,18 @@ const listBans = (groupJidInput: string | undefined): void => {
   console.log(`Bans in ${groupJid}:`);
   for (const ban of bans) {
     console.log(
-      `- ${ban.userJid} | by ${ban.bannedBy} | reason: ${ban.reason ?? "none"} | at: ${ban.timestamp}`,
+      `- ${formatUserSummary(describeUser(ban.userId))} | by ${
+        ban.bannedByUserId ? formatUserSummary(describeUser(ban.bannedByUserId)) : ban.bannedByLabel
+      } | reason: ${ban.reason ?? "none"} | at: ${ban.createdAt}`,
     );
   }
 };
 
-const resetBan = (input: string | undefined, groupJidInput: string | undefined): void => {
-  const jid = parseUserInputToJid(input);
+const resetBan = async (input: string | undefined, groupJidInput: string | undefined): Promise<void> => {
+  const user = await resolveWritableUser(input);
   const groupJid = requireGroupJid(groupJidInput);
-  removeBan(jid, groupJid);
-  console.log(`Reset ban for ${jid} in ${groupJid}`);
+  removeBan(user.userId, groupJid);
+  console.log(`Reset ban for ${formatUserSummary(user)} in ${groupJid}`);
 };
 
 const resetAllBans = (groupJidInput?: string): void => {
@@ -265,7 +310,6 @@ const resetAllBans = (groupJidInput?: string): void => {
 const listMutes = (groupJidInput: string | undefined): void => {
   const groupJid = requireGroupJid(groupJidInput);
   const mutes = getActiveMutes(groupJid);
-
   if (mutes.length === 0) {
     console.log(`No active mutes in ${groupJid}`);
     return;
@@ -274,18 +318,18 @@ const listMutes = (groupJidInput: string | undefined): void => {
   console.log(`Active mutes in ${groupJid}:`);
   for (const mute of mutes) {
     console.log(
-      `- ${mute.userJid} | by ${mute.mutedBy} | reason: ${mute.reason ?? "none"} | expires: ${
-        mute.expiresAt ?? "permanent"
-      }`,
+      `- ${formatUserSummary(describeUser(mute.userId))} | by ${
+        mute.mutedByUserId ? formatUserSummary(describeUser(mute.mutedByUserId)) : mute.mutedByLabel
+      } | reason: ${mute.reason ?? "none"} | expires: ${mute.expiresAt ?? "permanent"}`,
     );
   }
 };
 
-const resetMute = (input: string | undefined, groupJidInput: string | undefined): void => {
-  const jid = parseUserInputToJid(input);
+const resetMute = async (input: string | undefined, groupJidInput: string | undefined): Promise<void> => {
+  const user = await resolveWritableUser(input);
   const groupJid = requireGroupJid(groupJidInput);
-  removeMute(jid, groupJid);
-  console.log(`Reset mute for ${jid} in ${groupJid}`);
+  removeMute(user.userId, groupJid);
+  console.log(`Reset mute for ${formatUserSummary(user)} in ${groupJid}`);
 };
 
 const resetAllMutes = (groupJidInput?: string): void => {
@@ -303,7 +347,6 @@ const resetAllMutes = (groupJidInput?: string): void => {
 const showAudit = (limitInput?: string): void => {
   const limit = Number(limitInput ?? "20");
   const entries = getAuditEntries(Number.isFinite(limit) && limit > 0 ? limit : 20);
-
   if (entries.length === 0) {
     console.log("No audit entries found");
     return;
@@ -311,10 +354,40 @@ const showAudit = (limitInput?: string): void => {
 
   for (const entry of entries) {
     console.log(
-      `- ${entry.timestamp} | ${entry.command} | ${entry.result} | actor: ${entry.actorJid} (${entry.actorRole}) | target: ${
-        entry.targetJid ?? "n/a"
+      `- ${entry.timestamp} | ${entry.command} | ${entry.result} | actor: ${
+        entry.actorUserId ? formatUserSummary(describeUser(entry.actorUserId)) : entry.actorJid ?? "n/a"
+      } (${entry.actorRole}) | target: ${
+        entry.targetUserId ? formatUserSummary(describeUser(entry.targetUserId)) : entry.targetJid ?? "n/a"
       } | group: ${entry.groupJid ?? "n/a"}`,
     );
+  }
+};
+
+const showWhois = (input: string | undefined): void => {
+  const user = resolveExistingUser(input);
+  const summary = describeUser(user.userId);
+  if (!summary) {
+    fail("no user found");
+  }
+  const ensuredSummary = summary ?? fail("no user found");
+
+  const aliasLines = ensuredSummary.aliases.map((alias) => `- ${alias.aliasType}: ${alias.alias}`);
+  const mergeLines =
+    ensuredSummary.mergeHistory.length > 0
+      ? ensuredSummary.mergeHistory.map((entry) => `- ${entry.reason}: survivor=${entry.survivorUserId} merged=${entry.mergedUserId}`)
+      : ["- none"];
+
+  console.log(`User ID: ${ensuredSummary.userId}`);
+  console.log(`Short ID: ${ensuredSummary.shortId}`);
+  console.log(`Display name: ${ensuredSummary.displayName ?? "unknown"}`);
+  console.log(`Merged into: ${ensuredSummary.mergedInto ?? "active"}`);
+  console.log("Aliases:");
+  for (const line of aliasLines) {
+    console.log(line);
+  }
+  console.log("Merge history:");
+  for (const line of mergeLines) {
+    console.log(line);
   }
 };
 
@@ -326,9 +399,18 @@ const testUrl = (url: string | undefined): void => {
     return;
   }
 
-  console.log(`BLOCK`);
+  console.log("BLOCK");
   console.log(`Reason: ${result.reason ?? "unknown"}`);
   console.log(`URL: ${result.url ?? candidateUrl}`);
+};
+
+const flushDatabase = (confirmationFlag: string | undefined): void => {
+  if (confirmationFlag !== "--yes") {
+    fail('database flush is destructive; rerun with "pnpm admin:cli db flush --yes"');
+  }
+
+  flushDb();
+  console.log("Flushed SQLite database and recreated schema version 2");
 };
 
 const initDbOrExit = (): void => {
@@ -347,7 +429,7 @@ const initDbOrExit = (): void => {
   }
 };
 
-const main = (): void => {
+const main = async (): Promise<void> => {
   try {
     const [command, subcommand, ...rest] = process.argv.slice(2);
 
@@ -368,6 +450,11 @@ const main = (): void => {
       return;
     }
 
+    if (command === "whois") {
+      showWhois(subcommand);
+      return;
+    }
+
     if (command === "reset-all" || command === "clear-all") {
       resetAllState(subcommand);
       return;
@@ -379,22 +466,22 @@ const main = (): void => {
     }
 
     if (command === "mods" && subcommand === "add") {
-      addMod(rest[0], rest.slice(1));
+      await addMod(rest[0], rest.slice(1));
       return;
     }
 
     if (command === "mods" && subcommand === "remove") {
-      removeMod(rest[0]);
+      await removeMod(rest[0]);
       return;
     }
 
     if (command === "strikes" && subcommand === "list") {
-      listStrikes(rest[0]);
+      await listStrikes(rest[0]);
       return;
     }
 
     if (command === "strikes" && (subcommand === "reset" || subcommand === "clear")) {
-      resetUserStrikes(rest[0], rest[1]);
+      await resetUserStrikes(rest[0], rest[1]);
       return;
     }
 
@@ -409,7 +496,7 @@ const main = (): void => {
     }
 
     if (command === "bans" && (subcommand === "reset" || subcommand === "clear")) {
-      resetBan(rest[0], rest[1]);
+      await resetBan(rest[0], rest[1]);
       return;
     }
 
@@ -424,7 +511,7 @@ const main = (): void => {
     }
 
     if (command === "mutes" && (subcommand === "reset" || subcommand === "clear")) {
-      resetMute(rest[0], rest[1]);
+      await resetMute(rest[0], rest[1]);
       return;
     }
 
@@ -438,10 +525,15 @@ const main = (): void => {
       return;
     }
 
+    if (command === "db" && subcommand === "flush") {
+      flushDatabase(rest[0]);
+      return;
+    }
+
     fail(`unknown command: ${[command, subcommand].filter(Boolean).join(" ")} (run "pnpm admin:cli help" for usage)`);
   } finally {
     closeDb();
   }
 };
 
-main();
+void main();

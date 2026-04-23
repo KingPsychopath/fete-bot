@@ -2,8 +2,8 @@ import type { WAMessage } from "@whiskeysockets/baileys";
 import type { GroupMetadata, GroupParticipant } from "@whiskeysockets/baileys";
 
 import type { Config } from "./config.js";
-import { isModerator } from "./db.js";
-import { expandCandidateJids } from "./lidMap.js";
+import { isModeratorUser } from "./db.js";
+import { expandKnownAliases } from "./lidMap.js";
 
 export function parseToJid(input: string): string | null {
   const trimmed = input.trim();
@@ -117,8 +117,8 @@ export function parseDuration(param?: string): Date | null {
   return new Date(Date.now() + value * multipliers[unit as keyof typeof multipliers]);
 }
 
-export function isAuthorised(jid: string, config: Config): boolean {
-  return config.ownerJids.includes(jid) || isModerator(jid);
+export function isAuthorised(userId: string, candidateAliases: readonly string[], config: Config): boolean {
+  return candidateAliases.some((alias) => config.ownerJids.includes(alias)) || isModeratorUser(userId);
 }
 
 export function hasAdminPrivileges(
@@ -128,7 +128,7 @@ export function hasAdminPrivileges(
 }
 
 export function isGroupAdmin(
-  jid: string,
+  candidateAliases: readonly string[],
   groupJid: string,
   groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
 ): boolean {
@@ -137,7 +137,7 @@ export function isGroupAdmin(
     return false;
   }
 
-  const candidateJids = new Set(expandCandidateJids([jid]));
+  const expandedCandidateAliases = new Set(expandKnownAliases(candidateAliases));
 
   return groupMetadata.participants.some(
     (participant) => {
@@ -145,29 +145,27 @@ export function isGroupAdmin(
         return false;
       }
 
-      const participantCandidateJids = expandCandidateJids([
+      const participantCandidateJids = expandKnownAliases([
         participant.id,
         participant.lid,
         parseToJid(participant.phoneNumber ?? ""),
       ]);
 
-      return participantCandidateJids.some((participantJid) => candidateJids.has(participantJid));
+      return participantCandidateJids.some((participantJid) => expandedCandidateAliases.has(participantJid));
     },
   );
 }
 
 export function isProtectedGroupMember(
+  userId: string,
   candidateJids: readonly string[],
   groupJid: string,
   config: Config,
   groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
 ): boolean {
-  const expandedCandidateJids = expandCandidateJids(candidateJids);
+  const expandedCandidateJids = expandKnownAliases(candidateJids);
 
-  return expandedCandidateJids.some(
-    (candidateJid) =>
-      isAuthorised(candidateJid, config) || isGroupAdmin(candidateJid, groupJid, groupMetadataByJid),
-  );
+  return isAuthorised(userId, expandedCandidateJids, config) || isGroupAdmin(expandedCandidateJids, groupJid, groupMetadataByJid);
 }
 
 // UK numbers

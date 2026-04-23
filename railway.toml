@@ -1,9 +1,8 @@
-# Railway config-as-code for fete-bot.
-# Build, deploy, and persistent volume are all declared here.
-# Standard storage contract:
+# Railway config-as-code covers build and deploy settings for this service.
+# Persistent volumes are attached in the Railway UI or API, not in this file.
+# Standard storage contract for this repo:
 # - Volume name: fete-bot-data
 # - Mount path: /app/data
-# - Size: managed in Railway UI (500MB on Hobby plan)
 
 [build]
 builder = "DOCKERFILE"
@@ -13,8 +12,3 @@ restartPolicyType = "ALWAYS"
 numReplicas = 1
 healthcheckPath = "/health"
 healthcheckTimeout = 30
-startCommand = "pnpm start"
-
-[[deploy.volumes]]
-name = "fete-bot-data"
-mountPath = "/app/data"
