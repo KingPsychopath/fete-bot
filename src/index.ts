@@ -353,6 +353,23 @@ const logConfig = (): void => {
 const isManagedGroup = (groupJid: string): boolean =>
   config.allowedGroupJids.length === 0 || config.allowedGroupJids.includes(groupJid);
 
+const isSelfParticipant = (
+  participant: Pick<GroupMetadata["participants"][number], "id" | "lid" | "phoneNumber">,
+  selfJids: ReadonlySet<string>,
+): boolean => {
+  for (const candidate of [
+    participant.id ?? null,
+    participant.lid ?? null,
+    participant.phoneNumber ? parseToJid(participant.phoneNumber) : null,
+  ]) {
+    if (candidate && selfJids.has(candidate)) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
 const syncLidMappingIdentity = async (
   lidJid: string | null | undefined,
   phoneNumber: string | null | undefined,
@@ -384,6 +401,10 @@ const syncLidMappingIdentity = async (
 const syncGroupParticipantIdentities = async (metadata: GroupMetadata): Promise<void> => {
   const selfJids = botSelfJids;
   for (const participant of metadata.participants) {
+    if (isSelfParticipant(participant, selfJids)) {
+      continue;
+    }
+
     try {
       await resolveUser({
         participantJid: participant.id ?? null,

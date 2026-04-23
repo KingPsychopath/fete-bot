@@ -232,6 +232,27 @@ const getAliasTypeForClassification = (classification: "user-phone" | "user-lid"
 
 const isTruthy = <T>(value: T | null | undefined): value is T => value !== null && value !== undefined;
 
+const getCandidateClassifications = (
+  input: ResolveUserInput,
+): Array<{ field: "participantJid" | "phoneJid" | "lidJid"; alias: string; classification: JidClassification }> => {
+  const selfJids = input.selfJids ?? EMPTY_SELF_JIDS;
+
+  return ([
+    ["participantJid", input.participantJid ?? null],
+    ["phoneJid", input.phoneJid ?? null],
+    ["lidJid", input.lidJid ?? null],
+  ] as const)
+    .filter((entry): entry is readonly ["participantJid" | "phoneJid" | "lidJid", string] => Boolean(entry[1]))
+    .map(([field, value]) => {
+      const alias = normalizeJid(value);
+      return {
+        field,
+        alias,
+        classification: classifyJid(alias, selfJids),
+      };
+    });
+};
+
 const normalizeAndClassifyUserAlias = (
   alias: string | null | undefined,
   selfJids: ReadonlySet<string>,
@@ -821,12 +842,20 @@ export const resolveUser = async (input: ResolveUserInput): Promise<ResolvedUser
   });
 
   if (aliases.length === 0) {
-    log("identity.resolve.rejected", {
-      reason: "no_user_aliases",
-      participantJid: input.participantJid ?? null,
-      phoneJid: input.phoneJid ?? null,
-      lidJid: input.lidJid ?? null,
-    });
+    const candidateClassifications = getCandidateClassifications({ ...input, selfJids });
+    const onlySelfCandidates =
+      candidateClassifications.length > 0 &&
+      candidateClassifications.every((candidate) => candidate.classification === "self");
+
+    if (!onlySelfCandidates) {
+      log("identity.resolve.rejected", {
+        reason: "no_user_aliases",
+        participantJid: input.participantJid ?? null,
+        phoneJid: input.phoneJid ?? null,
+        lidJid: input.lidJid ?? null,
+        classifications: candidateClassifications,
+      });
+    }
     return null;
   }
 
