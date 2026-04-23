@@ -37,6 +37,7 @@ import {
   findUserByIdentifier,
   getShortUserId,
   parseIdentifier,
+  parseIdentifierDetailed,
   resolveParticipantTarget,
   resolveTargetFromIdentifier,
   type ResolvedUser,
@@ -91,8 +92,9 @@ const HELP_MESSAGE = `*Fete Bot — Admin Help*
   DM:    !whois 447911123456@s.whatsapp.net
 
 *Number format*
-  UK:            07911123456  or  +447911123456
+  UK:            07911123456 only if DEFAULT_PHONE_REGION is set, or +447911123456
   International: always use + and country code
+  Bare digits:   7768986864 is rejected as ambiguous
   Tip: unsure? Reply to their message instead.`;
 
 const OWNER_HELP_BLOCK = `
@@ -105,11 +107,14 @@ const OWNER_HELP_BLOCK = `
 const INVALID_IDENTIFIER_MESSAGE = `❌ Couldn't parse that as a user identifier.
 
 Try:
-  07911 123456
   +447911123456
+  00447911123456
+  07911 123456
   447911123456@s.whatsapp.net
   lid:abc123def456
   abc123def456@lid
+
+Bare numbers like 7768986864 are rejected because they're ambiguous.
 
 Or reply directly to the user's message instead.`;
 
@@ -336,6 +341,39 @@ const previewWarningText = (reason: DisallowedUrlReason): string => {
 
 const sendInvalidIdentifier = async (sock: WASocket, destinationJid: string): Promise<void> => {
   await sock.sendMessage(destinationJid, { text: INVALID_IDENTIFIER_MESSAGE });
+};
+
+const sendIdentifierParseFailure = async (
+  sock: WASocket,
+  destinationJid: string,
+  identifier?: string | null,
+): Promise<void> => {
+  if (!identifier) {
+    await sendInvalidIdentifier(sock, destinationJid);
+    return;
+  }
+
+  const parsed = parseIdentifierDetailed(identifier);
+  if ("alias" in parsed) {
+    await sendInvalidIdentifier(sock, destinationJid);
+    return;
+  }
+
+  const lines = [`❌ Couldn't parse "${identifier}" as a user identifier.`];
+  if (parsed.hint) {
+    lines.push("", `Hint: ${parsed.hint}`);
+  }
+  lines.push(
+    "",
+    "Examples:",
+    "  +447911123456",
+    "  00447911123456",
+    "  07911 123456",
+    "  447911123456@s.whatsapp.net",
+    "  lid:abc123def456",
+  );
+
+  await sock.sendMessage(destinationJid, { text: lines.join("\n") });
 };
 
 const resolveGroupTargets = (
@@ -963,7 +1001,7 @@ Forwarded messages seen today: ${getForwardedMessagesSeenToday()}`,
 
     const target = await resolveIdentifierTarget(parsed.targetIdentifier, selfJids);
     if (!target) {
-      await sendInvalidIdentifier(sock, replyJid);
+      await sendIdentifierParseFailure(sock, replyJid, parsed.targetIdentifier);
       logAudit(actorContext, "!addmod", null, null, null, text, "error");
       return;
     }
@@ -994,7 +1032,7 @@ They can now use all moderation commands.`,
 
     const target = await resolveIdentifierTarget(parsed.targetIdentifier, selfJids);
     if (!target) {
-      await sendInvalidIdentifier(sock, replyJid);
+      await sendIdentifierParseFailure(sock, replyJid, parsed.targetIdentifier);
       logAudit(actorContext, "!removemod", null, null, null, text, "error");
       return;
     }
@@ -1075,6 +1113,13 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
       return;
     }
 
+    const parsedIdentifier = parseIdentifierDetailed(parsed.targetIdentifier);
+    if (!("alias" in parsedIdentifier)) {
+      await sendIdentifierParseFailure(sock, replyJid, parsed.targetIdentifier);
+      logAudit(actorContext, parsed.command, null, null, null, text, "error");
+      return;
+    }
+
     const found = findUserByIdentifier(parsed.targetIdentifier);
     await sock.sendMessage(replyJid, {
       text: buildWhoisText(found ? describeUser(found.userId) : null),
@@ -1089,7 +1134,7 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
     ["!remove", "!pardon", "!resetstrikes", "!strikes", "!ban", "!unban", "!mute", "!unmute", "!strike"].includes(parsed.command) &&
     !target
   ) {
-    await sendInvalidIdentifier(sock, replyJid);
+    await sendIdentifierParseFailure(sock, replyJid, parsed.targetIdentifier);
     logAudit(actorContext, parsed.command, null, null, parsed.groupJid, text, "error");
     return;
   }

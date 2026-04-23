@@ -60,6 +60,7 @@ const loadedConfig = {
   allowedGroupJids: parseList(process.env.ALLOWED_GROUP_JIDS),
   ownerJids: parseList(process.env.OWNER_JIDS),
   muteOnStrike3: parseBoolean(process.env.MUTE_ON_STRIKE_3, true),
+  defaultPhoneRegion: normaliseEnvValue(process.env.DEFAULT_PHONE_REGION)?.toUpperCase() || null,
   botName: normaliseEnvValue(process.env.BOT_NAME) || "Fete Bot",
 } as const;
 

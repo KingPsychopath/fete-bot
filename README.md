@@ -256,17 +256,17 @@ After `!ban`, `!mute`, or `!strike`, the bot stores one undo action per owner or
 
 Accepted:
 
-- `07911123456`
 - `+447911123456`
-- `447911123456`
 - `00447911123456`
+- `07911123456` if `DEFAULT_PHONE_REGION` is configured
 - `447911123456@s.whatsapp.net`
 - international formats like `+1 212 555 0123`, `+33 6 12 34 56 78`, `+234 701 234 5678`
 
 Notes:
 
-- Local numbers beginning with `0` are assumed to be UK `+44`
-- For non-UK numbers, always use international format with `+`
+- Bare numbers without `+` or a leading `0` are rejected as ambiguous
+- Local numbers beginning with `0` only work when `DEFAULT_PHONE_REGION` is configured
+- For multi-region or production-safe setups, prefer international format with `+`
 - Direct commands also accept explicit `@lid` JIDs when you have them
 - When in doubt, reply to the message instead of typing the number
 

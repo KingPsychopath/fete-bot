@@ -4,49 +4,10 @@ import type { GroupMetadata, GroupParticipant } from "@whiskeysockets/baileys";
 import type { Config } from "./config.js";
 import { isModeratorUser } from "./db.js";
 import { expandKnownAliases } from "./lidMap.js";
+import { normalizeTrustedPhoneToJid } from "./phone.js";
 
 export function parseToJid(input: string): string | null {
-  const trimmed = input.trim();
-
-  if (trimmed.endsWith("@s.whatsapp.net")) {
-    return /^\d{7,15}@s\.whatsapp\.net$/.test(trimmed) ? trimmed : null;
-  }
-
-  if (trimmed.endsWith("@lid") || trimmed.endsWith("@g.us")) {
-    return null;
-  }
-
-  if (!trimmed) {
-    return null;
-  }
-
-  let working = trimmed.replace(/[\s().-]/g, "");
-
-  if (working.startsWith("00")) {
-    working = `+${working.slice(2)}`;
-  }
-
-  if (working.startsWith("+")) {
-    working = working.slice(1);
-  }
-
-  // NOTE: Local format numbers (starting with 0) are assumed to be UK (+44).
-  // For non-UK numbers, owners and moderators should always use international format:
-  // +33 6 12 34 56 78 (France), +1 212 555 0123 (US), +234 701 234 5678 (Nigeria) etc.
-  // This is documented in README and !help output.
-  if (working.startsWith("0")) {
-    console.warn(
-      "Assuming UK number for local format 0XXXX — use international format for non-UK numbers",
-    );
-    working = `44${working.slice(1)}`;
-  }
-
-  if (!/^\d{7,15}$/.test(working)) {
-    return null;
-  }
-
-  const jid = `${working}@s.whatsapp.net`;
-  return /^\d{7,15}@s\.whatsapp\.net$/.test(jid) ? jid : null;
+  return normalizeTrustedPhoneToJid(input);
 }
 
 export function extractAllIdentifiers(msg: WAMessage): {
@@ -168,14 +129,11 @@ export function isProtectedGroupMember(
   return isAuthorised(userId, expandedCandidateJids, config) || isGroupAdmin(expandedCandidateJids, groupJid, groupMetadataByJid);
 }
 
-// UK numbers
-// parseToJid("07911123456")              → "447911123456@s.whatsapp.net"
+// Trusted/system inputs
+// parseToJid("447911123456")             → "447911123456@s.whatsapp.net"
 // parseToJid("+447911123456")            → "447911123456@s.whatsapp.net"
 // parseToJid("+44 7911 123 456")         → "447911123456@s.whatsapp.net"
-// parseToJid("+44(0)7911123456")         → "447911123456@s.whatsapp.net"
 // parseToJid("00447911123456")           → "447911123456@s.whatsapp.net"
-
-// International numbers
 // parseToJid("+1 212 555 0123")          → "12125550123@s.whatsapp.net"
 // parseToJid("+33 6 12 34 56 78")        → "33612345678@s.whatsapp.net"
 // parseToJid("+234 701 234 5678")        → "2347012345678@s.whatsapp.net"
@@ -191,6 +149,3 @@ export function isProtectedGroupMember(
 // parseToJid("not a number")             → null
 // parseToJid("123")                      → null
 // parseToJid("")                         → null
-
-// Ambiguous (UK assumed, warn in console)
-// parseToJid("07911123456")              → "447911123456@s.whatsapp.net" + console warn

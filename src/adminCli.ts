@@ -22,6 +22,7 @@ import {
   describeUser,
   findUserByIdentifier,
   getShortUserId,
+  parseIdentifierDetailed,
   resolveTargetFromIdentifier,
   type UserSummary,
 } from "./identity.js";
@@ -75,6 +76,17 @@ const fail = (message: string): never => {
   process.exit(1);
 };
 
+const formatIdentifierFailure = (input: string): string => {
+  const parsed = parseIdentifierDetailed(input);
+  if ("alias" in parsed) {
+    return `could not parse "${input}" as a WhatsApp user identifier`;
+  }
+
+  return parsed.hint
+    ? `could not parse "${input}" as a WhatsApp user identifier (${parsed.hint})`
+    : `could not parse "${input}" as a WhatsApp user identifier`;
+};
+
 const LOCAL_CLI_ACTOR: ActorReference = {
   userId: null,
   label: "local-cli",
@@ -102,9 +114,9 @@ const resolveWritableUser = async (input: string | undefined): Promise<UserSumma
   const value = input ?? fail("missing user identifier");
   const resolved = await resolveTargetFromIdentifier(value, new Set());
   if (!resolved) {
-    fail(`could not parse "${value}" as a WhatsApp user identifier`);
+    fail(formatIdentifierFailure(value));
   }
-  const ensuredResolved = resolved ?? fail(`could not parse "${value}" as a WhatsApp user identifier`);
+  const ensuredResolved = resolved ?? fail(formatIdentifierFailure(value));
 
   return {
     userId: ensuredResolved.userId,

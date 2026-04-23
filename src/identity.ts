@@ -15,6 +15,7 @@ import {
 } from "./db.js";
 import { expandKnownAliases } from "./lidMap.js";
 import { error, log, warn } from "./logger.js";
+import { parseHumanPhoneInput, type PhoneParseFailureReason } from "./phone.js";
 import { parseToJid } from "./utils.js";
 
 export type JidClassification =
@@ -31,6 +32,12 @@ export type ParsedIdentifier = {
   input: string;
   alias: string;
   classification: "user-phone" | "user-lid";
+};
+
+export type InvalidIdentifier = {
+  input: string;
+  reason: "invalid_identifier" | PhoneParseFailureReason;
+  hint?: string;
 };
 
 export type UserSummary = {
@@ -338,15 +345,24 @@ export const classifyJid = (input: string, selfJids: ReadonlySet<string> = EMPTY
 };
 
 export const parseIdentifier = (input: string): ParsedIdentifier | null => {
+  const result = parseIdentifierDetailed(input);
+  return "alias" in result ? result : null;
+};
+
+export const parseIdentifierDetailed = (input: string): ParsedIdentifier | InvalidIdentifier => {
   const trimmed = input.trim();
   if (!trimmed) {
-    return null;
+    return { input, reason: "invalid_identifier" };
   }
 
   if (trimmed.toLowerCase().startsWith("lid:")) {
     const lidUser = trimmed.slice(4).trim().toLowerCase();
     if (!lidUser || /[@\s]/.test(lidUser)) {
-      return null;
+      return {
+        input,
+        reason: "invalid_identifier",
+        hint: "Use lid:abc123def456 or abc123def456@lid.",
+      };
     }
 
     return {
@@ -358,7 +374,7 @@ export const parseIdentifier = (input: string): ParsedIdentifier | null => {
 
   const normalizedExistingJid = normalizeJid(trimmed);
   const existingClassification = classifyJid(normalizedExistingJid);
-  if (existingClassification === "user-phone" || existingClassification === "user-lid") {
+  if (existingClassification === "user-lid") {
     return {
       input,
       alias: normalizedExistingJid,
@@ -366,14 +382,36 @@ export const parseIdentifier = (input: string): ParsedIdentifier | null => {
     };
   }
 
-  const parsedPhoneJid = parseToJid(trimmed);
-  if (!parsedPhoneJid) {
-    return null;
+  if (existingClassification === "user-phone") {
+    const phoneDigits = normalizedExistingJid.replace(/@s\.whatsapp\.net$/i, "");
+    const parsedJid = parseHumanPhoneInput(`+${phoneDigits}`);
+    if (!parsedJid.ok) {
+      return {
+        input,
+        reason: parsedJid.reason,
+        hint: parsedJid.hint,
+      };
+    }
+
+    return {
+      input,
+      alias: normalizeJid(parsedJid.jid),
+      classification: "user-phone",
+    };
+  }
+
+  const parsedPhone = parseHumanPhoneInput(trimmed);
+  if (!parsedPhone.ok) {
+    return {
+      input,
+      reason: parsedPhone.reason,
+      hint: parsedPhone.hint,
+    };
   }
 
   return {
     input,
-    alias: normalizeJid(parsedPhoneJid),
+    alias: normalizeJid(parsedPhone.jid),
     classification: "user-phone",
   };
 };
@@ -975,8 +1013,8 @@ export const findExistingUserByAliases = (aliases: ReadonlyArray<string | null |
 };
 
 export const findUserByIdentifier = (input: string): UserSummary | null => {
-  const parsed = parseIdentifier(input);
-  if (!parsed) {
+  const parsed = parseIdentifierDetailed(input);
+  if (!("alias" in parsed)) {
     return null;
   }
 
@@ -988,8 +1026,8 @@ export const resolveTargetFromIdentifier = async (
   selfJids: ReadonlySet<string>,
   pushName?: string | null,
 ): Promise<ResolvedUser | null> => {
-  const parsed = parseIdentifier(input);
-  if (!parsed) {
+  const parsed = parseIdentifierDetailed(input);
+  if (!("alias" in parsed)) {
     return null;
   }
 
