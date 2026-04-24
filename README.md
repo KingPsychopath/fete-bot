@@ -82,6 +82,9 @@ Notes:
 
 - `DRY_RUN=true` by default
 - `ALLOWED_GROUP_JIDS` is optional; when empty, the bot acts in all joined groups
+- `TICKET_MARKETPLACE_MANAGEMENT=true` by default
+- `TICKET_MARKETPLACE_GROUP_JIDS` is comma-separated and defaults to `120363418331899807@g.us`
+- `TICKET_SPOTLIGHT_ENABLED=false` by default; spotlight reposts only go to explicit `TICKET_SPOTLIGHT_TARGET_JIDS`
 - `OWNER_JIDS`, database moderators, and WhatsApp group admins are never moderated
 - The bot never responds in 1:1 chats unless the sender is an owner or moderator using a command
 - The bot never acts on its own messages, with an extra self-ID check as defence in depth
@@ -131,6 +134,21 @@ Special rules:
 - 8+ messages within 60 seconds by the same sender is treated as flooding
 - Phone numbers trigger a warning only, not a deletion
 - Forwarded / heavily forwarded messages are logged for audit only
+
+### Ticket marketplace routing
+
+- Buying or selling intent outside `FDLM Ticket Marketplace` is deleted and redirected there without a strike
+- General ticket or event discussion is still allowed outside the marketplace
+- Seller posts inside the marketplace must include a price, `face value` / `FV`, or free-equivalent wording
+- Marketplace routing respects `DRY_RUN` and never creates strikes, mutes, bans, or review-queue entries
+
+### Ticket spotlight reposts
+
+- Disabled by default with `TICKET_SPOTLIGHT_ENABLED=false`
+- Eligible buying or priced selling posts in the marketplace can be reposted after a delay to explicit spotlight target groups
+- Spotlight has per-user, per-target-group, quiet-hours, daily-cap, URL, reply/quote, and blocklist gates
+- Pending spotlight jobs and send history are stored in SQLite so restarts do not lose queued posts
+- Delete events cancel pending spotlights on a best-effort basis
 
 ### Strike system
 
@@ -490,14 +508,17 @@ Notes:
 
 - The bot must be an admin in each moderated group to delete messages or remove members
 - `DRY_RUN=true` still logs what would happen, but does not delete or send moderation replies
+- Ticket marketplace routing deletes and redirects buying/selling intent without adding strikes
+- Ticket spotlight reposts are opt-in and use SQLite claims to avoid duplicate sends across overlapping bot processes
 - Ticket-platform links get a specific redirect message to `fete.outofofficecollective.co.uk`
 - Phone-number spam warns but does not delete
 - Muted users are silent-delete only
 - Ban and mute enforcement is local to the configured group
 - DM commands from non-authorised users get a short "not authorised" reply and are ignored
 
-## Type Check
+## Tests And Type Check
 
 ```bash
 mise exec -- pnpm test
+mise exec -- pnpm typecheck
 ```

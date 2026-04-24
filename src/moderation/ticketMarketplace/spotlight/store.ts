@@ -1,0 +1,282 @@
+import { randomUUID } from "node:crypto";
+
+import {
+  getDb,
+  withImmediateTransaction,
+  type SpotlightIntent,
+  type SpotlightPendingRow,
+  type SpotlightSummaryRow,
+} from "../../../db.js";
+
+type SpotlightPendingDbRow = {
+  id: string;
+  source_group_jid: string;
+  source_msg_id: string;
+  sender_user_id: string;
+  sender_jid: string;
+  body: string;
+  classified_intent: SpotlightIntent;
+  scheduled_at: string;
+  status: "pending" | "sent" | "cancelled";
+  cancel_reason: string | null;
+  claimed_at: string | null;
+  claimed_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type QueueSpotlightInput = {
+  sourceGroupJid: string;
+  sourceMsgId: string;
+  senderUserId: string;
+  senderJid: string;
+  body: string;
+  classifiedIntent: SpotlightIntent;
+  scheduledAt: string;
+};
+
+const toPendingRow = (row: SpotlightPendingDbRow): SpotlightPendingRow => ({
+  id: row.id,
+  sourceGroupJid: row.source_group_jid,
+  sourceMsgId: row.source_msg_id,
+  senderUserId: row.sender_user_id,
+  senderJid: row.sender_jid,
+  body: row.body,
+  classifiedIntent: row.classified_intent,
+  scheduledAt: row.scheduled_at,
+  status: row.status,
+  cancelReason: row.cancel_reason,
+  claimedAt: row.claimed_at,
+  claimedBy: row.claimed_by,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+
+export const queueSpotlight = (input: QueueSpotlightInput): SpotlightPendingRow | null => {
+  const now = new Date().toISOString();
+  const id = randomUUID();
+  const result = getDb()
+    .prepare(`
+      INSERT OR IGNORE INTO spotlight_pending (
+        id,
+        source_group_jid,
+        source_msg_id,
+        sender_user_id,
+        sender_jid,
+        body,
+        classified_intent,
+        scheduled_at,
+        status,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+    `)
+    .run(
+      id,
+      input.sourceGroupJid,
+      input.sourceMsgId,
+      input.senderUserId,
+      input.senderJid,
+      input.body,
+      input.classifiedIntent,
+      input.scheduledAt,
+      now,
+      now,
+    );
+
+  if (result.changes === 0) {
+    return null;
+  }
+
+  return getPendingById(id);
+};
+
+export const getPendingById = (id: string): SpotlightPendingRow | null => {
+  const row = getDb()
+    .prepare<[string], SpotlightPendingDbRow>(`
+      SELECT *
+      FROM spotlight_pending
+      WHERE id = ?
+    `)
+    .get(id);
+
+  return row ? toPendingRow(row) : null;
+};
+
+export const claimDueSpotlights = (
+  nowIso: string,
+  staleBeforeIso: string,
+  claimedBy: string,
+  limit = 10,
+): SpotlightPendingRow[] =>
+  withImmediateTransaction(() => {
+    const rows = getDb()
+      .prepare<[string, string, number], SpotlightPendingDbRow>(`
+        SELECT *
+        FROM spotlight_pending
+        WHERE status = 'pending'
+          AND scheduled_at <= ?
+          AND (claimed_at IS NULL OR claimed_at < ?)
+        ORDER BY scheduled_at ASC
+        LIMIT ?
+      `)
+      .all(nowIso, staleBeforeIso, limit);
+
+    if (rows.length === 0) {
+      return [];
+    }
+
+    const update = getDb().prepare<[string, string, string, string, string]>(`
+      UPDATE spotlight_pending
+      SET claimed_at = ?, claimed_by = ?, updated_at = ?
+      WHERE id = ?
+        AND status = 'pending'
+        AND (claimed_at IS NULL OR claimed_at < ?)
+    `);
+
+    const claimed: SpotlightPendingRow[] = [];
+    for (const row of rows) {
+      const result = update.run(nowIso, claimedBy, nowIso, row.id, staleBeforeIso);
+      if (result.changes > 0) {
+        const next = getPendingById(row.id);
+        if (next) {
+          claimed.push(next);
+        }
+      }
+    }
+
+    return claimed;
+  });
+
+export const markSpotlightSent = (pendingId: string, claimedBy: string, sentAt: string): boolean => {
+  const result = getDb()
+    .prepare<[string, string, string]>(`
+      UPDATE spotlight_pending
+      SET status = 'sent', updated_at = ?
+      WHERE id = ? AND status = 'pending' AND claimed_by = ?
+    `)
+    .run(sentAt, pendingId, claimedBy);
+
+  return result.changes > 0;
+};
+
+export const cancelClaimedSpotlight = (
+  pendingId: string,
+  claimedBy: string,
+  reason: string,
+  nowIso = new Date().toISOString(),
+): boolean => {
+  const result = getDb()
+    .prepare<[string, string, string, string]>(`
+      UPDATE spotlight_pending
+      SET status = 'cancelled', cancel_reason = ?, updated_at = ?
+      WHERE id = ? AND status = 'pending' AND claimed_by = ?
+    `)
+    .run(reason, nowIso, pendingId, claimedBy);
+
+  return result.changes > 0;
+};
+
+export const cancelSpotlightsForSource = (
+  sourceGroupJid: string,
+  sourceMsgId: string,
+  reason: string,
+  nowIso = new Date().toISOString(),
+): number => {
+  const result = getDb()
+    .prepare<[string, string, string, string]>(`
+      UPDATE spotlight_pending
+      SET status = 'cancelled', cancel_reason = ?, updated_at = ?
+      WHERE source_group_jid = ? AND source_msg_id = ? AND status = 'pending'
+    `)
+    .run(reason, nowIso, sourceGroupJid, sourceMsgId);
+
+  return result.changes;
+};
+
+export const recordSpotlightHistory = (
+  pending: SpotlightPendingRow,
+  targetGroupJid: string,
+  sentAt: string,
+): void => {
+  getDb()
+    .prepare(`
+      INSERT INTO spotlight_history (
+        id,
+        sender_user_id,
+        sender_jid,
+        source_group_jid,
+        source_msg_id,
+        target_group_jid,
+        sent_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `)
+    .run(
+      randomUUID(),
+      pending.senderUserId,
+      pending.senderJid,
+      pending.sourceGroupJid,
+      pending.sourceMsgId,
+      targetGroupJid,
+      sentAt,
+    );
+};
+
+export const hasUserSpotlightSince = (senderUserId: string, sinceIso: string): boolean => {
+  const row = getDb()
+    .prepare<[string, string], { count: number }>(`
+      SELECT COUNT(*) AS count
+      FROM spotlight_history
+      WHERE sender_user_id = ? AND sent_at >= ?
+    `)
+    .get(senderUserId, sinceIso);
+
+  return (row?.count ?? 0) > 0;
+};
+
+export const hasTargetGroupSpotlightSince = (targetGroupJid: string, sinceIso: string): boolean => {
+  const row = getDb()
+    .prepare<[string, string], { count: number }>(`
+      SELECT COUNT(*) AS count
+      FROM spotlight_history
+      WHERE target_group_jid = ? AND sent_at >= ?
+    `)
+    .get(targetGroupJid, sinceIso);
+
+  return (row?.count ?? 0) > 0;
+};
+
+export const getTargetGroupSpotlightCountSince = (targetGroupJid: string, sinceIso: string): number => {
+  const row = getDb()
+    .prepare<[string, string], { count: number }>(`
+      SELECT COUNT(*) AS count
+      FROM spotlight_history
+      WHERE target_group_jid = ? AND sent_at >= ?
+    `)
+    .get(targetGroupJid, sinceIso);
+
+  return row?.count ?? 0;
+};
+
+export const getSpotlightSummarySince = (sinceIso: string): SpotlightSummaryRow[] =>
+  getDb()
+    .prepare<[string, string], { status: "queued" | "sent" | "cancelled"; cancel_reason: string | null; count: number }>(`
+      SELECT 'queued' AS status, NULL AS cancel_reason, COUNT(*) AS count
+      FROM spotlight_pending
+      WHERE created_at >= ?
+      UNION ALL
+      SELECT status, cancel_reason, COUNT(*) AS count
+      FROM spotlight_pending
+      WHERE updated_at >= ?
+        AND status IN ('sent', 'cancelled')
+      GROUP BY status, cancel_reason
+      ORDER BY status, cancel_reason
+    `)
+    .all(sinceIso, sinceIso)
+    .map((row) => ({
+      status: row.status,
+      cancelReason: row.cancel_reason,
+      count: row.count,
+    }));

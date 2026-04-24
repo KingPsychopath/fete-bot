@@ -9,7 +9,8 @@
     "start": "tsx src/index.ts",
     "admin:cli": "tsx src/adminCli.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsc --noEmit"
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": [],
   "author": "",
@@ -36,6 +37,7 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.6.0",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.5"
   }
 }

@@ -91,6 +91,32 @@ export interface ReviewQueueEntry {
   status: ReviewQueueStatus;
 }
 
+export type SpotlightIntent = "buying" | "selling";
+export type SpotlightPendingStatus = "pending" | "sent" | "cancelled";
+
+export interface SpotlightPendingRow {
+  id: string;
+  sourceGroupJid: string;
+  sourceMsgId: string;
+  senderUserId: string;
+  senderJid: string;
+  body: string;
+  classifiedIntent: SpotlightIntent;
+  scheduledAt: string;
+  status: SpotlightPendingStatus;
+  cancelReason: string | null;
+  claimedAt: string | null;
+  claimedBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SpotlightSummaryRow {
+  status: SpotlightPendingStatus | "queued";
+  cancelReason: string | null;
+  count: number;
+}
+
 export type ActorReference = {
   userId?: string | null;
   label: string;
@@ -100,16 +126,55 @@ type CountRow = {
   count: number;
 };
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const RESET_DB_FLAG = "RESET_DB";
 export const GLOBAL_MODERATION_GROUP_JID = "__all_groups__";
 
 let db: Database.Database | null = null;
 
+const SPOTLIGHT_SCHEMA_SQL = `
+  CREATE TABLE spotlight_pending (
+    id TEXT PRIMARY KEY,
+    source_group_jid TEXT NOT NULL,
+    source_msg_id TEXT NOT NULL,
+    sender_user_id TEXT NOT NULL REFERENCES users(id),
+    sender_jid TEXT NOT NULL,
+    body TEXT NOT NULL,
+    classified_intent TEXT NOT NULL CHECK(classified_intent IN ('buying','selling')),
+    scheduled_at TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending','sent','cancelled')) DEFAULT 'pending',
+    cancel_reason TEXT,
+    claimed_at TEXT,
+    claimed_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(source_group_jid, source_msg_id)
+  );
+  CREATE INDEX idx_spotlight_pending_due ON spotlight_pending(status, scheduled_at);
+  CREATE INDEX idx_spotlight_pending_claim ON spotlight_pending(status, claimed_at);
+  CREATE INDEX idx_spotlight_pending_source ON spotlight_pending(source_group_jid, source_msg_id);
+  CREATE INDEX idx_spotlight_pending_updated ON spotlight_pending(updated_at);
+
+  CREATE TABLE spotlight_history (
+    id TEXT PRIMARY KEY,
+    sender_user_id TEXT NOT NULL REFERENCES users(id),
+    sender_jid TEXT NOT NULL,
+    source_group_jid TEXT NOT NULL,
+    source_msg_id TEXT NOT NULL,
+    target_group_jid TEXT NOT NULL,
+    sent_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_spotlight_history_sender_sent ON spotlight_history(sender_user_id, sent_at);
+  CREATE INDEX idx_spotlight_history_target_sent ON spotlight_history(target_group_jid, sent_at);
+  CREATE INDEX idx_spotlight_history_source ON spotlight_history(source_group_jid, source_msg_id);
+`;
+
 const recreateSchema = (database: Database.Database): void => {
   database.exec("PRAGMA foreign_keys = OFF");
 
   const tables = [
+    "spotlight_history",
+    "spotlight_pending",
     "identity_merges",
     "user_aliases",
     "review_queue",
@@ -240,15 +305,48 @@ const recreateSchema = (database: Database.Database): void => {
       PRIMARY KEY(user_id, group_jid)
     );
     CREATE INDEX idx_review_queue_flagged_at ON review_queue(flagged_at);
+
+    ${SPOTLIGHT_SCHEMA_SQL}
   `);
 
   database.pragma(`user_version = ${SCHEMA_VERSION}`);
   database.exec("PRAGMA foreign_keys = ON");
 };
 
-const ensureSchema = (database: Database.Database): void => {
+export const migrateSchemaV2ToV3 = (
+  database: Database.Database,
+  options: { throwAfterSchemaForTest?: boolean } = {},
+): void => {
+  if (database.inTransaction) {
+    throw new Error("Cannot migrate schema while another transaction is active");
+  }
+
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    database.exec(SPOTLIGHT_SCHEMA_SQL);
+    if (options.throwAfterSchemaForTest) {
+      throw new Error("Intentional migration failure for test");
+    }
+    database.pragma(`user_version = ${SCHEMA_VERSION}`);
+    database.exec("COMMIT");
+  } catch (migrationError) {
+    if (database.inTransaction) {
+      database.exec("ROLLBACK");
+    }
+    throw migrationError;
+  }
+};
+
+export const ensureSchema = (database: Database.Database): void => {
   const version = Number(database.pragma("user_version", { simple: true }) ?? 0);
   if (version >= SCHEMA_VERSION) {
+    database.pragma("journal_mode = WAL");
+    database.exec("PRAGMA foreign_keys = ON");
+    return;
+  }
+
+  if (version === 2) {
+    migrateSchemaV2ToV3(database);
     database.pragma("journal_mode = WAL");
     database.exec("PRAGMA foreign_keys = ON");
     return;

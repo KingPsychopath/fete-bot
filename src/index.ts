@@ -32,6 +32,10 @@ import {
 import { runStartupHealthCheck } from "./healthCheck.js";
 import { loadLidMappings, recordLidMapping } from "./lidMap.js";
 import { containsDisallowedUrl } from "./linkChecker.js";
+import { getTicketMarketplaceDecision } from "./moderation/ticketMarketplace/index.js";
+import { getSpotlightEligibility } from "./moderation/ticketMarketplace/spotlight/eligibility.js";
+import { startSpotlightScheduler, stopSpotlightScheduler } from "./moderation/ticketMarketplace/spotlight/scheduler.js";
+import { cancelSpotlightsForSource, queueSpotlight } from "./moderation/ticketMarketplace/spotlight/store.js";
 import { SpamDetector, type SpamReason } from "./spamDetector.js";
 import { error, log, warn } from "./logger.js";
 import {
@@ -114,6 +118,8 @@ type MessageContextInfo = {
   participant?: string | null;
   isForwarded?: boolean | null;
   forwardingScore?: number | null;
+  stanzaId?: string | null;
+  quotedMessage?: unknown;
 };
 
 const getMessageContextInfo = (message: WAMessage["message"]): MessageContextInfo | null => {
@@ -160,6 +166,11 @@ const extractMessageText = (msg: WAMessage): string => {
 
 const getQuotedParticipant = (message: WAMessage["message"]): string | null => {
   return getMessageContextInfo(message)?.participant ?? null;
+};
+
+const hasQuotedMessage = (message: WAMessage["message"]): boolean => {
+  const contextInfo = getMessageContextInfo(message);
+  return Boolean(contextInfo?.quotedMessage || contextInfo?.stanzaId);
 };
 
 const getPushName = (msg: WAMessage): string | null => msg.pushName ?? null;
@@ -224,10 +235,11 @@ const sendModerationMessage = async (
   groupJid: string,
   text: string,
   mentionTargetJid: string,
+  quotedMessage?: WAMessage,
 ): Promise<void> => {
   if (!mentionTargetJid || !MENTIONABLE_JID_REGEX.test(mentionTargetJid)) {
     const plainText = text.replace(/@\S+\s+-\s+/u, "").replace(/@\S+/u, "there");
-    await sock.sendMessage(groupJid, { text: plainText });
+    await sock.sendMessage(groupJid, { text: plainText }, quotedMessage ? { quoted: quotedMessage } : undefined);
     return;
   }
 
@@ -241,7 +253,7 @@ const sendModerationMessage = async (
   await sock.sendMessage(groupJid, {
     text,
     mentions: [mentionTargetJid],
-  });
+  }, quotedMessage ? { quoted: quotedMessage } : undefined);
 };
 
 const getMutedCounterKey = (userJid: string, groupJid: string): string => `${groupJid}::${userJid}`;
@@ -358,6 +370,10 @@ const logConfig = (): void => {
 
   if (config.allowedGroupJids.length === 0) {
     warn("ALLOWED_GROUP_JIDS is empty, so the bot will act in all joined groups.");
+  }
+
+  if (config.ticketMarketplaceManagement && config.ticketMarketplaceGroupJids.length === 0) {
+    warn("TICKET_MARKETPLACE_MANAGEMENT is enabled but TICKET_MARKETPLACE_GROUP_JIDS is empty.");
   }
 };
 
@@ -573,6 +589,78 @@ const buildErrorLogMessage = (messageText: string, moderationError: unknown): st
   return messageText.length > 0
     ? `${messageText}\n[ERROR] ${errorMessage}`
     : `[ERROR] ${errorMessage}`;
+};
+
+const queueTicketSpotlightIfEligible = (
+  msg: WAMessage,
+  groupJid: string,
+  senderUserId: string,
+  senderJid: string,
+  text: string,
+  ticketDecision: ReturnType<typeof getTicketMarketplaceDecision>,
+): void => {
+  if (!config.ticketSpotlightEnabled || !config.ticketMarketplaceGroupJids.includes(groupJid)) {
+    return;
+  }
+
+  const messageId = msg.key.id;
+  if (!messageId) {
+    warn("spotlight.cancelled.no_source_msg_id", { groupJid, senderJid });
+    return;
+  }
+
+  const eligibility = getSpotlightEligibility(config, {
+    groupJid,
+    senderJid,
+    text,
+    intent: ticketDecision.intent,
+    hasPrice: ticketDecision.hasPrice,
+    isReply: hasQuotedMessage(msg.message),
+    isCommand: text.trim().startsWith("!"),
+    fromMe: Boolean(msg.key.fromMe),
+  });
+
+  if (!eligibility.eligible) {
+    log(`spotlight.cancelled.${eligibility.reason}`, {
+      groupJid,
+      senderJid,
+      sourceMsgId: messageId,
+      classification: ticketDecision.intent,
+    });
+    return;
+  }
+
+  if (config.dryRun) {
+    log("Dry run: would queue ticket spotlight", {
+      groupJid,
+      senderJid,
+      sourceMsgId: messageId,
+      classification: ticketDecision.intent,
+    });
+    return;
+  }
+
+  const scheduledAt = new Date(Date.now() + config.ticketSpotlightDelayMinutes * 60_000).toISOString();
+  const queued = queueSpotlight({
+    sourceGroupJid: groupJid,
+    sourceMsgId: messageId,
+    senderUserId,
+    senderJid,
+    body: text,
+    classifiedIntent: ticketDecision.intent === "selling" ? "selling" : "buying",
+    scheduledAt,
+  });
+
+  if (queued) {
+    log("spotlight.queued", {
+      pendingId: queued.id,
+      groupJid,
+      senderJid,
+      sourceMsgId: messageId,
+      scheduledAt,
+      classification: ticketDecision.intent,
+    });
+  }
 };
 
 export const handleMessage = async (
@@ -838,6 +926,105 @@ They have been banned and removed after repeatedly trying to post while muted.`,
       }
     } catch (muteError) {
       error("Failed mute check", { senderJid, groupJid, error: muteError });
+    }
+
+    const isCommandText = text.trim().startsWith("!");
+    if (!isCommandText) {
+      const ticketDecision = getTicketMarketplaceDecision(config, groupJid, text);
+
+      if (ticketDecision.reason) {
+        log("Ticket marketplace decision", {
+          groupJid,
+          senderJid: canonicalSenderAlias,
+          classification: ticketDecision.intent,
+          matchedTokens: ticketDecision.matchedTokens,
+          pricePresent: ticketDecision.hasPrice,
+          action: ticketDecision.action,
+          dryRun: config.dryRun,
+        });
+      }
+
+      if (ticketDecision.action !== "allow") {
+        const mentionTargetJid = getMentionTargetJid(senderJid, phoneJid);
+        const mentionLabel = formatMentionLabel(senderJid, getPushName(msg), phoneJid);
+        const marketplaceName = config.ticketMarketplaceGroupName;
+        const replyText = ticketDecision.action === "redirect_buying"
+          ? `Hey ${mentionLabel} - looking to buy tickets? Please post in ${marketplaceName}.`
+          : ticketDecision.action === "redirect_selling"
+            ? `Hey ${mentionLabel} - ticket sales belong in ${marketplaceName}. Please repost there.`
+            : `Hey ${mentionLabel} - ticket sale posts must include a price, or say face value / FV.`;
+        const logEntry = {
+          timestamp: new Date().toISOString(),
+          group_jid: groupJid,
+          user_id: sender.userId,
+          participant_jid: liveSenderJid,
+          push_name: getPushName(msg),
+          message_text: text,
+          url_found: null,
+          reason: ticketDecision.reason,
+        };
+
+        if (config.dryRun) {
+          logAction({
+            ...logEntry,
+            action: "DRY_RUN",
+          });
+
+          warn("Dry run: would moderate ticket marketplace rule", {
+            groupJid,
+            senderJid: canonicalSenderAlias,
+            classification: ticketDecision.intent,
+            matchedTokens: ticketDecision.matchedTokens,
+            pricePresent: ticketDecision.hasPrice,
+            action: ticketDecision.action,
+            wouldSendText: replyText,
+          });
+          return;
+        }
+
+        try {
+          await sock.sendMessage(groupJid, { delete: msg.key as WAMessageKey });
+          await sendModerationMessage(sock, groupJid, replyText, mentionTargetJid, msg);
+          logAction({
+            ...logEntry,
+            action: "DELETED",
+          });
+
+          warn("Moderated ticket marketplace rule", {
+            groupJid,
+            senderJid: canonicalSenderAlias,
+            classification: ticketDecision.intent,
+            matchedTokens: ticketDecision.matchedTokens,
+            pricePresent: ticketDecision.hasPrice,
+            action: ticketDecision.action,
+          });
+        } catch (moderationError) {
+          logAction({
+            ...logEntry,
+            action: "ERROR",
+            message_text: buildErrorLogMessage(text, moderationError),
+          });
+
+          error("Failed to moderate ticket marketplace rule", {
+            groupJid,
+            senderJid: canonicalSenderAlias,
+            classification: ticketDecision.intent,
+            action: ticketDecision.action,
+            error: moderationError,
+          });
+        }
+
+        return;
+      }
+
+      queueTicketSpotlightIfEligible(
+        msg,
+        groupJid,
+        sender.userId,
+        canonicalSenderAlias,
+        text,
+        ticketDecision,
+      );
     }
 
     log("Allowed group message", {
@@ -1183,6 +1370,7 @@ export const startBot = async (): Promise<void> => {
         await listDiscoveredGroups(sock);
         await enforceGlobalBans(sock);
         await runStartupHealthCheck(sock, config, discoveredGroupMetadata);
+        startSpotlightScheduler(sock, config);
       })();
       return;
     }
@@ -1195,6 +1383,7 @@ export const startBot = async (): Promise<void> => {
       if (activeSocket === sock) {
         activeSocket = null;
       }
+      stopSpotlightScheduler();
 
       const statusCode = isBoomLike(lastDisconnect?.error)
         ? lastDisconnect.error.output?.statusCode
@@ -1306,6 +1495,27 @@ Use !unban ${participant.knownAliases[0] ?? participant.userId} ${update.id} to 
       void handleMessage(sock, message);
     }
   });
+
+  sock.ev.on("messages.delete", (deleteEvent) => {
+    if ("all" in deleteEvent) {
+      return;
+    }
+
+    for (const key of deleteEvent.keys) {
+      if (!key.remoteJid || !key.id) {
+        continue;
+      }
+
+      const cancelled = cancelSpotlightsForSource(key.remoteJid, key.id, "source_deleted");
+      if (cancelled > 0) {
+        log("spotlight.cancelled.source_deleted", {
+          groupJid: key.remoteJid,
+          sourceMsgId: key.id,
+          cancelled,
+        });
+      }
+    }
+  });
 };
 
 const shutdown = async (signal: string): Promise<void> => {
@@ -1331,6 +1541,8 @@ const shutdown = async (signal: string): Promise<void> => {
       clearInterval(globalBanEnforcementTimer);
       globalBanEnforcementTimer = null;
     }
+
+    stopSpotlightScheduler();
 
     await activeSocket?.end(undefined);
   } catch (shutdownError) {
