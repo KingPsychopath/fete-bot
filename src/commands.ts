@@ -268,6 +268,22 @@ const formatUserById = (userId: string, fallbackPushName?: string | null): strin
   return formatUserSummary(summary, fallbackPushName);
 };
 
+const buildIdentityDebugText = (actor: ResolvedUser): string => {
+  const phoneAliases = actor.aliases.filter((alias) => alias.aliasType === "phone").map((alias) => alias.alias);
+  const lidAliases = actor.aliases.filter((alias) => alias.aliasType === "lid").map((alias) => alias.alias);
+  const allAliases = actor.knownAliases.length > 0 ? actor.knownAliases : actor.aliases.map((alias) => alias.alias);
+
+  return `Resolved identity:
+User ID: ${actor.userId}
+Short ID: ${actor.shortId}
+Display name: ${actor.displayName ?? "unknown"}
+Participant JID: ${actor.participantJid ?? "unknown"}
+Phone aliases: ${phoneAliases.length > 0 ? phoneAliases.join(", ") : "none"}
+LID aliases: ${lidAliases.length > 0 ? lidAliases.join(", ") : "none"}
+All aliases:
+${allAliases.length > 0 ? allAliases.map((alias) => `• ${alias}`).join("\n") : "• none"}`;
+};
+
 const formatActorReference = (actor: ActorReference): string => {
   if (actor.userId) {
     return formatUserById(actor.userId);
@@ -986,15 +1002,11 @@ export async function handleAuthorisedCommand(
   const actorContext = getActorContext(actor, config);
   if (!actorContext) {
     if (replyJid) {
-      const aliasLines = actor.knownAliases.length > 0
-        ? actor.knownAliases.map((alias) => `• ${alias}`).join("\n")
-        : "• none";
       await sock.sendMessage(replyJid, {
         text: `⛔ You're not authorised to use Fete Bot commands. Ignoring this command.
 
 Seen as: ${formatUserSummary(actor)}
-Aliases:
-${aliasLines}`,
+${buildIdentityDebugText(actor)}`,
       });
     }
     return;

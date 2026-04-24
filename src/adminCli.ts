@@ -1,7 +1,18 @@
+import makeWASocket, {
+  fetchLatestBaileysVersion,
+  useMultiFileAuthState,
+  type GroupMetadata,
+  type WASocket,
+} from "@whiskeysockets/baileys";
+import pino from "pino";
+
 import { config } from "./config.js";
 import {
+  addBan,
+  addMute,
   addModerator,
   closeDb,
+  clearReviewQueueEntry,
   flushDb,
   getActiveMutes,
   getActiveStrikesAcrossGroups,
@@ -9,6 +20,7 @@ import {
   getBanGroupJids,
   getBans,
   initDb,
+  isModeratorUser,
   listModerators,
   removeAllBans,
   removeAllMutes,
@@ -21,14 +33,17 @@ import {
 } from "./db.js";
 import {
   describeUser,
+  findParticipantJidForUser,
   findUserByIdentifier,
   getShortUserId,
+  mergeUserAliases,
   parseIdentifierDetailed,
   resolveTargetFromIdentifier,
   type UserSummary,
 } from "./identity.js";
 import { containsDisallowedUrl } from "./linkChecker.js";
-import { formatJidForDisplay } from "./utils.js";
+import { AUTH_DIR, ensureStorageDirs, migrateLegacyAuthDir } from "./storagePaths.js";
+import { formatJidForDisplay, isProtectedGroupMember, parseDuration } from "./utils.js";
 
 const HELP_TEXT = `Fete Bot Local Admin CLI
 
@@ -36,7 +51,10 @@ Usage:
   pnpm admin:cli help
   pnpm admin:cli status
   pnpm admin:cli whois <identifier>
+  pnpm admin:cli identity link <primaryIdentifier> <aliasIdentifier>
   pnpm admin:cli test-url <url>
+  pnpm admin:cli ban <identifier> [groupJid] [reason...]
+  pnpm admin:cli mute <identifier> [groupJid] [duration] [reason...]
   pnpm admin:cli reset-all [groupJid]
   pnpm admin:cli db flush --yes
 
@@ -54,6 +72,7 @@ Strikes:
 
 Bans:
   pnpm admin:cli bans list [groupJid]
+  pnpm admin:cli bans add <identifier> [groupJid] [reason...]
   pnpm admin:cli bans reset <identifier> <groupJid>
   pnpm admin:cli bans clear <identifier> <groupJid>
   pnpm admin:cli bans reset-all [groupJid]
@@ -61,6 +80,7 @@ Bans:
 
 Mutes:
   pnpm admin:cli mutes list <groupJid>
+  pnpm admin:cli mutes add <identifier> [groupJid] [duration] [reason...]
   pnpm admin:cli mutes reset <identifier> <groupJid>
   pnpm admin:cli mutes clear <identifier> <groupJid>
   pnpm admin:cli mutes reset-all [groupJid]
@@ -149,6 +169,126 @@ const requireGroupJid = (input: string | undefined): string => {
   return value;
 };
 
+type CliGroupTargets = {
+  groupJids: string[];
+  groupMetadataByJid: Map<string, GroupMetadata>;
+  sock: WASocket | null;
+};
+
+const connectForGroupDiscovery = async (): Promise<CliGroupTargets> => {
+  migrateLegacyAuthDir();
+  ensureStorageDirs();
+
+  console.log("No group JID provided; connecting with saved WhatsApp session to discover joined groups...");
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+  const { version } = await fetchLatestBaileysVersion();
+  const sock = makeWASocket({
+    auth: state,
+    version,
+    printQRInTerminal: false,
+    logger: pino({ level: "silent" }),
+  });
+
+  sock.ev.on("creds.update", saveCreds);
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error("timed out waiting for WhatsApp connection"));
+      }, 30_000);
+
+      sock.ev.on("connection.update", (update) => {
+        if (update.qr) {
+          clearTimeout(timeout);
+          reject(new Error(`saved WhatsApp session is not connected; start the bot and pair it first (${AUTH_DIR})`));
+          return;
+        }
+
+        if (update.connection === "open") {
+          clearTimeout(timeout);
+          resolve();
+          return;
+        }
+
+        if (update.connection === "close") {
+          clearTimeout(timeout);
+          reject(update.lastDisconnect?.error ?? new Error("WhatsApp connection closed before group discovery"));
+        }
+      });
+    });
+
+    const groups = await sock.groupFetchAllParticipating();
+    const groupMetadataByJid = new Map(Object.entries(groups));
+    const groupJids = Array.from(groupMetadataByJid.keys()).sort();
+    if (groupJids.length === 0) {
+      fail("the saved WhatsApp session is not participating in any groups");
+    }
+
+    return { groupJids, groupMetadataByJid, sock };
+  } catch (groupDiscoveryError) {
+    sock.end(groupDiscoveryError instanceof Error ? groupDiscoveryError : new Error(String(groupDiscoveryError)));
+    const message = groupDiscoveryError instanceof Error ? groupDiscoveryError.message : String(groupDiscoveryError);
+    return fail(`failed to discover joined WhatsApp groups: ${message}`);
+  }
+};
+
+const resolveCliGroupTargets = async (input: string | undefined): Promise<CliGroupTargets> => {
+  if (input) {
+    const groupJid = requireGroupJid(input);
+    return { groupJids: [groupJid], groupMetadataByJid: new Map(), sock: null };
+  }
+
+  return connectForGroupDiscovery();
+};
+
+const formatCliGroupScope = (groupJids: readonly string[]): string =>
+  groupJids.length === 1 ? groupJids[0] ?? "unknown group" : `${groupJids.length} configured groups`;
+
+const splitOptionalGroupJid = (parts: string[]): { groupJidInput: string | undefined; rest: string[] } => {
+  const [first, ...remaining] = parts;
+  if (first?.endsWith("@g.us")) {
+    return { groupJidInput: first, rest: remaining };
+  }
+
+  return { groupJidInput: undefined, rest: parts };
+};
+
+const isOwnerUser = (user: UserSummary): boolean => user.aliases.some((alias) => config.ownerJids.includes(alias.alias));
+
+const requireModerationTarget = (user: UserSummary, action: "ban" | "mute"): void => {
+  if (isOwnerUser(user) || isModeratorUser(user.userId)) {
+    fail(`cannot ${action} an owner or moderator via CLI`);
+  }
+};
+
+const requireNotProtectedInLiveGroups = (
+  user: UserSummary,
+  action: "ban" | "mute",
+  groupJids: readonly string[],
+  groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
+): void => {
+  if (groupMetadataByJid.size === 0) {
+    return;
+  }
+
+  const candidateAliases = user.aliases.map((alias) => alias.alias);
+  const protectedGroupJids = groupJids.filter((groupJid) =>
+    isProtectedGroupMember(user.userId, candidateAliases, groupJid, config, groupMetadataByJid),
+  );
+
+  if (protectedGroupJids.length > 0) {
+    fail(`cannot ${action} an owner, moderator, or group admin in: ${protectedGroupJids.join(", ")}`);
+  }
+};
+
+const isDurationToken = (input: string | undefined): boolean => {
+  if (!input) {
+    return false;
+  }
+
+  return /^(?:\d+[mhd]|perm|permanent)$/i.test(input.trim());
+};
+
 const printStatus = (): void => {
   const moderators = listModerators();
   console.log("Fete Bot Local CLI");
@@ -219,6 +359,29 @@ const removeMod = async (input: string | undefined): Promise<void> => {
 
   removeModerator(user.userId);
   console.log(`Removed moderator: ${formatUserSummary(user)}`);
+};
+
+const linkIdentityAliases = async (
+  primaryInput: string | undefined,
+  aliasInput: string | undefined,
+): Promise<void> => {
+  const primary = primaryInput ?? fail("missing primary identifier");
+  const alias = aliasInput ?? fail("missing alias identifier");
+  const primaryParsed = parseIdentifierDetailed(primary);
+  const aliasParsed = parseIdentifierDetailed(alias);
+  const primaryAlias = "alias" in primaryParsed ? primaryParsed.alias : fail(formatIdentifierFailure(primary));
+  const aliasAlias = "alias" in aliasParsed ? aliasParsed.alias : fail(formatIdentifierFailure(alias));
+
+  await resolveTargetFromIdentifier(primary, new Set());
+  await resolveTargetFromIdentifier(alias, new Set());
+  const linkedResult = await mergeUserAliases([primaryAlias, aliasAlias], new Set(), "manual_admin");
+  const linked = linkedResult ?? fail(`could not link ${primary} and ${alias}`);
+
+  console.log(`Linked identity: ${formatUserSummary(linked)}`);
+  console.log("Aliases:");
+  for (const userAlias of linked.aliases) {
+    console.log(`- ${userAlias.aliasType}: ${userAlias.alias}`);
+  }
 };
 
 const listStrikes = async (input: string | undefined): Promise<void> => {
@@ -324,6 +487,60 @@ const listBans = (groupJidInput: string | undefined): void => {
   }
 };
 
+const addUserBan = async (
+  input: string | undefined,
+  groupJidInput: string | undefined,
+  reasonParts: string[],
+): Promise<void> => {
+  const user = await resolveWritableUser(input);
+  requireModerationTarget(user, "ban");
+  const { groupJids, groupMetadataByJid, sock } = await resolveCliGroupTargets(groupJidInput);
+  try {
+    requireNotProtectedInLiveGroups(user, "ban", groupJids, groupMetadataByJid);
+    const reason = reasonParts.join(" ").trim() || undefined;
+    const removedFromGroupJids: string[] = [];
+    const notPresentGroupJids: string[] = [];
+    const failedRemovalGroupJids: string[] = [];
+
+    for (const groupJid of groupJids) {
+      addBan(user.userId, groupJid, LOCAL_CLI_ACTOR, reason);
+      clearReviewQueueEntry(user.userId, groupJid);
+
+      if (groupMetadataByJid.size === 0) {
+        continue;
+      }
+
+      const liveParticipantJid = findParticipantJidForUser(user.userId, groupMetadataByJid.get(groupJid));
+      if (!liveParticipantJid) {
+        notPresentGroupJids.push(groupJid);
+        continue;
+      }
+
+      try {
+        await sock?.groupParticipantsUpdate(groupJid, [liveParticipantJid], "remove");
+        removedFromGroupJids.push(groupJid);
+      } catch {
+        failedRemovalGroupJids.push(groupJid);
+      }
+    }
+
+    console.log(`Banned ${formatUserSummary(user)} in ${formatCliGroupScope(groupJids)}`);
+    console.log(`Reason: ${reason ?? "none"}`);
+    if (removedFromGroupJids.length > 0) {
+      console.log(`Removed now from: ${removedFromGroupJids.join(", ")}`);
+    }
+    if (notPresentGroupJids.length > 0) {
+      console.log(`Not currently present in: ${notPresentGroupJids.join(", ")}`);
+    }
+    if (failedRemovalGroupJids.length > 0) {
+      console.log(`Ban saved, but failed to remove now from: ${failedRemovalGroupJids.join(", ")}. Make sure the bot is an admin there.`);
+    }
+    console.log("They will be auto-removed if they try to rejoin.");
+  } finally {
+    sock?.end(undefined);
+  }
+};
+
 const resetBan = async (input: string | undefined, groupJidInput: string | undefined): Promise<void> => {
   const user = await resolveWritableUser(input);
   const groupJid = requireGroupJid(groupJidInput);
@@ -358,6 +575,36 @@ const listMutes = (groupJidInput: string | undefined): void => {
         mute.mutedByUserId ? formatUserSummary(describeUser(mute.mutedByUserId)) : mute.mutedByLabel
       } | reason: ${mute.reason ?? "none"} | expires: ${mute.expiresAt ?? "permanent"}`,
     );
+  }
+};
+
+const addUserMute = async (
+  input: string | undefined,
+  groupJidInput: string | undefined,
+  durationInput: string | undefined,
+  reasonParts: string[],
+): Promise<void> => {
+  const user = await resolveWritableUser(input);
+  requireModerationTarget(user, "mute");
+  const { groupJids, groupMetadataByJid, sock } = await resolveCliGroupTargets(groupJidInput);
+  try {
+    requireNotProtectedInLiveGroups(user, "mute", groupJids, groupMetadataByJid);
+    const expiresAt = parseDuration(durationInput);
+    const reason = reasonParts.join(" ").trim() || undefined;
+
+    for (const groupJid of groupJids) {
+      addMute(user.userId, groupJid, LOCAL_CLI_ACTOR, expiresAt, reason);
+    }
+
+    console.log(`${expiresAt ? "Muted" : "Permanently muted"} ${formatUserSummary(user)} in ${formatCliGroupScope(groupJids)}`);
+    console.log(`Duration: ${expiresAt ? durationInput ?? "24h" : "permanent"}`);
+    if (expiresAt) {
+      console.log(`Expires: ${expiresAt.toISOString()}`);
+    }
+    console.log(`Reason: ${reason ?? "none"}`);
+    console.log("Their messages will be silently deleted until lifted.");
+  } finally {
+    sock?.end(undefined);
   }
 };
 
@@ -491,6 +738,25 @@ const main = async (): Promise<void> => {
       return;
     }
 
+    if (command === "identity" && subcommand === "link") {
+      await linkIdentityAliases(rest[0], rest[1]);
+      return;
+    }
+
+    if (command === "ban") {
+      const { groupJidInput, rest: banRest } = splitOptionalGroupJid(rest);
+      await addUserBan(subcommand, groupJidInput, banRest);
+      return;
+    }
+
+    if (command === "mute") {
+      const { groupJidInput, rest: muteRest } = splitOptionalGroupJid(rest);
+      const durationInput = isDurationToken(muteRest[0]) ? muteRest[0] : undefined;
+      const reasonStartIndex = durationInput ? 1 : 0;
+      await addUserMute(subcommand, groupJidInput, durationInput, muteRest.slice(reasonStartIndex));
+      return;
+    }
+
     if (command === "reset-all" || command === "clear-all") {
       resetAllState(subcommand);
       return;
@@ -531,6 +797,12 @@ const main = async (): Promise<void> => {
       return;
     }
 
+    if (command === "bans" && subcommand === "add") {
+      const { groupJidInput, rest: banRest } = splitOptionalGroupJid(rest.slice(1));
+      await addUserBan(rest[0], groupJidInput, banRest);
+      return;
+    }
+
     if (command === "bans" && (subcommand === "reset" || subcommand === "clear")) {
       await resetBan(rest[0], rest[1]);
       return;
@@ -543,6 +815,14 @@ const main = async (): Promise<void> => {
 
     if (command === "mutes" && subcommand === "list") {
       listMutes(rest[0]);
+      return;
+    }
+
+    if (command === "mutes" && subcommand === "add") {
+      const { groupJidInput, rest: muteRest } = splitOptionalGroupJid(rest.slice(1));
+      const durationInput = isDurationToken(muteRest[0]) ? muteRest[0] : undefined;
+      const reasonStartIndex = durationInput ? 1 : 0;
+      await addUserMute(rest[0], groupJidInput, durationInput, muteRest.slice(reasonStartIndex));
       return;
     }
 

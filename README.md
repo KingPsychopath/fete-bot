@@ -397,6 +397,10 @@ pnpm admin:cli test-url "https://ra.co/events/123"
 pnpm admin:cli mods list
 pnpm admin:cli mods add 07911123456 "sound team"
 pnpm admin:cli mods remove 07911123456
+pnpm admin:cli ban 07911123456 "repeated promo links"
+pnpm admin:cli ban 07911123456 120363408759548644@g.us "repeated promo links"
+pnpm admin:cli mute 07911123456 2h "cool-off"
+pnpm admin:cli mute 07911123456 120363408759548644@g.us 2h "cool-off"
 pnpm admin:cli strikes list 07911123456
 pnpm admin:cli strikes list lid-user-123@lid
 pnpm admin:cli strikes clear 07911123456 120363408759548644@g.us
@@ -404,10 +408,12 @@ pnpm admin:cli strikes clear-all 120363408759548644@g.us
 pnpm admin:cli strikes clear-all
 pnpm admin:cli bans list
 pnpm admin:cli bans list 120363408759548644@g.us
+pnpm admin:cli bans add 07911123456 120363408759548644@g.us "repeated promo links"
 pnpm admin:cli bans clear 07911123456 120363408759548644@g.us
 pnpm admin:cli bans clear-all 120363408759548644@g.us
 pnpm admin:cli bans clear-all
 pnpm admin:cli mutes list 120363408759548644@g.us
+pnpm admin:cli mutes add 07911123456 120363408759548644@g.us 2h "cool-off"
 pnpm admin:cli mutes clear 07911123456 120363408759548644@g.us
 pnpm admin:cli mutes clear-all 120363408759548644@g.us
 pnpm admin:cli mutes clear-all
@@ -419,9 +425,10 @@ pnpm admin:cli db flush --yes
 
 Notes:
 
-- This CLI is local-only and talks directly to `./data/bot.db`
+- This CLI uses `./data/bot.db`; no-JID ban/mute actions also use the saved WhatsApp session in `./data/auth` to discover joined groups
 - It is intended for testing, inspection, and cleanup
-- It does not send WhatsApp messages or bypass bot safety logic in chats
+- Explicit `{groupJid}` actions only update local bot state
+- For `ban`, `mute`, `bans add`, and `mutes add`, omitting `{groupJid}` connects with the saved WhatsApp session, discovers every group the bot is currently in, and applies the action across those groups. `ban` also tries to remove the member immediately from groups where they are present.
 - `clear` and `reset` are equivalent, so existing `reset` commands still work
 
 ## Environment Variables

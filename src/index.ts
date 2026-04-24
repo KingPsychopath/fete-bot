@@ -42,7 +42,15 @@ import {
   ensureStorageDirs,
   migrateLegacyAuthDir,
 } from "./storagePaths.js";
-import { buildSelfJids, findParticipantJidForUser, normalizeJid, resolveUser, type ResolvedUser } from "./identity.js";
+import {
+  buildSelfJids,
+  findExistingUserIdsByAliases,
+  findParticipantJidForUser,
+  mergeUserAliases,
+  normalizeJid,
+  resolveUser,
+  type ResolvedUser,
+} from "./identity.js";
 import { extractAllIdentifiers, isProtectedGroupMember, parseToJid } from "./utils.js";
 import { STARTED_AT, VERSION } from "./version.js";
 
@@ -464,6 +472,26 @@ const resolveDirectSenderFromKnownGroups = async (
   return sender;
 };
 
+const resolveDirectSenderFromOwnerAliases = async (
+  sender: ResolvedUser,
+  selfJids: ReadonlySet<string>,
+): Promise<ResolvedUser> => {
+  for (const ownerJid of config.ownerJids) {
+    const ownerUserIds = findExistingUserIdsByAliases([ownerJid]);
+    const senderUserIds = findExistingUserIdsByAliases([sender.participantJid, ...sender.knownAliases]);
+    if (!ownerUserIds.some((userId) => senderUserIds.includes(userId))) {
+      continue;
+    }
+
+    const merged = await mergeUserAliases([ownerJid, sender.participantJid, ...sender.knownAliases], selfJids, "manual_admin");
+    if (merged?.knownAliases.includes(normalizeJid(ownerJid))) {
+      return merged;
+    }
+  }
+
+  return sender;
+};
+
 const listDiscoveredGroups = async (
   sock: WASocket,
 ): Promise<void> => {
@@ -541,14 +569,23 @@ export const handleMessage = async (
     if (!sender) {
       if (isDirectChat && text.trim().startsWith("!")) {
         await sock.sendMessage(remoteJid, {
-          text: "⛔ You're not authorised to use Fete Bot commands. Ignoring this command.",
+          text: `⛔ You're not authorised to use Fete Bot commands. Ignoring this command.
+
+Raw identity:
+Remote JID: ${remoteJid}
+Sender JID: ${senderJid || "unknown"}
+Phone JID: ${phoneJid ?? "unknown"}
+Phone number: ${phoneNumber ?? "unknown"}
+LID JID: ${lidJid ?? "unknown"}
+Push name: ${getPushName(msg) ?? "unknown"}`,
         });
       }
       return;
     }
 
     if (isDirectChat) {
-      const directSender = await resolveDirectSenderFromKnownGroups(sender, remoteJid, getPushName(msg), sock);
+      const directSenderFromGroups = await resolveDirectSenderFromKnownGroups(sender, remoteJid, getPushName(msg), sock);
+      const directSender = await resolveDirectSenderFromOwnerAliases(directSenderFromGroups, selfJids);
       if (text) {
         await handleAuthorisedCommand(
           sock,
@@ -1109,10 +1146,11 @@ export const startBot = async (): Promise<void> => {
       const isReplaced = statusCode === DisconnectReason.connectionReplaced || statusCode === 440;
 
       if (isReplaced) {
-        error("Session replaced by another WhatsApp client. Exiting without reconnecting.", {
+        warn("Session replaced by another WhatsApp client. Treating as a graceful deployment handoff.", {
           statusCode,
         });
-        process.exit(1);
+        void shutdown("connectionReplaced");
+        return;
       }
 
       if (isLoggedOut) {

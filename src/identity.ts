@@ -974,6 +974,61 @@ export const resolveUser = async (input: ResolveUserInput): Promise<ResolvedUser
   });
 };
 
+export const mergeUserAliases = async (
+  aliases: ReadonlyArray<string | null | undefined>,
+  selfJids: ReadonlySet<string>,
+  reason: MergeReason = "manual_admin",
+): Promise<ResolvedUser | null> => {
+  const normalizedAliases = expandKnownAliases(
+    aliases
+      .filter(isTruthy)
+      .map((alias) => normalizeJid(alias)),
+  )
+    .map((alias) => normalizeAndClassifyUserAlias(alias, selfJids))
+    .filter(isTruthy)
+    .map((entry) => entry.alias);
+
+  if (normalizedAliases.length === 0) {
+    return null;
+  }
+
+  return withAliasLocks(normalizedAliases, async () =>
+    withImmediateTransaction(() => {
+      const hits = findDistinctHits(normalizedAliases);
+      const distinctTerminalUserIds = Array.from(new Set(hits.map((hit) => hit.terminalUserId)));
+      if (distinctTerminalUserIds.length === 0) {
+        return null;
+      }
+
+      const survivorUserId = chooseSurvivorUserId(distinctTerminalUserIds);
+      const mergedFrom: string[] = [];
+      for (const terminalUserId of distinctTerminalUserIds) {
+        if (terminalUserId === survivorUserId) {
+          continue;
+        }
+
+        const mergeResult = performMerge(survivorUserId, terminalUserId, reason, null, null);
+        mergedFrom.push(mergeResult.mergedFrom);
+        log("identity.merge.performed", {
+          survivorUserId,
+          mergedUserId: terminalUserId,
+          shortId: getShortUserId(survivorUserId),
+          repointCounts: mergeResult.repointCounts,
+        });
+      }
+
+      for (const alias of normalizedAliases) {
+        const classification = classifyJid(alias, selfJids);
+        if (classification === "user-phone" || classification === "user-lid") {
+          upsertAliasForUser(survivorUserId, alias, getAliasTypeForClassification(classification), Date.now());
+        }
+      }
+
+      return buildResolvedUser(survivorUserId, normalizedAliases[0] ?? null, false, mergedFrom);
+    }),
+  );
+};
+
 export const getUserSummary = (userId: string): UserSummary | null => {
   const userRecord = getUserRecord(userId);
   if (!userRecord) {
@@ -1010,6 +1065,20 @@ export const findExistingUserByAliases = (aliases: ReadonlyArray<string | null |
   }
 
   return getUserSummary(terminalUserIds[0] ?? "");
+};
+
+export const findExistingUserIdsByAliases = (aliases: ReadonlyArray<string | null | undefined>): string[] => {
+  const normalizedAliases = expandKnownAliases(
+    aliases
+      .filter(isTruthy)
+      .map((alias) => normalizeJid(alias)),
+  ).sort();
+
+  if (normalizedAliases.length === 0) {
+    return [];
+  }
+
+  return Array.from(new Set(findDistinctHits(normalizedAliases).map((hit) => hit.terminalUserId))).sort();
 };
 
 export const findUserByIdentifier = (input: string): UserSummary | null => {
