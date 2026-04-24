@@ -2,6 +2,7 @@ import type { WASocket } from "@whiskeysockets/baileys";
 
 import type { Config } from "../../../config.js";
 import type { SpotlightPendingRow } from "../../../db.js";
+import { describeUser } from "../../../identity.js";
 import { log, warn } from "../../../logger.js";
 import {
   cancelClaimedSpotlight,
@@ -15,6 +16,7 @@ import { isQuietHour } from "./eligibility.js";
 
 const subtractMs = (date: Date, ms: number): string => new Date(date.getTime() - ms).toISOString();
 const normaliseJid = (jid: string): string => jid.trim().toLowerCase();
+const PHONE_JID_REGEX = /^(\d{7,15})@s\.whatsapp\.net$/iu;
 
 export const trimSpotlightBody = (body: string, maxLength: number): string => {
   const trimmed = body.trim().replace(/\s+/gu, " ");
@@ -33,6 +35,43 @@ export const buildSpotlightMessage = (config: Config, body: string): string => {
   return `🎟️ From ${marketplaceName}
 
 ${trimSpotlightBody(body, config.ticketSpotlightMaxLength)}
+
+— Reply in *${marketplaceName}* to connect.`;
+};
+
+export const formatObfuscatedPhone = (jid: string): string | null => {
+  const match = jid.match(PHONE_JID_REGEX);
+  const digits = match?.[1];
+  if (!digits) {
+    return null;
+  }
+
+  return `+${digits.slice(0, 4)}...${digits.slice(-4)}`;
+};
+
+export const formatSpotlightSenderLabel = (pending: SpotlightPendingRow): string | null => {
+  const displayName = describeUser(pending.senderUserId)?.displayName?.trim() || null;
+  const phone = formatObfuscatedPhone(pending.senderJid);
+
+  if (displayName && phone) {
+    return `${displayName} (${phone})`;
+  }
+
+  return displayName ?? phone;
+};
+
+export const buildSpotlightMessageForPending = (
+  config: Config,
+  pending: SpotlightPendingRow,
+): string => {
+  const marketplaceName = config.ticketMarketplaceGroupName;
+  const senderLabel = formatSpotlightSenderLabel(pending);
+  const body = trimSpotlightBody(pending.body, config.ticketSpotlightMaxLength);
+  const bodyWithSender = senderLabel ? `${senderLabel}:\n${body}` : body;
+
+  return `🎟️ From ${marketplaceName}
+
+${bodyWithSender}
 
 — Reply in *${marketplaceName}* to connect.`;
 };
@@ -71,7 +110,7 @@ export const sendClaimedSpotlight = async (
   }
 
   const sentAt = now.toISOString();
-  const message = buildSpotlightMessage(config, pending.body);
+  const message = buildSpotlightMessageForPending(config, pending);
   let sentCount = 0;
 
   for (const targetGroupJid of targetGroupJids) {

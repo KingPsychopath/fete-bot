@@ -22,6 +22,7 @@ export const runSpotlightSchedulerTick = async (
   sock: WASocket,
   config: Config,
   getTargetGroupJids: TargetGroupResolver,
+  now = new Date(),
 ): Promise<void> => {
   if (!config.ticketSpotlightEnabled || schedulerRunning) {
     return;
@@ -29,7 +30,6 @@ export const runSpotlightSchedulerTick = async (
 
   schedulerRunning = true;
   try {
-    const now = new Date();
     const claimed = claimDueSpotlights(
       now.toISOString(),
       subtractMinutes(now, config.ticketSpotlightClaimStaleMinutes),

@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import type { Config } from "../../../config.js";
-import { buildSpotlightMessage, trimSpotlightBody } from "../spotlight/sender.js";
+import {
+  buildSpotlightMessage,
+  formatObfuscatedPhone,
+  trimSpotlightBody,
+} from "../spotlight/sender.js";
 
 const config = {
   dryRun: false,
@@ -39,5 +43,10 @@ describe("spotlight sender formatting", () => {
   it("builds the configured spotlight message", () => {
     expect(buildSpotlightMessage(config, "Selling 2 Sunday tickets £80 each")).toContain("From FDLM Ticket Marketplace");
     expect(buildSpotlightMessage(config, "Selling 2 Sunday tickets £80 each")).toContain("Reply in *FDLM Ticket Marketplace*");
+  });
+
+  it("obfuscates phone JIDs", () => {
+    expect(formatObfuscatedPhone("447946811079@s.whatsapp.net")).toBe("+4479...1079");
+    expect(formatObfuscatedPhone("abc@lid")).toBeNull();
   });
 });
