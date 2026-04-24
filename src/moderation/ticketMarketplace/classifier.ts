@@ -162,6 +162,8 @@ const hasNearbyMatch = (
 const hasStrongBuyIntent = (normalisedText: string, matchedTokens: string[]): boolean => {
   const strongBuyPatterns: Array<{ label: string; regex: RegExp }> = [
     { label: "anyone selling", regex: /\banyone\s+selling\b/iu },
+    { label: "anyone is selling", regex: /\b(?:if\s+)?anyone\s+is\s+selling\b/iu },
+    { label: "is anyone selling", regex: /\bis\s+anyone\s+selling\b/iu },
     { label: "anyone got a spare", regex: /\banyone\s+got\s+a\s+spare\b/iu },
     { label: "anyone have a spare", regex: /\banyone\s+have\s+a\s+spare\b/iu },
     { label: "ISO", regex: /\biso\b/iu },

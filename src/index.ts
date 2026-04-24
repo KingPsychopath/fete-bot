@@ -12,7 +12,7 @@ import { createServer } from "node:http";
 import pino from "pino";
 import QRCode from "qrcode";
 
-import { config } from "./config.js";
+import { config, NEVER_SPOTLIGHT_GROUP_JIDS } from "./config.js";
 import { handleAuthorisedCommand, handleGroupCommand } from "./commands.js";
 import {
   addBan,
@@ -381,12 +381,15 @@ const isManagedGroup = (groupJid: string): boolean =>
   config.allowedGroupJids.length === 0 || config.allowedGroupJids.includes(groupJid);
 
 const getEffectiveTicketSpotlightTargetJids = (): string[] => {
-  if (config.ticketSpotlightTargetJids.length > 0) {
-    return config.ticketSpotlightTargetJids;
-  }
+  const candidateTargetJids = config.ticketSpotlightTargetJids.length > 0
+    ? config.ticketSpotlightTargetJids
+    : Array.from(discoveredGroups.keys());
 
-  return Array.from(discoveredGroups.keys()).filter(
-    (groupJid) => isManagedGroup(groupJid) && !config.ticketMarketplaceGroupJids.includes(groupJid),
+  return candidateTargetJids.filter(
+    (groupJid) =>
+      isManagedGroup(groupJid) &&
+      !config.ticketMarketplaceGroupJids.includes(groupJid) &&
+      !NEVER_SPOTLIGHT_GROUP_JIDS.includes(groupJid as (typeof NEVER_SPOTLIGHT_GROUP_JIDS)[number]),
   );
 };
 

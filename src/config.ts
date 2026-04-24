@@ -72,6 +72,11 @@ const DEFAULT_TICKET_SPOTLIGHT_TARGET_JIDS = [
   "120363401608823361@g.us",
 ].join(",");
 
+export const NEVER_SPOTLIGHT_GROUP_JIDS = [
+  "120363399525661721@g.us",
+  "120363418642438451@g.us",
+] as const;
+
 const loadedConfig = {
   dryRun: parseBoolean(process.env.DRY_RUN, true),
   allowedGroupJids: parseList(process.env.ALLOWED_GROUP_JIDS),

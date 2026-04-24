@@ -150,6 +150,7 @@ Special rules:
 - Enabled by default with `TICKET_SPOTLIGHT_ENABLED=true`; set it to `false` to opt out
 - Eligible buying or priced selling posts in the marketplace can be reposted after a delay to the configured spotlight target groups
 - Buying spotlights have a separate kill switch and stricter minimum length via `TICKET_SPOTLIGHT_BUYING_ENABLED` and `TICKET_SPOTLIGHT_BUYING_MIN_LENGTH`
+- Announcement groups are hard-blocked from spotlight sends even if accidentally configured as targets
 - Spotlight has per-user, per-target-group, quiet-hours, daily-cap, URL, reply/quote, and blocklist gates
 - Pending spotlight jobs and send history are stored in SQLite so restarts do not lose queued posts
 - Delete events cancel pending spotlights on a best-effort basis

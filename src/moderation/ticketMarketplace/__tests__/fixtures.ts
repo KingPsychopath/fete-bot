@@ -1,6 +1,7 @@
 export const TRUE_POSITIVES_BUYING = [
   "Anyone got a Sunday ticket for sale",
   "Anyone selling?",
+  "if anyone is selling two sixtion tickets for saturday please lmk",
   "ISO Saturday pass",
   "cherche billet dimanche",
   "Looking for a wristband for tonight",

@@ -1,7 +1,7 @@
 import type { GroupMetadata, WASocket } from "@whiskeysockets/baileys";
 import { randomUUID } from "node:crypto";
 
-import type { Config } from "./config.js";
+import { NEVER_SPOTLIGHT_GROUP_JIDS, type Config } from "./config.js";
 import {
   addBan,
   addModerator,
@@ -1077,9 +1077,14 @@ ${buildIdentityDebugText(actor)}`,
 	    const managedGroupJids = getManagedGroupJids(config, groups);
 	    const configuredGroups = managedGroupJids.map((jid) => `• ${formatGroupName(jid, groups)} (${jid})`);
 	    const groupSource = config.allowedGroupJids.length > 0 ? "config allowlist" : "joined groups";
-	    const spotlightTargetGroupJids = config.ticketSpotlightTargetJids.length > 0
+	    const spotlightTargetGroupJids = (config.ticketSpotlightTargetJids.length > 0
 	      ? config.ticketSpotlightTargetJids
-	      : managedGroupJids.filter((groupJid) => !config.ticketMarketplaceGroupJids.includes(groupJid));
+	      : managedGroupJids
+	    ).filter(
+	      (groupJid) =>
+	        !config.ticketMarketplaceGroupJids.includes(groupJid) &&
+	        !NEVER_SPOTLIGHT_GROUP_JIDS.includes(groupJid as (typeof NEVER_SPOTLIGHT_GROUP_JIDS)[number]),
+	    );
 	    const spotlightTargetSource = config.ticketSpotlightTargetJids.length > 0
 	      ? "config target list"
 	      : "joined managed groups, excluding marketplace groups";
