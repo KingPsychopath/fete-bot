@@ -35,6 +35,10 @@ import { runStartupHealthCheck } from "./healthCheck.js";
 import { loadLidMappings, recordLidMapping } from "./lidMap.js";
 import { containsDisallowedUrl } from "./linkChecker.js";
 import { getTicketMarketplaceDecision } from "./moderation/ticketMarketplace/index.js";
+import {
+  DEFAULT_TICKET_MARKETPLACE_REPLY_COOLDOWN_MS,
+  TicketMarketplaceReplyCooldown,
+} from "./moderation/ticketMarketplace/replyCooldown.js";
 import { getSpotlightEligibility } from "./moderation/ticketMarketplace/spotlight/eligibility.js";
 import { startSpotlightScheduler, stopSpotlightScheduler } from "./moderation/ticketMarketplace/spotlight/scheduler.js";
 import { cancelSpotlightsForSource, hasPendingSpotlightForSender, queueSpotlight } from "./moderation/ticketMarketplace/spotlight/store.js";
@@ -68,6 +72,7 @@ const spamDetector = new SpamDetector();
 const discoveredGroups = new Map<string, string>();
 const discoveredGroupMetadata = new Map<string, GroupMetadata>();
 const mutedMessageCounts = new Map<string, number>();
+const ticketMarketplaceReplyCooldown = new TicketMarketplaceReplyCooldown();
 let strikePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let mutePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let globalBanEnforcementTimer: ReturnType<typeof setInterval> | null = null;
@@ -1020,14 +1025,10 @@ They have been banned and removed after repeatedly trying to post while muted.`,
           url_found: null,
           reason: ticketDecision.reason,
         };
+        const cooldownNow = Date.now();
 
-        if (config.dryRun) {
-          logAction({
-            ...logEntry,
-            action: "DRY_RUN",
-          });
-
-          warn("Dry run: would moderate ticket marketplace rule", {
+        if (ticketMarketplaceReplyCooldown.isCoolingDown(groupJid, sender.userId, cooldownNow)) {
+          log("Suppressed ticket marketplace reply during cooldown", {
             groupJid,
             senderJid: canonicalSenderAlias,
             classification: ticketDecision.intent,
@@ -1036,48 +1037,69 @@ They have been banned and removed after repeatedly trying to post while muted.`,
             pricePresent: ticketDecision.hasPrice,
             action: ticketDecision.action,
             deletionEnabled: shouldDeleteTicketMarketplaceMessage,
-            wouldSendText: replyText,
+            cooldownMinutes: DEFAULT_TICKET_MARKETPLACE_REPLY_COOLDOWN_MS / 60_000,
           });
+        } else {
+          if (config.dryRun) {
+            logAction({
+              ...logEntry,
+              action: "DRY_RUN",
+            });
+
+            warn("Dry run: would moderate ticket marketplace rule", {
+              groupJid,
+              senderJid: canonicalSenderAlias,
+              classification: ticketDecision.intent,
+              matchedTokens: ticketDecision.matchedTokens,
+              matchedSignals: ticketDecision.matchedSignals,
+              pricePresent: ticketDecision.hasPrice,
+              action: ticketDecision.action,
+              deletionEnabled: shouldDeleteTicketMarketplaceMessage,
+              wouldSendText: replyText,
+            });
+            ticketMarketplaceReplyCooldown.record(groupJid, sender.userId, cooldownNow);
+            return;
+          }
+
+          try {
+            if (shouldDeleteTicketMarketplaceMessage) {
+              await sock.sendMessage(groupJid, { delete: msg.key as WAMessageKey });
+            }
+            await sendModerationMessage(sock, groupJid, replyText, mentionTargetJid, msg);
+            ticketMarketplaceReplyCooldown.record(groupJid, sender.userId, cooldownNow);
+            logAction({
+              ...logEntry,
+              action: shouldDeleteTicketMarketplaceMessage ? "DELETED" : "WARN",
+            });
+
+            warn("Responded to ticket marketplace rule", {
+              groupJid,
+              senderJid: canonicalSenderAlias,
+              classification: ticketDecision.intent,
+              matchedTokens: ticketDecision.matchedTokens,
+              matchedSignals: ticketDecision.matchedSignals,
+              pricePresent: ticketDecision.hasPrice,
+              action: ticketDecision.action,
+              deletionEnabled: shouldDeleteTicketMarketplaceMessage,
+            });
+          } catch (moderationError) {
+            logAction({
+              ...logEntry,
+              action: "ERROR",
+              message_text: buildErrorLogMessage(text, moderationError),
+            });
+
+            error("Failed to moderate ticket marketplace rule", {
+              groupJid,
+              senderJid: canonicalSenderAlias,
+              classification: ticketDecision.intent,
+              action: ticketDecision.action,
+              error: moderationError,
+            });
+          }
+
           return;
         }
-
-        try {
-          if (shouldDeleteTicketMarketplaceMessage) {
-            await sock.sendMessage(groupJid, { delete: msg.key as WAMessageKey });
-          }
-          await sendModerationMessage(sock, groupJid, replyText, mentionTargetJid, msg);
-          logAction({
-            ...logEntry,
-            action: shouldDeleteTicketMarketplaceMessage ? "DELETED" : "WARN",
-          });
-
-          warn("Responded to ticket marketplace rule", {
-            groupJid,
-            senderJid: canonicalSenderAlias,
-            classification: ticketDecision.intent,
-            matchedTokens: ticketDecision.matchedTokens,
-            matchedSignals: ticketDecision.matchedSignals,
-            pricePresent: ticketDecision.hasPrice,
-            action: ticketDecision.action,
-            deletionEnabled: shouldDeleteTicketMarketplaceMessage,
-          });
-        } catch (moderationError) {
-          logAction({
-            ...logEntry,
-            action: "ERROR",
-            message_text: buildErrorLogMessage(text, moderationError),
-          });
-
-          error("Failed to moderate ticket marketplace rule", {
-            groupJid,
-            senderJid: canonicalSenderAlias,
-            classification: ticketDecision.intent,
-            action: ticketDecision.action,
-            error: moderationError,
-          });
-        }
-
-        return;
       }
 
       queueTicketSpotlightIfEligible(

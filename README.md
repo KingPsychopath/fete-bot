@@ -142,6 +142,7 @@ Special rules:
 ### Ticket marketplace routing
 
 - Buying or selling intent outside `FDLM Ticket Marketplace` gets a reply redirecting the poster there without a strike
+- Ticket redirect replies are rate-limited per user per group for 30 minutes; repeated matches during cooldown are allowed silently
 - Owners can run `!ticketdelete on` to delete ticket redirect messages after replying, and `!ticketdelete off` to return to reply-only mode
 - General ticket or event discussion is still allowed outside the marketplace
 - Seller posts inside the marketplace must include a price, `face value` / `FV`, or free-equivalent wording
