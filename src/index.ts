@@ -286,7 +286,7 @@ const getWarningText = (
     return `Hey ${mentionLabel} - shortened links aren't allowed. Please share the full URL instead 🙏`;
   }
 
-  return `Hey ${mentionLabel} - only social media profile links or music links are allowed in this group. If you're sharing an event, please use fete.outofofficecollective.co.uk 🙏`;
+  return `Hey ${mentionLabel} — please keep links to social profiles, music, or accommodation only. For events, post at fete.outofofficecollective.co.uk 🙏`;
 };
 
 const getSpamWarningText = (

@@ -104,6 +104,18 @@ export const getPendingById = (id: string): SpotlightPendingRow | null => {
   return row ? toPendingRow(row) : null;
 };
 
+export const listPendingSpotlights = (limit = 20): SpotlightPendingRow[] =>
+  getDb()
+    .prepare<[number], SpotlightPendingDbRow>(`
+      SELECT *
+      FROM spotlight_pending
+      WHERE status = 'pending'
+      ORDER BY scheduled_at ASC
+      LIMIT ?
+    `)
+    .all(limit)
+    .map(toPendingRow);
+
 export const claimDueSpotlights = (
   nowIso: string,
   staleBeforeIso: string,

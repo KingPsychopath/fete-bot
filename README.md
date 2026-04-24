@@ -106,6 +106,9 @@ Allowed:
 - `tiktok.com` profile URLs only
 - `soundcloud.com`
 - `mixcloud.com`
+- Accommodation links in all groups:
+  - Brand-matched across TLDs: `booking`, `airbnb`, `hostelworld`, `trivago`, `expedia`
+  - Exact registered domains only: `trip.com`, `trip.fr`, `hotels.com`
 
 Explicitly blocked:
 

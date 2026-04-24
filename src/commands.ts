@@ -45,6 +45,7 @@ import {
   type UserSummary,
 } from "./identity.js";
 import { containsDisallowedUrl, type DisallowedUrlReason } from "./linkChecker.js";
+import { listPendingSpotlights } from "./moderation/ticketMarketplace/spotlight/store.js";
 import { STARTED_AT, VERSION } from "./version.js";
 import {
   formatJidForDisplay,
@@ -77,6 +78,7 @@ const HELP_MESSAGE = `*Fete Bot — Admin Help*
 *Info commands*
   !status
   !reviews
+  !spotlights   {limit?}
   !bans         {groupJid?}
   !mutes        {groupJid?}
   !audit        {limit?}
@@ -191,6 +193,13 @@ const getManagedGroupJids = (
   return Array.from(groups.keys());
 };
 
+const formatGroupLines = (
+  groupJids: readonly string[],
+  groups: ReadonlyMap<string, string> | ReadonlyMap<string, GroupMetadata>,
+): string => groupJids.length > 0
+  ? groupJids.map((jid) => `• ${formatGroupName(jid, groups)} (${jid})`).join("\n")
+  : "• None";
+
 const formatGroupScope = (
   groupJids: readonly string[],
   groups: ReadonlyMap<string, string> | ReadonlyMap<string, GroupMetadata>,
@@ -218,6 +227,18 @@ const formatDate = (iso: string | null): string => {
     dateStyle: "medium",
     timeStyle: "short",
   });
+};
+
+const formatPreview = (text: string, maxLength = 140): string => {
+  const trimmed = text.trim().replace(/\s+/gu, " ");
+  if (trimmed.length <= maxLength) {
+    return trimmed;
+  }
+
+  const slice = trimmed.slice(0, maxLength - 1);
+  const lastSpace = slice.lastIndexOf(" ");
+  const wordSafe = lastSpace >= Math.floor(maxLength * 0.6) ? slice.slice(0, lastSpace) : slice;
+  return `${wordSafe.trimEnd()}…`;
 };
 
 const formatDurationLabel = (input?: string): string => {
@@ -391,7 +412,7 @@ const previewWarningText = (reason: DisallowedUrlReason): string => {
     return `Hey @name - WhatsApp group invite links aren't allowed in here 🙏`;
   }
 
-  return `Hey @name - only social media profile links or music links are allowed in this group. If you're sharing an event, please use fete.outofofficecollective.co.uk 🙏`;
+  return `Hey @name — please keep links to social profiles, music, or accommodation only. For events, post at fete.outofofficecollective.co.uk 🙏`;
 };
 
 const sendInvalidIdentifier = async (sock: WASocket, destinationJid: string): Promise<void> => {
@@ -809,6 +830,25 @@ const buildReviewText = (entry: ReviewQueueEntry, groups: Map<string, string>): 
    Currently muted: ${isMuted(entry.userId, entry.groupJid) ? "yes" : "no"}
    Flagged: ${entry.flaggedAt}`;
 
+const buildSpotlightQueueText = (
+  groups: Map<string, string>,
+  limit: number,
+): string => {
+  const entries = listPendingSpotlights(limit);
+  if (entries.length === 0) {
+    return "No pending spotlight posts right now.";
+  }
+
+  const lines = entries.map((entry, index) => `${index + 1}. ${entry.classifiedIntent.toUpperCase()} — scheduled ${formatDate(entry.scheduledAt)}
+   Source: ${formatGroupName(entry.sourceGroupJid, groups)} (${entry.sourceGroupJid})
+   Sender: ${formatUserById(entry.senderUserId)}
+   Message ID: ${entry.sourceMsgId}
+   Claimed: ${entry.claimedAt ? `${formatDate(entry.claimedAt)} by ${entry.claimedBy ?? "unknown"}` : "no"}
+   Text: "${formatPreview(entry.body)}"`);
+
+  return `Pending spotlight queue (${entries.length}${entries.length === limit ? "+" : ""}):\n\n${lines.join("\n\n")}`;
+};
+
 export async function handleGroupCommand(
   sock: WASocket,
   actor: ResolvedUser,
@@ -1030,11 +1070,17 @@ ${buildIdentityDebugText(actor)}`,
     return;
   }
 
-  if (command === "!status") {
-    const moderators = listModerators();
-    const managedGroupJids = getManagedGroupJids(config, groups);
-    const configuredGroups = managedGroupJids.map((jid) => `• ${formatGroupName(jid, groups)} (${jid})`);
-    const groupSource = config.allowedGroupJids.length > 0 ? "config allowlist" : "joined groups";
+	  if (command === "!status") {
+	    const moderators = listModerators();
+	    const managedGroupJids = getManagedGroupJids(config, groups);
+	    const configuredGroups = managedGroupJids.map((jid) => `• ${formatGroupName(jid, groups)} (${jid})`);
+	    const groupSource = config.allowedGroupJids.length > 0 ? "config allowlist" : "joined groups";
+	    const spotlightTargetGroupJids = config.ticketSpotlightTargetJids.length > 0
+	      ? config.ticketSpotlightTargetJids
+	      : managedGroupJids.filter((groupJid) => !config.ticketMarketplaceGroupJids.includes(groupJid));
+	    const spotlightTargetSource = config.ticketSpotlightTargetJids.length > 0
+	      ? "config target list"
+	      : "joined managed groups, excluding marketplace groups";
 
     await sock.sendMessage(replyJid, {
       text: `Fete Bot Status
@@ -1046,8 +1092,19 @@ Mode: ${config.dryRun ? "DRY RUN (not deleting)" : "LIVE (deleting messages)"}
 Active in ${configuredGroups.length} group(s):
 ${configuredGroups.length > 0 ? configuredGroups.join("\n") : "• None configured"}
 
-Watching ${managedGroupJids.length} group JIDs from ${groupSource}.
-Owners: ${config.ownerJids.length} configured.
+	Watching ${managedGroupJids.length} group JIDs from ${groupSource}.
+	
+	Ticket marketplace rules: ${config.ticketMarketplaceManagement ? "enabled" : "disabled"}
+	Marketplace group(s):
+	${formatGroupLines(config.ticketMarketplaceGroupJids, groups)}
+	
+	Ticket spotlight: ${config.ticketSpotlightEnabled ? "enabled" : "disabled"}
+	Spotlight buying: ${config.ticketSpotlightBuyingEnabled ? "enabled" : "disabled"}
+	Spotlight target source: ${spotlightTargetSource}
+	Spotlight target group(s):
+	${formatGroupLines(spotlightTargetGroupJids, groups)}
+	
+	Owners: ${config.ownerJids.length} configured.
 Moderators: ${moderators.length} configured.
 Strikes issued today: ${getStrikesIssuedToday()}
 Total active strikes: ${getTotalActiveStrikes()}
@@ -1067,6 +1124,16 @@ Forwarded messages seen today: ${getForwardedMessagesSeenToday()}`,
         : "No pending review items right now.",
     });
     logAudit(actorContext, "!reviews", null, null, null, text, "success");
+    return;
+  }
+
+  if (command === "!spotlights") {
+    const limit = Number(text.trim().split(/\s+/)[1] ?? "20");
+    const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 50) : 20;
+    await sock.sendMessage(replyJid, {
+      text: buildSpotlightQueueText(groups, safeLimit),
+    });
+    logAudit(actorContext, "!spotlights", null, null, null, text, "success");
     return;
   }
 

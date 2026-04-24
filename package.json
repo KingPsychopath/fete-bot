@@ -32,6 +32,7 @@
     "libphonenumber-js": "^1.12.42",
     "pino": "^10.3.1",
     "qrcode": "^1.5.4",
+    "tldts": "^7.0.28",
     "tsx": "^4.21.0"
   },
   "devDependencies": {

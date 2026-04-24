@@ -1,6 +1,8 @@
 // NOTE: This allowlist is intentionally hardcoded — it is business logic, not configuration.
 // To change what is allowed, edit this file and redeploy. Do not move to env vars.
 
+import { getDomain, getDomainWithoutSuffix } from "tldts";
+
 export const ALLOWED_DOMAINS = [
   "spotify.com",
   "music.apple.com",
@@ -13,6 +15,20 @@ export const ALLOWED_DOMAINS = [
   "soundcloud.com",
   "mixcloud.com",
 ] as const;
+
+const ACCOMMODATION_BRAND_NAMES = new Set([
+  "booking",
+  "airbnb",
+  "hostelworld",
+  "trivago",
+  "expedia",
+]);
+
+const ACCOMMODATION_EXACT_DOMAINS = new Set([
+  "trip.com",
+  "trip.fr",
+  "hotels.com",
+]);
 
 export const BLOCKED_DOMAINS = [
   "chat.whatsapp.com",
@@ -193,6 +209,20 @@ const isXProfileUrl = (url: string, domainName: "x.com" | "twitter.com"): boolea
   return hasSingleProfileSegment(url, X_RESERVED_SEGMENTS);
 };
 
+const isAccommodationDomain = (domain: string): boolean => {
+  const registeredDomain = getDomain(domain);
+  if (!registeredDomain) {
+    return false;
+  }
+
+  if (ACCOMMODATION_EXACT_DOMAINS.has(registeredDomain)) {
+    return true;
+  }
+
+  const registeredName = getDomainWithoutSuffix(domain);
+  return Boolean(registeredName && ACCOMMODATION_BRAND_NAMES.has(registeredName));
+};
+
 const isAllowedDomain = (domain: string, url: string): boolean => {
   if (domain === "music.apple.com" || domain === "music.youtube.com") {
     return true;
@@ -219,6 +249,10 @@ const isAllowedDomain = (domain: string, url: string): boolean => {
   }
 
   if (domain === "mixcloud.com" || domain.endsWith(".mixcloud.com")) {
+    return true;
+  }
+
+  if (isAccommodationDomain(domain)) {
     return true;
   }
 
@@ -301,6 +335,7 @@ Quick checks:
 - isAllowed("https://fete.outofofficecollective.co.uk") => true
 - isAllowed("https://music.youtube.com/watch?v=123") => true
 - isAllowed("https://www.youtube.com/watch?v=123") => false
+- isAllowed("https://airbnb.fr/rooms/123") => true
 - isTikTokProfileUrl("https://tiktok.com/@username") => true
 - isTikTokProfileUrl("https://tiktok.com/@username/video/123") => false
 - containsDisallowedUrl("visit https://ra.co/events/1") => { found: true, reason: "ticket platform" }
