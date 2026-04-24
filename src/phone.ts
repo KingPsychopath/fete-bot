@@ -46,6 +46,14 @@ export const parseHumanPhoneInput = (raw: string): PhoneParseResult => {
   }
 
   const compact = stripFormatting(trimmed);
+  if (!/^(?:\+|00)?\d+$/.test(compact)) {
+    return {
+      ok: false,
+      reason: "unparseable",
+      hint: "Use only the phone number as the identifier, then put any reason after a space.",
+    };
+  }
+
   const hasIntlPrefix = compact.startsWith("+") || compact.startsWith("00");
   const hasLeadingZero = /^0\d/.test(compact);
 
