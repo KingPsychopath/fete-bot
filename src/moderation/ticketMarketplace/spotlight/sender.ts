@@ -42,6 +42,7 @@ export const sendClaimedSpotlight = async (
   config: Config,
   pending: SpotlightPendingRow,
   claimedBy: string,
+  targetGroupJids: readonly string[],
   now = new Date(),
 ): Promise<void> => {
   if (!config.ticketSpotlightEnabled) {
@@ -73,7 +74,7 @@ export const sendClaimedSpotlight = async (
   const message = buildSpotlightMessage(config, pending.body);
   let sentCount = 0;
 
-  for (const targetGroupJid of config.ticketSpotlightTargetJids) {
+  for (const targetGroupJid of targetGroupJids) {
     const groupSince = subtractMs(now, config.ticketSpotlightGroupCooldownMinutes * 60 * 1000);
     if (hasTargetGroupSpotlightSince(targetGroupJid, groupSince)) {
       warn("spotlight.cancelled.group_cooldown", { pendingId: pending.id, targetGroupJid });

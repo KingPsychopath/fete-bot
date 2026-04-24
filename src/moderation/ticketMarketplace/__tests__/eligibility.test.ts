@@ -14,6 +14,7 @@ const config = {
   ticketMarketplaceGroupJids: ["market@g.us"],
   ticketMarketplaceGroupName: "FDLM Ticket Marketplace",
   ticketSpotlightEnabled: true,
+  ticketSpotlightBuyingEnabled: true,
   ticketSpotlightTargetJids: ["target@g.us"],
   ticketSpotlightDelayMinutes: 20,
   ticketSpotlightUserCooldownHours: 24,
@@ -22,6 +23,7 @@ const config = {
   ticketSpotlightQuietHours: "23-8",
   ticketSpotlightTimezone: "Europe/London",
   ticketSpotlightMinLength: 15,
+  ticketSpotlightBuyingMinLength: 30,
   ticketSpotlightMaxLength: 400,
   ticketSpotlightBlocklistJids: ["blocked@s.whatsapp.net"],
   ticketSpotlightClaimStaleMinutes: 5,
@@ -46,7 +48,7 @@ describe("spotlight eligibility", () => {
     expect(
       getSpotlightEligibility(
         config,
-        { ...baseInput, text: "Anyone selling a Sunday ticket?", intent: "buying", hasPrice: false },
+        { ...baseInput, text: "Looking for 2 Sunday tickets, willing to pay face value", intent: "buying", hasPrice: false },
         daytime,
       ),
     ).toEqual({ eligible: true });
@@ -67,10 +69,23 @@ describe("spotlight eligibility", () => {
       reason: "phone_number",
     });
     expect(getSpotlightEligibility(config, { ...baseInput, text: "Selling £80" }, daytime)).toEqual({ eligible: false, reason: "too_short" });
+    expect(
+      getSpotlightEligibility(config, { ...baseInput, text: "Anyone selling?", intent: "buying", hasPrice: false }, daytime),
+    ).toEqual({ eligible: false, reason: "too_short" });
     expect(getSpotlightEligibility(config, { ...baseInput, senderJid: "blocked@s.whatsapp.net" }, daytime)).toEqual({
       eligible: false,
       reason: "blocklisted",
     });
+  });
+
+  it("can disable buying spotlights independently", () => {
+    expect(
+      getSpotlightEligibility(
+        { ...config, ticketSpotlightBuyingEnabled: false },
+        { ...baseInput, text: "Looking for 2 Sunday tickets, willing to pay face value", intent: "buying", hasPrice: false },
+        daytime,
+      ),
+    ).toEqual({ eligible: false, reason: "buying_disabled" });
   });
 
   it("detects quiet hours crossing midnight", () => {

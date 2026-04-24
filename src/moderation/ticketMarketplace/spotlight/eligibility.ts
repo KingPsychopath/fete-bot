@@ -65,10 +65,6 @@ export const getSpotlightEligibility = (
     return { eligible: false, reason: "disabled" };
   }
 
-  if (config.ticketSpotlightTargetJids.length === 0) {
-    return { eligible: false, reason: "no_targets" };
-  }
-
   if (!config.ticketMarketplaceGroupJids.includes(input.groupJid)) {
     return { eligible: false, reason: "not_marketplace" };
   }
@@ -89,12 +85,19 @@ export const getSpotlightEligibility = (
     return { eligible: false, reason: "no_intent" };
   }
 
+  if (input.intent === "buying" && !config.ticketSpotlightBuyingEnabled) {
+    return { eligible: false, reason: "buying_disabled" };
+  }
+
   if (input.intent === "selling" && !input.hasPrice) {
     return { eligible: false, reason: "selling_missing_price" };
   }
 
   const trimmed = input.text.trim();
-  if (trimmed.length < config.ticketSpotlightMinLength) {
+  const minLength = input.intent === "buying"
+    ? config.ticketSpotlightBuyingMinLength
+    : config.ticketSpotlightMinLength;
+  if (trimmed.length < minLength) {
     return { eligible: false, reason: "too_short" };
   }
 

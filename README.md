@@ -84,7 +84,7 @@ Notes:
 - `ALLOWED_GROUP_JIDS` is optional; when empty, the bot acts in all joined groups
 - `TICKET_MARKETPLACE_MANAGEMENT=true` by default
 - `TICKET_MARKETPLACE_GROUP_JIDS` is comma-separated and defaults to `120363418331899807@g.us`
-- `TICKET_SPOTLIGHT_ENABLED=false` by default; spotlight reposts only go to explicit `TICKET_SPOTLIGHT_TARGET_JIDS`
+- `TICKET_SPOTLIGHT_ENABLED=true` by default; `TICKET_SPOTLIGHT_TARGET_JIDS` can explicitly choose repost groups, otherwise the bot uses every other joined managed group except marketplace groups
 - `OWNER_JIDS`, database moderators, and WhatsApp group admins are never moderated
 - The bot never responds in 1:1 chats unless the sender is an owner or moderator using a command
 - The bot never acts on its own messages, with an extra self-ID check as defence in depth
@@ -144,8 +144,9 @@ Special rules:
 
 ### Ticket spotlight reposts
 
-- Disabled by default with `TICKET_SPOTLIGHT_ENABLED=false`
-- Eligible buying or priced selling posts in the marketplace can be reposted after a delay to explicit spotlight target groups
+- Enabled by default with `TICKET_SPOTLIGHT_ENABLED=true`; set it to `false` to opt out
+- Eligible buying or priced selling posts in the marketplace can be reposted after a delay to explicit spotlight target groups, or to every other joined managed group when no target JIDs are configured
+- Buying spotlights have a separate kill switch and stricter minimum length via `TICKET_SPOTLIGHT_BUYING_ENABLED` and `TICKET_SPOTLIGHT_BUYING_MIN_LENGTH`
 - Spotlight has per-user, per-target-group, quiet-hours, daily-cap, URL, reply/quote, and blocklist gates
 - Pending spotlight jobs and send history are stored in SQLite so restarts do not lose queued posts
 - Delete events cancel pending spotlights on a best-effort basis

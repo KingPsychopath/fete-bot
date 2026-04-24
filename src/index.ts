@@ -380,6 +380,16 @@ const logConfig = (): void => {
 const isManagedGroup = (groupJid: string): boolean =>
   config.allowedGroupJids.length === 0 || config.allowedGroupJids.includes(groupJid);
 
+const getEffectiveTicketSpotlightTargetJids = (): string[] => {
+  if (config.ticketSpotlightTargetJids.length > 0) {
+    return config.ticketSpotlightTargetJids;
+  }
+
+  return Array.from(discoveredGroups.keys()).filter(
+    (groupJid) => isManagedGroup(groupJid) && !config.ticketMarketplaceGroupJids.includes(groupJid),
+  );
+};
+
 const isSelfParticipant = (
   participant: Pick<GroupMetadata["participants"][number], "id" | "lid" | "phoneNumber">,
   selfJids: ReadonlySet<string>,
@@ -600,6 +610,12 @@ const queueTicketSpotlightIfEligible = (
   ticketDecision: ReturnType<typeof getTicketMarketplaceDecision>,
 ): void => {
   if (!config.ticketSpotlightEnabled || !config.ticketMarketplaceGroupJids.includes(groupJid)) {
+    return;
+  }
+
+  const targetGroupJids = getEffectiveTicketSpotlightTargetJids();
+  if (targetGroupJids.length === 0) {
+    log("spotlight.cancelled.no_targets", { groupJid, senderJid });
     return;
   }
 
@@ -1370,7 +1386,7 @@ export const startBot = async (): Promise<void> => {
         await listDiscoveredGroups(sock);
         await enforceGlobalBans(sock);
         await runStartupHealthCheck(sock, config, discoveredGroupMetadata);
-        startSpotlightScheduler(sock, config);
+        startSpotlightScheduler(sock, config, getEffectiveTicketSpotlightTargetJids);
       })();
       return;
     }

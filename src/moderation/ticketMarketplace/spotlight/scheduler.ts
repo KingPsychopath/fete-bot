@@ -13,11 +13,16 @@ let schedulerTimer: ReturnType<typeof setInterval> | null = null;
 let summaryTimer: ReturnType<typeof setInterval> | null = null;
 let schedulerRunning = false;
 const claimProcessId = `spotlight-${randomUUID()}`;
+type TargetGroupResolver = () => readonly string[];
 
 const subtractMinutes = (date: Date, minutes: number): string =>
   new Date(date.getTime() - minutes * 60_000).toISOString();
 
-export const runSpotlightSchedulerTick = async (sock: WASocket, config: Config): Promise<void> => {
+export const runSpotlightSchedulerTick = async (
+  sock: WASocket,
+  config: Config,
+  getTargetGroupJids: TargetGroupResolver,
+): Promise<void> => {
   if (!config.ticketSpotlightEnabled || schedulerRunning) {
     return;
   }
@@ -33,7 +38,7 @@ export const runSpotlightSchedulerTick = async (sock: WASocket, config: Config):
 
     for (const pending of claimed) {
       log("spotlight.claimed", { pendingId: pending.id, sourceMsgId: pending.sourceMsgId });
-      await sendClaimedSpotlight(sock, config, pending, claimProcessId, now);
+      await sendClaimedSpotlight(sock, config, pending, claimProcessId, getTargetGroupJids(), now);
     }
   } catch (schedulerError) {
     warn("Spotlight scheduler tick failed", schedulerError);
@@ -42,13 +47,17 @@ export const runSpotlightSchedulerTick = async (sock: WASocket, config: Config):
   }
 };
 
-export const startSpotlightScheduler = (sock: WASocket, config: Config): void => {
+export const startSpotlightScheduler = (
+  sock: WASocket,
+  config: Config,
+  getTargetGroupJids: TargetGroupResolver,
+): void => {
   if (!config.ticketSpotlightEnabled || schedulerTimer) {
     return;
   }
 
   schedulerTimer = setInterval(() => {
-    void runSpotlightSchedulerTick(sock, config);
+    void runSpotlightSchedulerTick(sock, config, getTargetGroupJids);
   }, POLL_INTERVAL_MS);
   schedulerTimer.unref();
 
@@ -58,7 +67,7 @@ export const startSpotlightScheduler = (sock: WASocket, config: Config): void =>
   }, SUMMARY_INTERVAL_MS);
   summaryTimer.unref();
 
-  void runSpotlightSchedulerTick(sock, config);
+  void runSpotlightSchedulerTick(sock, config, getTargetGroupJids);
 };
 
 export const stopSpotlightScheduler = (): void => {
