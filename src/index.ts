@@ -20,6 +20,7 @@ import {
   addMute,
   closeDb,
   clearReviewQueueEntry,
+  getGlobalBans,
   initDb,
   isBanned,
   isMuted,
@@ -44,6 +45,7 @@ import {
 } from "./storagePaths.js";
 import {
   buildSelfJids,
+  describeUser,
   findExistingUserIdsByAliases,
   findParticipantJidForUser,
   mergeUserAliases,
@@ -60,6 +62,7 @@ const discoveredGroupMetadata = new Map<string, GroupMetadata>();
 const mutedMessageCounts = new Map<string, number>();
 let strikePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let mutePurgeTimer: ReturnType<typeof setInterval> | null = null;
+let globalBanEnforcementTimer: ReturnType<typeof setInterval> | null = null;
 let activeSocket: WASocket | null = null;
 let shuttingDown = false;
 let reconnecting = false;
@@ -526,6 +529,43 @@ const refreshGroupMetadata = async (sock: WASocket, groupJid: string): Promise<v
   }
 };
 
+const enforceGlobalBans = async (sock: WASocket): Promise<void> => {
+  if (config.dryRun) {
+    return;
+  }
+
+  const globalBans = getGlobalBans();
+  if (globalBans.length === 0 || discoveredGroupMetadata.size === 0) {
+    return;
+  }
+
+  for (const [groupJid, metadata] of discoveredGroupMetadata.entries()) {
+    if (!isManagedGroup(groupJid)) {
+      continue;
+    }
+
+    for (const ban of globalBans) {
+      const summary = describeUser(ban.userId);
+      const candidateAliases = summary?.aliases.map((alias) => alias.alias) ?? [];
+      if (isProtectedGroupMember(ban.userId, candidateAliases, groupJid, config, discoveredGroupMetadata)) {
+        continue;
+      }
+
+      const liveParticipantJid = findParticipantJidForUser(ban.userId, metadata);
+      if (!liveParticipantJid) {
+        continue;
+      }
+
+      try {
+        await sock.groupParticipantsUpdate(groupJid, [liveParticipantJid], "remove");
+        warn("Auto-removed globally banned user", { userId: ban.userId, groupJid });
+      } catch (globalBanError) {
+        error("Failed to auto-remove globally banned user", { userId: ban.userId, groupJid, error: globalBanError });
+      }
+    }
+  }
+};
+
 const buildErrorLogMessage = (messageText: string, moderationError: unknown): string => {
   const errorMessage =
     moderationError instanceof Error ? moderationError.message : String(moderationError);
@@ -557,15 +597,23 @@ export const handleMessage = async (
     const selfJids = getSelfJids(sock);
     const { senderJid, phoneNumber, lidJid } = extractAllIdentifiers(msg);
     const phoneJid = getPhoneJid(phoneNumber);
+    const isDirectChat = remoteJid.endsWith("@s.whatsapp.net") || remoteJid.endsWith("@lid");
     const sender = await resolveUser({
       participantJid: senderJid || null,
       phoneJid,
       lidJid,
       pushName: getPushName(msg),
       selfJids,
-    });
+    }) ?? (isDirectChat
+      ? await resolveUser({
+          participantJid: remoteJid,
+          phoneJid: remoteJid.endsWith("@s.whatsapp.net") ? remoteJid : null,
+          lidJid: remoteJid.endsWith("@lid") ? remoteJid : null,
+          pushName: getPushName(msg),
+          selfJids,
+        })
+      : null);
 
-    const isDirectChat = remoteJid.endsWith("@s.whatsapp.net") || remoteJid.endsWith("@lid");
     if (!sender) {
       if (isDirectChat && text.trim().startsWith("!")) {
         await sock.sendMessage(remoteJid, {
@@ -1087,6 +1135,14 @@ export const startBot = async (): Promise<void> => {
   sock.ev.on("lid-mapping.update", ({ lid, pn }) => {
     void syncLidMappingIdentity(lid, pn, sock);
   });
+  if (!globalBanEnforcementTimer) {
+    globalBanEnforcementTimer = setInterval(() => {
+      if (activeSocket) {
+        void enforceGlobalBans(activeSocket);
+      }
+    }, 30_000);
+    globalBanEnforcementTimer.unref();
+  }
 
   sock.ev.on("connection.update", (update) => {
     if (socketInstanceId !== socketInstanceCounter) {
@@ -1125,6 +1181,7 @@ export const startBot = async (): Promise<void> => {
       log("Bot connected");
       void (async () => {
         await listDiscoveredGroups(sock);
+        await enforceGlobalBans(sock);
         await runStartupHealthCheck(sock, config, discoveredGroupMetadata);
       })();
       return;
@@ -1268,6 +1325,11 @@ const shutdown = async (signal: string): Promise<void> => {
     if (mutePurgeTimer) {
       clearInterval(mutePurgeTimer);
       mutePurgeTimer = null;
+    }
+
+    if (globalBanEnforcementTimer) {
+      clearInterval(globalBanEnforcementTimer);
+      globalBanEnforcementTimer = null;
     }
 
     await activeSocket?.end(undefined);

@@ -102,6 +102,7 @@ type CountRow = {
 
 const SCHEMA_VERSION = 2;
 const RESET_DB_FLAG = "RESET_DB";
+export const GLOBAL_MODERATION_GROUP_JID = "__all_groups__";
 
 let db: Database.Database | null = null;
 
@@ -627,8 +628,8 @@ export const removeAllBans = (groupJid?: string): void => {
 export const isBanned = (userId: string, groupJid: string): boolean => {
   const terminalUserId = resolveTerminalUserId(userId);
   const result = getDb()
-    .prepare<[string, string], CountRow>("SELECT COUNT(*) as count FROM bans WHERE user_id = ? AND group_jid = ?")
-    .get(terminalUserId, groupJid);
+    .prepare<[string, string, string], CountRow>("SELECT COUNT(*) as count FROM bans WHERE user_id = ? AND group_jid IN (?, ?)")
+    .get(terminalUserId, groupJid, GLOBAL_MODERATION_GROUP_JID);
 
   return (result?.count ?? 0) > 0;
 };
@@ -660,6 +661,8 @@ export const getBans = (groupJid: string): Ban[] =>
       reason: row.reason,
       createdAt: row.created_at,
     }));
+
+export const getGlobalBans = (): Ban[] => getBans(GLOBAL_MODERATION_GROUP_JID);
 
 export const getBanGroupJids = (): string[] =>
   getDb()
@@ -736,14 +739,14 @@ export const removeAllMutes = (groupJid?: string): void => {
 export const isMuted = (userId: string, groupJid: string): boolean => {
   const terminalUserId = resolveTerminalUserId(userId);
   const result = getDb()
-    .prepare<[string, string, string], CountRow>(`
+    .prepare<[string, string, string, string], CountRow>(`
       SELECT COUNT(*) as count
       FROM mutes
       WHERE user_id = ?
-        AND group_jid = ?
+        AND group_jid IN (?, ?)
         AND (expires_at IS NULL OR expires_at > ?)
     `)
-    .get(terminalUserId, groupJid, new Date().toISOString());
+    .get(terminalUserId, groupJid, GLOBAL_MODERATION_GROUP_JID, new Date().toISOString());
 
   return (result?.count ?? 0) > 0;
 };
