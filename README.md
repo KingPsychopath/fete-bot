@@ -141,7 +141,8 @@ Special rules:
 
 ### Ticket marketplace routing
 
-- Buying or selling intent outside `FDLM Ticket Marketplace` is deleted and redirected there without a strike
+- Buying or selling intent outside `FDLM Ticket Marketplace` gets a reply redirecting the poster there without a strike
+- Owners can run `!ticketdelete on` to delete ticket redirect messages after replying, and `!ticketdelete off` to return to reply-only mode
 - General ticket or event discussion is still allowed outside the marketplace
 - Seller posts inside the marketplace must include a price, `face value` / `FV`, or free-equivalent wording
 - Marketplace routing respects `DRY_RUN` and never creates strikes, mutes, bans, or review-queue entries
@@ -220,6 +221,7 @@ Owners and moderators can control the bot in two ways:
 - `!addmod {number} {note?}`
 - `!removemod {number}`
 - `!mods`
+- `!ticketdelete {on|off|status}`
 
 ### Owner + moderator DM commands
 
@@ -517,7 +519,7 @@ Notes:
 
 - The bot must be an admin in each moderated group to delete messages or remove members
 - `DRY_RUN=true` still logs what would happen, but does not delete or send moderation replies
-- Ticket marketplace routing deletes and redirects buying/selling intent without adding strikes
+- Ticket marketplace routing replies to buying/selling intent without adding strikes; `!ticketdelete on` enables deletion after the reply
 - Ticket spotlight reposts are enabled by default and use SQLite claims to avoid duplicate sends across overlapping bot processes
 - Ticket-platform links get a specific redirect message to `fete.outofofficecollective.co.uk`
 - Phone-number spam warns but does not delete

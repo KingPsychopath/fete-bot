@@ -57,6 +57,10 @@ import {
   getQuietSwitchState,
   setQuietSwitchEnabled,
 } from "./quietSwitch.js";
+import {
+  getTicketMarketplaceDeletionState,
+  setTicketMarketplaceDeletionEnabled,
+} from "./ticketMarketplaceDeletion.js";
 import { STARTED_AT, VERSION } from "./version.js";
 import {
   formatJidForDisplay,
@@ -119,7 +123,8 @@ const OWNER_HELP_BLOCK = `
   !addmod {identifier} {note?}
   !removemod {identifier}
   !mods
-  !quiet {on|off|status} — global kill switch for all bot messages`;
+  !quiet {on|off|status} — global kill switch for all bot messages
+  !ticketdelete {on|off|status} — delete ticket redirect messages instead of reply-only`;
 
 const INVALID_IDENTIFIER_MESSAGE = `❌ Couldn't parse that as a user identifier.
 
@@ -165,7 +170,11 @@ const normaliseCommand = (text: string): string => text.trim().toLowerCase();
 const getCommandToken = (text: string): string => normaliseCommand(text).split(/\s+/)[0] ?? "";
 const canonicalCommand = (command: string): string => command === "!kick" ? "!remove" : command;
 const canonicalOwnerCommand = (command: string): string =>
-  ["!quiet", "!silence", "!killswitch"].includes(command) ? "!quiet" : command;
+  ["!quiet", "!silence", "!killswitch"].includes(command)
+    ? "!quiet"
+    : ["!ticketdelete", "!ticketdeletion", "!ticketsdelete"].includes(command)
+      ? "!ticketdelete"
+      : command;
 const isDestructiveCommand = (command: string): boolean =>
   ["!ban", "!mute", "!strike", "!remove"].includes(canonicalCommand(command));
 const COMMANDS_WITH_TARGET = new Set([
@@ -1003,6 +1012,46 @@ const handleQuietSwitchCommand = async (
   return true;
 };
 
+const formatTicketMarketplaceDeletionStatus = (): string => {
+  const state = getTicketMarketplaceDeletionState();
+  const status = state.enabled ? "ON - ticket redirect messages are deleted" : "OFF - ticket redirects reply only";
+  return `Ticket marketplace deletion: ${status}
+Updated: ${formatDate(state.updatedAt)}
+Updated by: ${state.updatedBy ?? "unknown"}`;
+};
+
+const handleTicketMarketplaceDeletionCommand = async (
+  sock: WASocket,
+  destinationJid: string,
+  actorContext: ActorContext,
+  text: string,
+): Promise<boolean> => {
+  if (actorContext.actorRole !== "owner") {
+    await sock.sendMessage(destinationJid, { text: "❌ Only owners can toggle ticket marketplace deletion." });
+    return true;
+  }
+
+  const mode = text.trim().split(/\s+/)[1]?.toLowerCase() ?? "status";
+  if (["on", "enable", "enabled", "true", "1"].includes(mode)) {
+    setTicketMarketplaceDeletionEnabled(true, actorContext.participantJid ?? actorContext.userId);
+    await sock.sendMessage(destinationJid, {
+      text: "Ticket marketplace deletion is ON. Matching ticket redirect messages will be deleted after the bot replies.",
+    });
+    return true;
+  }
+
+  if (["off", "disable", "disabled", "false", "0"].includes(mode)) {
+    setTicketMarketplaceDeletionEnabled(false, actorContext.participantJid ?? actorContext.userId);
+    await sock.sendMessage(destinationJid, {
+      text: "Ticket marketplace deletion is OFF. Matching ticket redirect messages will receive a reply only.",
+    });
+    return true;
+  }
+
+  await sock.sendMessage(destinationJid, { text: formatTicketMarketplaceDeletionStatus() });
+  return true;
+};
+
 export async function handleGroupCommand(
   sock: WASocket,
   actor: ResolvedUser,
@@ -1040,6 +1089,12 @@ export async function handleGroupCommand(
 
   if (command === "!quiet") {
     await handleQuietSwitchCommand(sock, actorContext.participantJid ?? groupJid, actorContext, text);
+    logAudit(actorContext, command, null, null, groupJid, text, "success");
+    return true;
+  }
+
+  if (command === "!ticketdelete") {
+    await handleTicketMarketplaceDeletionCommand(sock, actorContext.participantJid ?? groupJid, actorContext, text);
     logAudit(actorContext, command, null, null, groupJid, text, "success");
     return true;
   }
@@ -1236,6 +1291,12 @@ ${buildIdentityDebugText(actor)}`,
     return;
   }
 
+  if (command === "!ticketdelete") {
+    await handleTicketMarketplaceDeletionCommand(sock, replyJid, actorContext, text);
+    logAudit(actorContext, "!ticketdelete", null, null, null, text, "success");
+    return;
+  }
+
 	  if (command === "!status") {
 	    const moderators = listModerators();
 	    const managedGroupJids = getManagedGroupJids(config, groups);
@@ -1260,6 +1321,7 @@ Version: ${VERSION}
 Started: ${STARTED_AT}
 Mode: ${config.dryRun ? "DRY RUN (not deleting)" : "LIVE (deleting messages)"}
 ${formatQuietSwitchStatus()}
+${formatTicketMarketplaceDeletionStatus()}
 
 Active in ${configuredGroups.length} group(s):
 ${configuredGroups.length > 0 ? configuredGroups.join("\n") : "• None configured"}

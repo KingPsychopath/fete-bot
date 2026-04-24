@@ -150,6 +150,15 @@ const BUYER_INTENT_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   { label: "je veux acheter", regex: /\bje\s+veux\s+acheter\b/iu },
 ];
 
+const NEGATED_BUYER_INTENT_PATTERNS: Array<{ label: string; regex: RegExp }> = [
+  { label: "looking to buy", regex: /\b(?:not|never|dont|don't|do\s+not)\s+looking\s+to\s+buy\b/iu },
+  { label: "trying to find", regex: /\b(?:not|never|dont|don't|do\s+not)\s+trying\s+to\s+find\b/iu },
+  { label: "trying to get", regex: /\b(?:not|never|dont|don't|do\s+not)\s+trying\s+to\s+get\b/iu },
+  { label: "happy to pay", regex: /\b(?:not|never|dont|don't|do\s+not)\s+happy\s+to\s+pay\b/iu },
+  { label: "will pay", regex: /\b(?:not|never|dont|don't|do\s+not)\s+will\s+pay\b/iu },
+  { label: "can pay", regex: /\b(?:not|never|dont|don't|do\s+not)\s+can\s+pay\b/iu },
+];
+
 const normaliseText = (text: string): string =>
   text
     .normalize("NFKC")
@@ -182,6 +191,19 @@ const findTermMatches = (tokens: readonly string[], terms: readonly string[]): T
   }
 
   return matches;
+};
+
+const NEGATION_TERMS = new Set(["not", "no", "never", "dont", "don't", "cannot", "can't", "wont", "won't"]);
+
+const isNegatedMatch = (tokens: readonly string[], match: TokenMatch): boolean => {
+  const windowStart = Math.max(0, match.index - 4);
+  const before = tokens.slice(windowStart, match.index);
+
+  if (before.some((token) => NEGATION_TERMS.has(token))) {
+    return true;
+  }
+
+  return before.some((token, index) => token === "do" && before[index + 1] === "not");
 };
 
 const hasPhrase = (text: string, phrase: string): boolean => phraseRegex(phrase).test(text);
@@ -227,6 +249,20 @@ const hasNearbyMatch = (
     rightMatches.some((right) => Math.abs(left.index - right.index) <= maxDistance),
   );
 
+const genericWeakBuyTerms = new Set(["want", "need", "after"]);
+
+const getContextualWeakBuyMatches = (
+  weakBuyMatches: readonly TokenMatch[],
+  ticketMatches: readonly TokenMatch[],
+): TokenMatch[] =>
+  weakBuyMatches.filter((buyMatch) =>
+    ticketMatches.some(
+      (ticketMatch) =>
+        Math.abs(buyMatch.index - ticketMatch.index) <= 6 &&
+        (!genericWeakBuyTerms.has(buyMatch.token) || buyMatch.index <= ticketMatch.index),
+    ),
+  );
+
 const hasGotTicketsSellingIntent = (
   normalisedText: string,
   hasAvailabilityCue: boolean,
@@ -266,8 +302,9 @@ export const classify = (text: string): TicketMarketplaceClassification => {
 
   const tokens = tokenise(normalisedText);
   const ticketMatches = findTermMatches(tokens, TICKET_TERMS);
-  const weakBuyMatches = findTermMatches(tokens, WEAK_BUY_TERMS);
-  const weakSellMatches = findTermMatches(tokens, WEAK_SELL_TERMS);
+  const weakBuyMatches = findTermMatches(tokens, WEAK_BUY_TERMS).filter((match) => !isNegatedMatch(tokens, match));
+  const weakSellMatches = findTermMatches(tokens, WEAK_SELL_TERMS).filter((match) => !isNegatedMatch(tokens, match));
+  const contextualWeakBuyMatches = getContextualWeakBuyMatches(weakBuyMatches, ticketMatches);
   const availabilityMatches = findTermMatches(tokens, AVAILABILITY_CUES);
   const pricePresentBeforeIntent = hasExplicitPrice(normalisedText);
   const hasAvailabilityCue = availabilityMatches.length > 0;
@@ -278,11 +315,14 @@ export const classify = (text: string): TicketMarketplaceClassification => {
   const buySignals: string[] = [];
   const sellSignals: string[] = [];
   const strongBuySignals = findPatternMatches(normalisedText, STRONG_BUY_PATTERNS);
-  const buyerIntentSignals = findPatternMatches(normalisedText, BUYER_INTENT_PATTERNS);
+  const negatedBuyerIntentSignals = new Set(findPatternMatches(normalisedText, NEGATED_BUYER_INTENT_PATTERNS));
+  const buyerIntentSignals = findPatternMatches(normalisedText, BUYER_INTENT_PATTERNS).filter(
+    (signal) => !negatedBuyerIntentSignals.has(signal),
+  );
   buySignals.push(...strongBuySignals);
 
-  if (hasNearbyMatch(weakBuyMatches, ticketMatches, 6)) {
-    buySignals.push(...weakBuyMatches.map((match) => match.token));
+  if (contextualWeakBuyMatches.length > 0) {
+    buySignals.push(...contextualWeakBuyMatches.map((match) => match.token));
     buySignals.push(...ticketMatches.map((match) => match.token));
   }
 

@@ -41,6 +41,7 @@ import { cancelSpotlightsForSource, hasPendingSpotlightForSender, queueSpotlight
 import { SpamDetector, type SpamReason } from "./spamDetector.js";
 import { error, log, warn } from "./logger.js";
 import { consumeQuietSwitchSendBypass, isQuietSwitchEnabled } from "./quietSwitch.js";
+import { isTicketMarketplaceDeletionEnabled } from "./ticketMarketplaceDeletion.js";
 import {
   AUTH_DIR,
   DATABASE_PATH,
@@ -1000,6 +1001,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
       }
 
       if (ticketDecision.action !== "allow") {
+        const shouldDeleteTicketMarketplaceMessage = isTicketMarketplaceDeletionEnabled();
         const mentionTargetJid = getMentionTargetJid(senderJid, phoneJid);
         const mentionLabel = formatMentionLabel(senderJid, getPushName(msg), phoneJid);
         const marketplaceName = config.ticketMarketplaceGroupName;
@@ -1033,20 +1035,23 @@ They have been banned and removed after repeatedly trying to post while muted.`,
             matchedSignals: ticketDecision.matchedSignals,
             pricePresent: ticketDecision.hasPrice,
             action: ticketDecision.action,
+            deletionEnabled: shouldDeleteTicketMarketplaceMessage,
             wouldSendText: replyText,
           });
           return;
         }
 
         try {
-          await sock.sendMessage(groupJid, { delete: msg.key as WAMessageKey });
+          if (shouldDeleteTicketMarketplaceMessage) {
+            await sock.sendMessage(groupJid, { delete: msg.key as WAMessageKey });
+          }
           await sendModerationMessage(sock, groupJid, replyText, mentionTargetJid, msg);
           logAction({
             ...logEntry,
-            action: "DELETED",
+            action: shouldDeleteTicketMarketplaceMessage ? "DELETED" : "WARN",
           });
 
-          warn("Moderated ticket marketplace rule", {
+          warn("Responded to ticket marketplace rule", {
             groupJid,
             senderJid: canonicalSenderAlias,
             classification: ticketDecision.intent,
@@ -1054,6 +1059,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
             matchedSignals: ticketDecision.matchedSignals,
             pricePresent: ticketDecision.hasPrice,
             action: ticketDecision.action,
+            deletionEnabled: shouldDeleteTicketMarketplaceMessage,
           });
         } catch (moderationError) {
           logAction({
