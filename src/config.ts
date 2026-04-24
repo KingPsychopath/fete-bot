@@ -65,6 +65,13 @@ const parsePositiveInteger = (value: string | undefined, fallback: number): numb
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+const DEFAULT_TICKET_SPOTLIGHT_TARGET_JIDS = [
+  "120363398450564664@g.us",
+  "120363417253211015@g.us",
+  "120363417797746871@g.us",
+  "120363401608823361@g.us",
+].join(",");
+
 const loadedConfig = {
   dryRun: parseBoolean(process.env.DRY_RUN, true),
   allowedGroupJids: parseList(process.env.ALLOWED_GROUP_JIDS),
@@ -77,7 +84,7 @@ const loadedConfig = {
   ticketMarketplaceGroupName: normaliseEnvValue(process.env.TICKET_MARKETPLACE_GROUP_NAME) || "FDLM Ticket Marketplace",
   ticketSpotlightEnabled: parseBoolean(process.env.TICKET_SPOTLIGHT_ENABLED, true),
   ticketSpotlightBuyingEnabled: parseBoolean(process.env.TICKET_SPOTLIGHT_BUYING_ENABLED, true),
-  ticketSpotlightTargetJids: parseList(process.env.TICKET_SPOTLIGHT_TARGET_JIDS),
+  ticketSpotlightTargetJids: parseList(process.env.TICKET_SPOTLIGHT_TARGET_JIDS || DEFAULT_TICKET_SPOTLIGHT_TARGET_JIDS),
   ticketSpotlightDelayMinutes: parsePositiveInteger(process.env.TICKET_SPOTLIGHT_DELAY_MINUTES, 20),
   ticketSpotlightUserCooldownHours: parsePositiveInteger(process.env.TICKET_SPOTLIGHT_USER_COOLDOWN_HOURS, 24),
   ticketSpotlightGroupCooldownMinutes: parsePositiveInteger(process.env.TICKET_SPOTLIGHT_GROUP_COOLDOWN_MINUTES, 120),

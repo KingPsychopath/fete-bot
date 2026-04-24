@@ -839,7 +839,9 @@ const buildSpotlightQueueText = (
     return "No pending spotlight posts right now.";
   }
 
-  const lines = entries.map((entry, index) => `${index + 1}. ${entry.classifiedIntent.toUpperCase()} — scheduled ${formatDate(entry.scheduledAt)}
+  const lines = entries.map((entry, index) => `${index + 1}. ${entry.classifiedIntent.toUpperCase()}
+   Queued: ${formatDate(entry.createdAt)}
+   Expected release: ${formatDate(entry.scheduledAt)}
    Source: ${formatGroupName(entry.sourceGroupJid, groups)} (${entry.sourceGroupJid})
    Sender: ${formatUserById(entry.senderUserId)}
    Message ID: ${entry.sourceMsgId}

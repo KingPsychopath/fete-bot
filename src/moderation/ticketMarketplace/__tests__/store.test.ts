@@ -56,6 +56,7 @@ describe("spotlight store", () => {
     });
 
     expect(pending).not.toBeNull();
+    expect(store.hasPendingSpotlightForSender("user-1")).toBe(true);
     const claimed = store.claimDueSpotlights("2026-04-24T10:01:00.000Z", "2026-04-24T09:56:00.000Z", "worker-1");
     expect(claimed).toHaveLength(1);
     expect(store.claimDueSpotlights("2026-04-24T10:02:00.000Z", "2026-04-24T09:57:00.000Z", "worker-2")).toHaveLength(0);

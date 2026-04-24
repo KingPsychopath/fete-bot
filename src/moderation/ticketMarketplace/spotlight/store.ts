@@ -116,6 +116,18 @@ export const listPendingSpotlights = (limit = 20): SpotlightPendingRow[] =>
     .all(limit)
     .map(toPendingRow);
 
+export const hasPendingSpotlightForSender = (senderUserId: string): boolean => {
+  const row = getDb()
+    .prepare<[string], { count: number }>(`
+      SELECT COUNT(*) AS count
+      FROM spotlight_pending
+      WHERE sender_user_id = ? AND status = 'pending'
+    `)
+    .get(senderUserId);
+
+  return (row?.count ?? 0) > 0;
+};
+
 export const claimDueSpotlights = (
   nowIso: string,
   staleBeforeIso: string,

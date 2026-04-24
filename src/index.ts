@@ -35,7 +35,7 @@ import { containsDisallowedUrl } from "./linkChecker.js";
 import { getTicketMarketplaceDecision } from "./moderation/ticketMarketplace/index.js";
 import { getSpotlightEligibility } from "./moderation/ticketMarketplace/spotlight/eligibility.js";
 import { startSpotlightScheduler, stopSpotlightScheduler } from "./moderation/ticketMarketplace/spotlight/scheduler.js";
-import { cancelSpotlightsForSource, queueSpotlight } from "./moderation/ticketMarketplace/spotlight/store.js";
+import { cancelSpotlightsForSource, hasPendingSpotlightForSender, queueSpotlight } from "./moderation/ticketMarketplace/spotlight/store.js";
 import { SpamDetector, type SpamReason } from "./spamDetector.js";
 import { error, log, warn } from "./logger.js";
 import {
@@ -648,6 +648,16 @@ const queueTicketSpotlightIfEligible = (
 
   if (config.dryRun) {
     log("Dry run: would queue ticket spotlight", {
+      groupJid,
+      senderJid,
+      sourceMsgId: messageId,
+      classification: ticketDecision.intent,
+    });
+    return;
+  }
+
+  if (hasPendingSpotlightForSender(senderUserId)) {
+    log("spotlight.cancelled.sender_pending", {
       groupJid,
       senderJid,
       sourceMsgId: messageId,
