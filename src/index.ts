@@ -42,7 +42,7 @@ import {
   ensureStorageDirs,
   migrateLegacyAuthDir,
 } from "./storagePaths.js";
-import { buildSelfJids, findParticipantJidForUser, resolveUser, type ResolvedUser } from "./identity.js";
+import { buildSelfJids, findParticipantJidForUser, normalizeJid, resolveUser, type ResolvedUser } from "./identity.js";
 import { extractAllIdentifiers, isProtectedGroupMember, parseToJid } from "./utils.js";
 import { STARTED_AT, VERSION } from "./version.js";
 
@@ -423,6 +423,47 @@ const syncGroupParticipantIdentities = async (metadata: GroupMetadata): Promise<
   }
 };
 
+const resolveDirectSenderFromKnownGroups = async (
+  sender: ResolvedUser,
+  remoteJid: string,
+  pushName: string | null,
+  sock: WASocket,
+): Promise<ResolvedUser> => {
+  const directAliases = new Set(
+    [remoteJid, sender.participantJid, ...sender.knownAliases]
+      .filter((alias): alias is string => Boolean(alias))
+      .map((alias) => normalizeJid(alias)),
+  );
+
+  for (const metadata of discoveredGroupMetadata.values()) {
+    for (const participant of metadata.participants) {
+      const participantAliases = [
+        participant.id ? normalizeJid(participant.id) : null,
+        participant.lid ? normalizeJid(participant.lid) : null,
+        participant.phoneNumber ? parseToJid(participant.phoneNumber) : null,
+      ].filter((alias): alias is string => Boolean(alias));
+
+      if (!participantAliases.some((alias) => directAliases.has(alias))) {
+        continue;
+      }
+
+      await syncLidMappingIdentity(participant.lid, participant.phoneNumber, sock);
+      const resolved = await resolveUser({
+        participantJid: participant.id ?? sender.participantJid,
+        phoneJid: participant.phoneNumber ? parseToJid(participant.phoneNumber) : null,
+        lidJid: participant.lid ?? (remoteJid.endsWith("@lid") ? remoteJid : null),
+        pushName,
+        selfJids: getSelfJids(sock),
+        reason: "metadata_sync",
+      });
+
+      return resolved ?? sender;
+    }
+  }
+
+  return sender;
+};
+
 const listDiscoveredGroups = async (
   sock: WASocket,
 ): Promise<void> => {
@@ -507,10 +548,11 @@ export const handleMessage = async (
     }
 
     if (isDirectChat) {
+      const directSender = await resolveDirectSenderFromKnownGroups(sender, remoteJid, getPushName(msg), sock);
       if (text) {
         await handleAuthorisedCommand(
           sock,
-          sender,
+          directSender,
           text,
           config,
           discoveredGroups,

@@ -986,8 +986,15 @@ export async function handleAuthorisedCommand(
   const actorContext = getActorContext(actor, config);
   if (!actorContext) {
     if (replyJid) {
+      const aliasLines = actor.knownAliases.length > 0
+        ? actor.knownAliases.map((alias) => `• ${alias}`).join("\n")
+        : "• none";
       await sock.sendMessage(replyJid, {
-        text: "⛔ You're not authorised to use Fete Bot commands. Ignoring this command.",
+        text: `⛔ You're not authorised to use Fete Bot commands. Ignoring this command.
+
+Seen as: ${formatUserSummary(actor)}
+Aliases:
+${aliasLines}`,
       });
     }
     return;
