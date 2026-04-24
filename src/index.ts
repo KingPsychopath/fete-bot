@@ -496,14 +496,17 @@ export const handleMessage = async (
       selfJids,
     });
 
-    if (!sender || !sender.participantJid) {
+    const isDirectChat = remoteJid.endsWith("@s.whatsapp.net") || remoteJid.endsWith("@lid");
+    if (!sender) {
+      if (isDirectChat && text.trim().startsWith("!")) {
+        await sock.sendMessage(remoteJid, {
+          text: "⛔ You're not authorised to use Fete Bot commands. Ignoring this command.",
+        });
+      }
       return;
     }
 
-    const liveSenderJid = sender.participantJid;
-    const canonicalSenderAlias = phoneJid ?? liveSenderJid;
-
-    if (remoteJid.endsWith("@s.whatsapp.net") || remoteJid.endsWith("@lid")) {
+    if (isDirectChat) {
       if (text) {
         await handleAuthorisedCommand(
           sock,
@@ -517,6 +520,13 @@ export const handleMessage = async (
       }
       return;
     }
+
+    if (!sender.participantJid) {
+      return;
+    }
+
+    const liveSenderJid = sender.participantJid;
+    const canonicalSenderAlias = phoneJid ?? liveSenderJid;
 
     const groupJid = remoteJid;
     if (!groupJid.endsWith("@g.us")) {

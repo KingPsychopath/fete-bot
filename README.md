@@ -207,7 +207,7 @@ Owners and moderators can control the bot in two ways:
 - `!mute {jid or number} {duration?} {groupJid?}`
 - `!unmute {jid or number} {groupJid}`
 - `!mutes {groupJid}`
-- `!remove {jid or number} {groupJid}`
+- `!remove` / `!kick {jid or number} {groupJid}`
 - `!pardon {jid or number} {groupJid?}`
 - `!strikes {jid, lid, or number}`
 - `!strike {jid, lid, or number} {reason?} {groupJid?}`
@@ -223,6 +223,7 @@ Reply to the target message, then send:
 - `!mute {duration?}`
 - `!unmute`
 - `!ban {reason?}`
+- `!remove` / `!kick`
 - `!strike {reason?}`
 - `!pardon`
 - `!strikes`
@@ -242,7 +243,7 @@ On first deploy, only `OWNER_JIDS` users exist.
 
 Per owner or moderator:
 
-- max 10 destructive commands per minute across `!ban`, `!mute`, and `!strike`
+- max 10 destructive commands per minute across `!ban`, `!mute`, `!strike`, `!remove`, and `!kick`
 
 If exceeded, the bot replies:
 
@@ -482,7 +483,7 @@ Notes:
 - Phone-number spam warns but does not delete
 - Muted users are silent-delete only
 - Ban and mute enforcement is local to the configured group
-- DM commands are ignored for non-authorised users without replying
+- DM commands from non-authorised users get a short "not authorised" reply and are ignored
 
 ## Type Check
 

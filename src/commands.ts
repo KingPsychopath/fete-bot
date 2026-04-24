@@ -67,7 +67,7 @@ const HELP_MESSAGE = `*Fete Bot — Admin Help*
   !unmute       —               | {identifier} {groupJid?}
   !ban          {reason?}       | {identifier} {reason?} {groupJid?}
   !unban        DM only         | {identifier} {groupJid?}
-  !remove       DM only         | {identifier} {groupJid?}
+  !remove/!kick —               | {identifier} {groupJid?}
   !strike       {reason?}       | {identifier} {reason?} {groupJid?}
   !strikes      —               | {identifier}
   !pardon       —               | {identifier} {groupJid?}
@@ -89,7 +89,7 @@ const HELP_MESSAGE = `*Fete Bot — Admin Help*
   Reply: !whois
   DM:    !mute 07911123456 2h
   DM:    !strike +447911123456 ignored warning
-  DM:    !remove lid:abc123def456
+  DM:    !kick lid:abc123def456
   DM:    !whois 447911123456@s.whatsapp.net
 
 *Number format*
@@ -146,6 +146,27 @@ const undoableActions = new Map<string, UndoableAction>();
 const destructiveCommandTimestamps = new Map<string, number[]>();
 
 const normaliseCommand = (text: string): string => text.trim().toLowerCase();
+const getCommandToken = (text: string): string => normaliseCommand(text).split(/\s+/)[0] ?? "";
+const canonicalCommand = (command: string): string => command === "!kick" ? "!remove" : command;
+const isDestructiveCommand = (command: string): boolean =>
+  ["!ban", "!mute", "!strike", "!remove"].includes(canonicalCommand(command));
+const COMMANDS_WITH_TARGET = new Set([
+  "!ban",
+  "!mute",
+  "!unban",
+  "!unmute",
+  "!strikes",
+  "!pardon",
+  "!resetstrikes",
+  "!strike",
+  "!remove",
+  "!whois",
+]);
+
+const getReplyJidForActor = (actor: ResolvedUser): string | null =>
+  actor.participantJid ??
+  actor.knownAliases.find((alias) => alias.endsWith("@s.whatsapp.net") || alias.endsWith("@lid")) ??
+  null;
 
 const formatGroupName = (
   groupJid: string,
@@ -180,6 +201,11 @@ const formatGroupScope = (
 
   return "all managed groups";
 };
+
+const formatGroupList = (
+  groupJids: readonly string[],
+  groups: ReadonlyMap<string, string> | ReadonlyMap<string, GroupMetadata>,
+): string => groupJids.map((groupJid) => formatGroupName(groupJid, groups)).join(", ");
 
 const formatReason = (reason?: string | null): string => reason?.trim() || "none";
 
@@ -305,7 +331,7 @@ const parseTargetSpecifier = (
 
 const parseCommandArgs = (text: string): ParsedCommandArgs => {
   const tokens = text.trim().split(/\s+/).filter(Boolean);
-  const command = (tokens[0] ?? "").toLowerCase();
+  const command = canonicalCommand((tokens[0] ?? "").toLowerCase());
   const parsed = parseTargetSpecifier(text);
   const remainingTokens = parsed.targetIdentifier
     ? tokens.slice((text.trim().split(/\s+/).findIndex((token) => token === parsed.targetIdentifier?.split(/\s+/)[0]) || 0) + 1)
@@ -783,7 +809,7 @@ export async function handleGroupCommand(
     return false;
   }
 
-  const command = normaliseCommand(text).split(/\s+/)[0] ?? "";
+  const command = canonicalCommand(getCommandToken(text));
   if (!command.startsWith("!")) {
     return false;
   }
@@ -815,7 +841,7 @@ export async function handleGroupCommand(
 
   const rest = text.trim().split(/\s+/).slice(1).join(" ").trim();
 
-  if (["!ban", "!mute", "!strike"].includes(command) && !checkDestructiveCommandRateLimit(actorContext.userId)) {
+  if (isDestructiveCommand(command) && !checkDestructiveCommandRateLimit(actorContext.userId)) {
     await sock.sendMessage(groupJid, {
       text: "Slow down — you've run 10 commands in the last minute. Try again shortly.",
     });
@@ -847,6 +873,38 @@ export async function handleGroupCommand(
 They can now send messages again.`,
     });
     logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "success");
+    return true;
+  }
+
+  if (command === "!remove") {
+    if (!(await ensureTargetNotProtected(sock, groupJid, target, groupJid, config, groupMetadataByJid, "remove"))) {
+      logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "error");
+      return true;
+    }
+
+    const liveParticipantJid = findParticipantJidForUser(target.userId, groupMetadataByJid.get(groupJid));
+    if (!liveParticipantJid) {
+      await sock.sendMessage(groupJid, {
+        text: `❌ Couldn't find ${formatUserSummary(target)} in this group to remove.`,
+      });
+      logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "error");
+      return true;
+    }
+
+    try {
+      await sock.groupParticipantsUpdate(groupJid, [liveParticipantJid], "remove");
+      resetStrikes(target.userId, groupJid);
+      clearReviewQueueEntry(target.userId, groupJid);
+      await sock.sendMessage(groupJid, {
+        text: `✅ Removed ${formatUserSummary(target)} from ${formatGroupName(groupJid, groups)}`,
+      });
+      logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "success");
+    } catch {
+      await sock.sendMessage(groupJid, {
+        text: "❌ Failed to remove that member. Make sure the bot is an admin in this group.",
+      });
+      logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "error");
+    }
     return true;
   }
 
@@ -919,13 +977,25 @@ export async function handleAuthorisedCommand(
   groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
   selfJids: ReadonlySet<string>,
 ): Promise<void> {
-  const actorContext = getActorContext(actor, config);
-  if (!actorContext) {
+  const command = canonicalCommand(getCommandToken(text));
+  if (!command.startsWith("!")) {
     return;
   }
 
-  const replyJid = actorContext.participantJid ?? actor.userId;
-  const command = normaliseCommand(text);
+  const replyJid = getReplyJidForActor(actor);
+  const actorContext = getActorContext(actor, config);
+  if (!actorContext) {
+    if (replyJid) {
+      await sock.sendMessage(replyJid, {
+        text: "⛔ You're not authorised to use Fete Bot commands. Ignoring this command.",
+      });
+    }
+    return;
+  }
+
+  if (!replyJid) {
+    return;
+  }
 
   if (command === "!help") {
     await sock.sendMessage(replyJid, {
@@ -981,7 +1051,7 @@ Forwarded messages seen today: ${getForwardedMessagesSeenToday()}`,
     return;
   }
 
-  if (command.startsWith("!audit")) {
+  if (command === "!audit") {
     const limit = Number(text.trim().split(/\s+/)[1] ?? "20");
     const entries = getAuditEntries(Number.isFinite(limit) && limit > 0 ? limit : 20);
     const lines =
@@ -1000,7 +1070,7 @@ Forwarded messages seen today: ${getForwardedMessagesSeenToday()}`,
     return;
   }
 
-  if (command.startsWith("!test ")) {
+  if (command === "!test" && text.trim().split(/\s+/).length > 1) {
     const candidate = text.trim().slice("!test".length).trim();
     const result = containsDisallowedUrl(candidate);
     await sock.sendMessage(replyJid, {
@@ -1018,7 +1088,7 @@ Forwarded messages seen today: ${getForwardedMessagesSeenToday()}`,
     return;
   }
 
-  if (command.startsWith("!addmod")) {
+  if (command === "!addmod") {
     if (actorContext.actorRole !== "owner") {
       await sock.sendMessage(replyJid, { text: "❌ Only owners can add moderators." });
       logAudit(actorContext, "!addmod", null, null, null, text, "error");
@@ -1049,7 +1119,7 @@ They can now use all moderation commands.`,
     return;
   }
 
-  if (command.startsWith("!removemod")) {
+  if (command === "!removemod") {
     if (actorContext.actorRole !== "owner") {
       await sock.sendMessage(replyJid, { text: "❌ Only owners can remove moderators." });
       logAudit(actorContext, "!removemod", null, null, null, text, "error");
@@ -1121,9 +1191,7 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
   const parsed = parseCommandArgs(text);
 
   if (
-    ["!ban", "!mute", "!unban", "!unmute", "!strikes", "!pardon", "!resetstrikes", "!strike", "!remove", "!whois"].includes(
-      parsed.command,
-    ) &&
+    COMMANDS_WITH_TARGET.has(parsed.command) &&
     parsed.parseFailed
   ) {
     await sendInvalidIdentifier(sock, replyJid);
@@ -1131,7 +1199,7 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
     return;
   }
 
-  if (["!ban", "!mute", "!strike"].includes(parsed.command) && !checkDestructiveCommandRateLimit(actorContext.userId)) {
+  if (isDestructiveCommand(parsed.command) && !checkDestructiveCommandRateLimit(actorContext.userId)) {
     await sock.sendMessage(replyJid, {
       text: "Slow down — you've run 10 commands in the last minute. Try again shortly.",
     });
@@ -1164,7 +1232,8 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
   const target = parsed.targetIdentifier ? await resolveIdentifierTarget(parsed.targetIdentifier, selfJids) : null;
 
   if (
-    ["!remove", "!pardon", "!resetstrikes", "!strikes", "!ban", "!unban", "!mute", "!unmute", "!strike"].includes(parsed.command) &&
+    COMMANDS_WITH_TARGET.has(parsed.command) &&
+    parsed.command !== "!whois" &&
     !target
   ) {
     await sendIdentifierParseFailure(sock, replyJid, parsed.targetIdentifier);
@@ -1188,6 +1257,8 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
     }
 
     const removedFromGroupJids: string[] = [];
+    const notPresentGroupJids: string[] = [];
+    const failedGroupJids: string[] = [];
     for (const groupJid of groupJids) {
       const liveParticipantJid = findParticipantJidForUser(target.userId, groupMetadataByJid.get(groupJid));
       if (liveParticipantJid) {
@@ -1195,16 +1266,29 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
           await sock.groupParticipantsUpdate(groupJid, [liveParticipantJid], "remove");
           removedFromGroupJids.push(groupJid);
         } catch {
-          // Keep clearing state even if the participant was not present.
+          failedGroupJids.push(groupJid);
         }
+      } else {
+        notPresentGroupJids.push(groupJid);
       }
 
       resetStrikes(target.userId, groupJid);
       clearReviewQueueEntry(target.userId, groupJid);
     }
 
+    const resultLines =
+      removedFromGroupJids.length > 0
+        ? [`✅ Removed ${formatUserSummary(target)} from ${formatGroupList(removedFromGroupJids, groups)}`]
+        : [`⚠️ ${formatUserSummary(target)} was not removed from any live group.`];
+    if (notPresentGroupJids.length > 0) {
+      resultLines.push(`Not currently present in: ${formatGroupList(notPresentGroupJids, groups)}`);
+    }
+    if (failedGroupJids.length > 0) {
+      resultLines.push(`Failed to remove from: ${formatGroupList(failedGroupJids, groups)}. Make sure the bot is an admin there.`);
+    }
+
     await sock.sendMessage(replyJid, {
-      text: `✅ Removed ${formatUserSummary(target)} from ${formatGroupScope(groupJids, groups)}`,
+      text: resultLines.join("\n"),
     });
     for (const groupJid of removedFromGroupJids) {
       await sock.sendMessage(groupJid, {
@@ -1275,6 +1359,8 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
       return;
     }
 
+    const removedFromGroupJids: string[] = [];
+    const failedRemovalGroupJids: string[] = [];
     for (const groupJid of groupJids) {
       addBan(target.userId, groupJid, getActorReference(actorContext), parsed.rest || undefined);
       clearReviewQueueEntry(target.userId, groupJid);
@@ -1282,8 +1368,9 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
       if (liveParticipantJid) {
         try {
           await sock.groupParticipantsUpdate(groupJid, [liveParticipantJid], "remove");
+          removedFromGroupJids.push(groupJid);
         } catch {
-          // Ban remains active even if they are not currently present.
+          failedRemovalGroupJids.push(groupJid);
         }
       }
     }
@@ -1300,10 +1387,20 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
       },
     });
 
-    await sock.sendMessage(replyJid, {
-      text: `✅ Banned ${formatUserSummary(target)} in ${formatGroupScope(groupJids, groups)}
+    const resultLines = [
+      `✅ Banned ${formatUserSummary(target)} in ${formatGroupScope(groupJids, groups)}
 Reason: ${formatReason(parsed.rest)}
 They will be auto-removed if they try to rejoin.`,
+    ];
+    if (removedFromGroupJids.length > 0) {
+      resultLines.push(`Removed now from: ${formatGroupList(removedFromGroupJids, groups)}`);
+    }
+    if (failedRemovalGroupJids.length > 0) {
+      resultLines.push(`Ban saved, but failed to remove now from: ${formatGroupList(failedRemovalGroupJids, groups)}. Make sure the bot is an admin there.`);
+    }
+
+    await sock.sendMessage(replyJid, {
+      text: resultLines.join("\n"),
     });
     logAudit(actorContext, parsed.command, target.userId, target.participantJid, parsed.groupJid, text, "success");
     return;
