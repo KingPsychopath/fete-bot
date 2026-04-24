@@ -68,6 +68,8 @@ describe("spotlight store", () => {
     expect(reClaimed).toHaveLength(1);
     expect(store.markSpotlightSent(reClaimed[0].id, "worker-1", "2026-04-24T10:17:00.000Z")).toBe(true);
     expect(store.listRecentSpotlightOutcomes(10)[0].status).toBe("sent");
+    expect(store.requeueSpotlight("msg-1", "2026-04-24T10:30:00.000Z", "2026-04-24T10:18:00.000Z")?.status).toBe("pending");
+    expect(store.getSpotlightByIdentifier("MSG-1")?.scheduledAt).toBe("2026-04-24T10:30:00.000Z");
   });
 
   it("reclaims stale claimed rows", async () => {

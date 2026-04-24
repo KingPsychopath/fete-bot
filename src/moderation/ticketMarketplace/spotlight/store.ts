@@ -108,6 +108,27 @@ export const getPendingById = (id: string): SpotlightPendingRow | null => {
   return row ? toPendingRow(row) : null;
 };
 
+export const getSpotlightByIdentifier = (identifier: string): SpotlightPendingRow | null => {
+  const value = identifier.trim();
+  if (!value) {
+    return null;
+  }
+
+  const row = getDb()
+    .prepare<[string, string, string], SpotlightPendingDbRow>(`
+      SELECT *
+      FROM spotlight_pending
+      WHERE id = ?
+         OR source_msg_id = ?
+         OR lower(source_msg_id) = lower(?)
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `)
+    .get(value, value, value);
+
+  return row ? toPendingRow(row) : null;
+};
+
 export const listPendingSpotlights = (limit = 20): SpotlightPendingRow[] =>
   getDb()
     .prepare<[number], SpotlightPendingDbRow>(`
@@ -221,6 +242,32 @@ export const rescheduleClaimedSpotlight = (
     .run(scheduledAt, nowIso, pendingId, claimedBy);
 
   return result.changes > 0;
+};
+
+export const requeueSpotlight = (
+  identifier: string,
+  scheduledAt: string,
+  nowIso = new Date().toISOString(),
+): SpotlightPendingRow | null => {
+  const existing = getSpotlightByIdentifier(identifier);
+  if (!existing) {
+    return null;
+  }
+
+  const result = getDb()
+    .prepare<[string, string, string]>(`
+      UPDATE spotlight_pending
+      SET status = 'pending',
+          cancel_reason = NULL,
+          claimed_at = NULL,
+          claimed_by = NULL,
+          scheduled_at = ?,
+          updated_at = ?
+      WHERE id = ?
+    `)
+    .run(scheduledAt, nowIso, existing.id);
+
+  return result.changes > 0 ? getPendingById(existing.id) : null;
 };
 
 export const cancelSpotlightsForSource = (

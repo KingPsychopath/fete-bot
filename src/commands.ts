@@ -46,8 +46,10 @@ import {
 } from "./identity.js";
 import { containsDisallowedUrl, type DisallowedUrlReason } from "./linkChecker.js";
 import {
+  getSpotlightByIdentifier,
   listPendingSpotlights,
   listRecentSpotlightOutcomes,
+  requeueSpotlight,
 } from "./moderation/ticketMarketplace/spotlight/store.js";
 import {
   allowQuietSwitchSend,
@@ -88,6 +90,7 @@ const HELP_MESSAGE = `*Fete Bot — Admin Help*
   !reviews
   !spotlights   {limit?}
   !spotlight-history {limit?}
+  !spotlight-requeue {messageId|rowId} {minutes?}
   !bans         {groupJid?}
   !mutes        {groupJid?}
   !audit        {limit?}
@@ -895,6 +898,28 @@ const buildSpotlightHistoryText = (
   return `Recent spotlight outcomes (${entries.length}${entries.length === limit ? "+" : ""}):\n\n${lines.join("\n\n")}`;
 };
 
+const buildSpotlightRequeueText = (
+  identifier: string,
+  delayMinutes: number,
+): string => {
+  const existing = getSpotlightByIdentifier(identifier);
+  if (!existing) {
+    return `No spotlight found for "${identifier}". Use !spotlight-history to copy the Message ID.`;
+  }
+
+  const scheduledAt = new Date(Date.now() + delayMinutes * 60_000).toISOString();
+  const requeued = requeueSpotlight(identifier, scheduledAt);
+  if (!requeued) {
+    return `Could not requeue spotlight "${identifier}".`;
+  }
+
+  return `Requeued spotlight ${requeued.classifiedIntent.toUpperCase()}
+Message ID: ${requeued.sourceMsgId}
+Previous status: ${existing.status}${existing.cancelReason ? ` (${existing.cancelReason})` : ""}
+Expected release: ${formatDate(requeued.scheduledAt)}
+Text: "${formatPreview(requeued.body)}"`;
+};
+
 const formatQuietSwitchStatus = (): string => {
   const state = getQuietSwitchState();
   const status = state.enabled ? "ON - bot messages are blocked" : "OFF - bot messages are allowed";
@@ -1264,6 +1289,25 @@ Forwarded messages seen today: ${getForwardedMessagesSeenToday()}`,
       text: buildSpotlightHistoryText(groups, safeLimit),
     });
     logAudit(actorContext, "!spotlight-history", null, null, null, text, "success");
+    return;
+  }
+
+  if (command === "!spotlight-requeue") {
+    const [, identifier, minutesText] = text.trim().split(/\s+/);
+    if (!identifier) {
+      await sock.sendMessage(replyJid, { text: "Usage: !spotlight-requeue {messageId|rowId} {minutes?}" });
+      logAudit(actorContext, "!spotlight-requeue", null, null, null, text, "error");
+      return;
+    }
+
+    const delayMinutes = Number(minutesText ?? "0");
+    const safeDelayMinutes = Number.isInteger(delayMinutes) && delayMinutes >= 0
+      ? Math.min(delayMinutes, 24 * 60)
+      : 0;
+    await sock.sendMessage(replyJid, {
+      text: buildSpotlightRequeueText(identifier, safeDelayMinutes),
+    });
+    logAudit(actorContext, "!spotlight-requeue", null, null, null, text, "success");
     return;
   }
 
