@@ -60,7 +60,14 @@ describe("spotlight store", () => {
     const claimed = store.claimDueSpotlights("2026-04-24T10:01:00.000Z", "2026-04-24T09:56:00.000Z", "worker-1");
     expect(claimed).toHaveLength(1);
     expect(store.claimDueSpotlights("2026-04-24T10:02:00.000Z", "2026-04-24T09:57:00.000Z", "worker-2")).toHaveLength(0);
-    expect(store.markSpotlightSent(claimed[0].id, "worker-1", "2026-04-24T10:02:00.000Z")).toBe(true);
+    expect(store.rescheduleClaimedSpotlight(claimed[0].id, "worker-1", "2026-04-24T10:15:00.000Z", "2026-04-24T10:02:00.000Z")).toBe(true);
+    const rescheduled = store.listPendingSpotlights()[0];
+    expect(rescheduled.scheduledAt).toBe("2026-04-24T10:15:00.000Z");
+    expect(rescheduled.claimedAt).toBeNull();
+    const reClaimed = store.claimDueSpotlights("2026-04-24T10:16:00.000Z", "2026-04-24T10:11:00.000Z", "worker-1");
+    expect(reClaimed).toHaveLength(1);
+    expect(store.markSpotlightSent(reClaimed[0].id, "worker-1", "2026-04-24T10:17:00.000Z")).toBe(true);
+    expect(store.listRecentSpotlightOutcomes(10)[0].status).toBe("sent");
   });
 
   it("reclaims stale claimed rows", async () => {

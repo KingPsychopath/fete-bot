@@ -25,6 +25,10 @@ type SpotlightPendingDbRow = {
   updated_at: string;
 };
 
+export type SpotlightOutcomeRow = SpotlightPendingRow & {
+  sentTargetGroupJids: string[];
+};
+
 export type QueueSpotlightInput = {
   sourceGroupJid: string;
   sourceMsgId: string;
@@ -202,6 +206,23 @@ export const cancelClaimedSpotlight = (
   return result.changes > 0;
 };
 
+export const rescheduleClaimedSpotlight = (
+  pendingId: string,
+  claimedBy: string,
+  scheduledAt: string,
+  nowIso = new Date().toISOString(),
+): boolean => {
+  const result = getDb()
+    .prepare<[string, string, string, string]>(`
+      UPDATE spotlight_pending
+      SET scheduled_at = ?, claimed_at = NULL, claimed_by = NULL, updated_at = ?
+      WHERE id = ? AND status = 'pending' AND claimed_by = ?
+    `)
+    .run(scheduledAt, nowIso, pendingId, claimedBy);
+
+  return result.changes > 0;
+};
+
 export const cancelSpotlightsForSource = (
   sourceGroupJid: string,
   sourceMsgId: string,
@@ -303,4 +324,27 @@ export const getSpotlightSummarySince = (sinceIso: string): SpotlightSummaryRow[
       status: row.status,
       cancelReason: row.cancel_reason,
       count: row.count,
+    }));
+
+export const listRecentSpotlightOutcomes = (limit = 10): SpotlightOutcomeRow[] =>
+  getDb()
+    .prepare<[number], SpotlightPendingDbRow & { target_group_jids: string | null }>(`
+      SELECT
+        p.*,
+        GROUP_CONCAT(h.target_group_jid) AS target_group_jids
+      FROM spotlight_pending p
+      LEFT JOIN spotlight_history h
+        ON h.source_group_jid = p.source_group_jid
+       AND h.source_msg_id = p.source_msg_id
+      WHERE p.status IN ('sent', 'cancelled')
+      GROUP BY p.id
+      ORDER BY p.updated_at DESC
+      LIMIT ?
+    `)
+    .all(limit)
+    .map((row) => ({
+      ...toPendingRow(row),
+      sentTargetGroupJids: row.target_group_jids
+        ? row.target_group_jids.split(",").filter((jid) => jid.length > 0)
+        : [],
     }));

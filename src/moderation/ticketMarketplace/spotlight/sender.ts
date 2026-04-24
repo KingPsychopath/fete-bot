@@ -11,12 +11,15 @@ import {
   hasUserSpotlightSince,
   markSpotlightSent,
   recordSpotlightHistory,
+  rescheduleClaimedSpotlight,
 } from "./store.js";
 import { isQuietHour } from "./eligibility.js";
 
 const subtractMs = (date: Date, ms: number): string => new Date(date.getTime() - ms).toISOString();
+const addMs = (date: Date, ms: number): string => new Date(date.getTime() + ms).toISOString();
 const normaliseJid = (jid: string): string => jid.trim().toLowerCase();
 const PHONE_JID_REGEX = /^(\d{7,15})@s\.whatsapp\.net$/iu;
+const RETRY_DELAY_MS = 15 * 60 * 1000;
 
 export const trimSpotlightBody = (body: string, maxLength: number): string => {
   const trimmed = body.trim().replace(/\s+/gu, " ");
@@ -99,8 +102,9 @@ export const sendClaimedSpotlight = async (
   }
 
   if (isQuietHour(now, config.ticketSpotlightQuietHours, config.ticketSpotlightTimezone)) {
-    cancelClaimedSpotlight(pending.id, claimedBy, "quiet_hours");
-    warn("spotlight.cancelled.quiet_hours", { pendingId: pending.id });
+    const scheduledAt = addMs(now, RETRY_DELAY_MS);
+    rescheduleClaimedSpotlight(pending.id, claimedBy, scheduledAt);
+    warn("spotlight.deferred.quiet_hours", { pendingId: pending.id, scheduledAt });
     return;
   }
 
@@ -120,17 +124,20 @@ export const sendClaimedSpotlight = async (
   const sentAt = now.toISOString();
   const message = buildSpotlightMessageForPending(config, pending);
   let sentCount = 0;
+  const skippedReasons = new Set<string>();
 
   for (const targetGroupJid of targetGroupJids) {
     const groupSince = subtractMs(now, config.ticketSpotlightGroupCooldownMinutes * 60 * 1000);
     if (hasTargetGroupSpotlightSince(targetGroupJid, groupSince)) {
-      warn("spotlight.cancelled.group_cooldown", { pendingId: pending.id, targetGroupJid });
+      skippedReasons.add("group_cooldown");
+      warn("spotlight.skipped.group_cooldown", { pendingId: pending.id, targetGroupJid });
       continue;
     }
 
     const daySince = subtractMs(now, 24 * 60 * 60 * 1000);
     if (getTargetGroupSpotlightCountSince(targetGroupJid, daySince) >= getDailyCapForPending(config, pending)) {
-      warn("spotlight.cancelled.daily_cap", { pendingId: pending.id, targetGroupJid });
+      skippedReasons.add("daily_cap");
+      warn("spotlight.skipped.daily_cap", { pendingId: pending.id, targetGroupJid });
       continue;
     }
 
@@ -140,13 +147,26 @@ export const sendClaimedSpotlight = async (
       sentCount += 1;
       log("spotlight.sent", { pendingId: pending.id, targetGroupJid });
     } catch (sendError) {
+      skippedReasons.add("send_failed");
       warn("spotlight.send_failed", { pendingId: pending.id, targetGroupJid, error: sendError });
     }
   }
 
   if (sentCount === 0) {
-    cancelClaimedSpotlight(pending.id, claimedBy, "no_targets_available");
-    warn("spotlight.cancelled.no_targets_available", { pendingId: pending.id });
+    if (skippedReasons.has("group_cooldown") || skippedReasons.has("send_failed")) {
+      const scheduledAt = addMs(now, RETRY_DELAY_MS);
+      rescheduleClaimedSpotlight(pending.id, claimedBy, scheduledAt);
+      warn("spotlight.deferred.no_targets_available", {
+        pendingId: pending.id,
+        scheduledAt,
+        reasons: Array.from(skippedReasons),
+      });
+      return;
+    }
+
+    const cancelReason = skippedReasons.has("daily_cap") ? "daily_cap" : "no_targets_available";
+    cancelClaimedSpotlight(pending.id, claimedBy, cancelReason);
+    warn(`spotlight.cancelled.${cancelReason}`, { pendingId: pending.id, reasons: Array.from(skippedReasons) });
     return;
   }
 

@@ -69,6 +69,9 @@ const setupDb = async () => {
   db.getDb()
     .prepare("INSERT INTO users (id, created_at, display_name, notes, merged_into) VALUES (?, ?, ?, ?, ?)")
     .run("user-1", 1, "Emmanuel", null, null);
+  db.getDb()
+    .prepare("INSERT INTO users (id, created_at, display_name, notes, merged_into) VALUES (?, ?, ?, ?, ?)")
+    .run("user-2", 1, "Other User", null, null);
   const store = await import("../spotlight/store.js");
   return { db, store };
 };
@@ -109,5 +112,51 @@ describe("spotlight scheduler", () => {
         .prepare("SELECT COUNT(*) AS count FROM spotlight_history WHERE target_group_jid = ?")
         .get("target@g.us"),
     ).toEqual({ count: 1 });
+  });
+
+  it("defers instead of cancelling when every target group is cooling down", async () => {
+    const { db, store } = await setupDb();
+    const { runSpotlightSchedulerTick } = await import("../spotlight/scheduler.js");
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const sock = { sendMessage };
+
+    db.getDb()
+      .prepare(`
+        INSERT INTO spotlight_history (
+          id,
+          sender_user_id,
+          sender_jid,
+          source_group_jid,
+          source_msg_id,
+          target_group_jid,
+          sent_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run("hist-1", "user-2", "other@s.whatsapp.net", "market@g.us", "old-msg", "target@g.us", "2026-04-24T12:30:00.000Z");
+
+    store.queueSpotlight({
+      sourceGroupJid: "market@g.us",
+      sourceMsgId: "msg-1",
+      senderUserId: "user-1",
+      senderJid: "447946811079@s.whatsapp.net",
+      body: "Selling 3 Friday sixton tickets €30 each",
+      classifiedIntent: "selling",
+      scheduledAt: "2026-04-24T13:00:00.000Z",
+    });
+
+    await runSpotlightSchedulerTick(
+      sock as never,
+      config,
+      () => ["target@g.us"],
+      new Date("2026-04-24T13:00:00.000Z"),
+    );
+
+    expect(sendMessage).not.toHaveBeenCalled();
+    const pending = store.listPendingSpotlights();
+    expect(pending).toHaveLength(1);
+    expect(pending[0].status).toBe("pending");
+    expect(pending[0].claimedAt).toBeNull();
+    expect(pending[0].scheduledAt).toBe("2026-04-24T13:15:00.000Z");
   });
 });

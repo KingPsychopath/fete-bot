@@ -45,7 +45,10 @@ import {
   type UserSummary,
 } from "./identity.js";
 import { containsDisallowedUrl, type DisallowedUrlReason } from "./linkChecker.js";
-import { listPendingSpotlights } from "./moderation/ticketMarketplace/spotlight/store.js";
+import {
+  listPendingSpotlights,
+  listRecentSpotlightOutcomes,
+} from "./moderation/ticketMarketplace/spotlight/store.js";
 import {
   allowQuietSwitchSend,
   getQuietSwitchState,
@@ -84,6 +87,7 @@ const HELP_MESSAGE = `*Fete Bot — Admin Help*
   !status
   !reviews
   !spotlights   {limit?}
+  !spotlight-history {limit?}
   !bans         {groupJid?}
   !mutes        {groupJid?}
   !audit        {limit?}
@@ -234,6 +238,7 @@ const formatDate = (iso: string | null): string => {
   return new Date(iso).toLocaleString("en-GB", {
     dateStyle: "medium",
     timeStyle: "short",
+    timeZone: "Europe/London",
   });
 };
 
@@ -859,6 +864,37 @@ const buildSpotlightQueueText = (
   return `Pending spotlight queue (${entries.length}${entries.length === limit ? "+" : ""}):\n\n${lines.join("\n\n")}`;
 };
 
+const buildSpotlightHistoryText = (
+  groups: Map<string, string>,
+  limit: number,
+): string => {
+  const entries = listRecentSpotlightOutcomes(limit);
+  if (entries.length === 0) {
+    return "No sent or cancelled spotlight posts recorded yet.";
+  }
+
+  const lines = entries.map((entry, index) => {
+    const targets = entry.sentTargetGroupJids.length > 0
+      ? entry.sentTargetGroupJids.map((jid) => `${formatGroupName(jid, groups)} (${jid})`).join("\n      ")
+      : "none";
+    const outcome = entry.status === "cancelled"
+      ? `CANCELLED — ${entry.cancelReason ?? "unknown"}`
+      : "SENT";
+
+    return `${index + 1}. ${entry.classifiedIntent.toUpperCase()} — ${outcome}
+   Queued: ${formatDate(entry.createdAt)}
+   Last updated: ${formatDate(entry.updatedAt)}
+   Source: ${formatGroupName(entry.sourceGroupJid, groups)} (${entry.sourceGroupJid})
+   Sender: ${formatUserById(entry.senderUserId)}
+   Message ID: ${entry.sourceMsgId}
+   Targets:
+      ${targets}
+   Text: "${formatPreview(entry.body)}"`;
+  });
+
+  return `Recent spotlight outcomes (${entries.length}${entries.length === limit ? "+" : ""}):\n\n${lines.join("\n\n")}`;
+};
+
 const formatQuietSwitchStatus = (): string => {
   const state = getQuietSwitchState();
   const status = state.enabled ? "ON - bot messages are blocked" : "OFF - bot messages are allowed";
@@ -1218,6 +1254,16 @@ Forwarded messages seen today: ${getForwardedMessagesSeenToday()}`,
       text: buildSpotlightQueueText(groups, safeLimit),
     });
     logAudit(actorContext, "!spotlights", null, null, null, text, "success");
+    return;
+  }
+
+  if (command === "!spotlight-history") {
+    const limit = Number(text.trim().split(/\s+/)[1] ?? "10");
+    const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 50) : 10;
+    await sock.sendMessage(replyJid, {
+      text: buildSpotlightHistoryText(groups, safeLimit),
+    });
+    logAudit(actorContext, "!spotlight-history", null, null, null, text, "success");
     return;
   }
 
