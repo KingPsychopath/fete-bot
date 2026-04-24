@@ -661,6 +661,16 @@ export const getBans = (groupJid: string): Ban[] =>
       createdAt: row.created_at,
     }));
 
+export const getBanGroupJids = (): string[] =>
+  getDb()
+    .prepare<[], { group_jid: string }>(`
+      SELECT DISTINCT group_jid
+      FROM bans
+      ORDER BY group_jid ASC
+    `)
+    .all()
+    .map((row) => row.group_jid);
+
 export const getTotalActiveBans = (): number => {
   const result = getDb().prepare<[], CountRow>("SELECT COUNT(*) as count FROM bans").get();
   return result?.count ?? 0;

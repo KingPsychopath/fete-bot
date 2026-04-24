@@ -203,7 +203,7 @@ Owners and moderators can control the bot in two ways:
 - `!undo`
 - `!ban {jid or number} {groupJid?} {reason?}`
 - `!unban {jid or number} {groupJid}`
-- `!bans {groupJid}`
+- `!bans {groupJid?}`
 - `!mute {jid or number} {duration?} {groupJid?}`
 - `!unmute {jid or number} {groupJid}`
 - `!mutes {groupJid}`
@@ -212,7 +212,9 @@ Owners and moderators can control the bot in two ways:
 - `!strikes {jid, lid, or number}`
 - `!strike {jid, lid, or number} {reason?} {groupJid?}`
 
-If exactly one managed group is available, commands that take `{groupJid?}` can omit it. If multiple managed groups are available, pass the raw group JID.
+If exactly one managed group is available, commands that take `{groupJid?}` can omit it. If multiple managed groups are available, pass the raw group JID when you want to target just one group.
+
+For `!bans`, omitting `{groupJid}` lists every group that currently has active bans.
 
 ### Reply-based commands in groups
 
@@ -399,6 +401,7 @@ pnpm admin:cli strikes list lid-user-123@lid
 pnpm admin:cli strikes clear 07911123456 120363408759548644@g.us
 pnpm admin:cli strikes clear-all 120363408759548644@g.us
 pnpm admin:cli strikes clear-all
+pnpm admin:cli bans list
 pnpm admin:cli bans list 120363408759548644@g.us
 pnpm admin:cli bans clear 07911123456 120363408759548644@g.us
 pnpm admin:cli bans clear-all 120363408759548644@g.us

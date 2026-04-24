@@ -12,6 +12,7 @@ import {
   getActiveStrikes,
   getActiveStrikesAcrossGroups,
   getAuditEntries,
+  getBanGroupJids,
   getBans,
   getForwardedMessagesSeenToday,
   getStrikesIssuedToday,
@@ -146,8 +147,17 @@ const destructiveCommandTimestamps = new Map<string, number[]>();
 
 const normaliseCommand = (text: string): string => text.trim().toLowerCase();
 
-const formatGroupName = (groupJid: string, groups: Map<string, string>): string =>
-  groups.get(groupJid) ?? groupJid;
+const formatGroupName = (
+  groupJid: string,
+  groups: ReadonlyMap<string, string> | ReadonlyMap<string, GroupMetadata>,
+): string => {
+  const group = groups.get(groupJid);
+  if (typeof group === "string") {
+    return group;
+  }
+
+  return group?.subject ?? groupJid;
+};
 
 const getManagedGroupJids = (
   config: Config,
@@ -160,7 +170,10 @@ const getManagedGroupJids = (
   return Array.from(groups.keys());
 };
 
-const formatGroupScope = (groupJids: readonly string[], groups: Map<string, string>): string => {
+const formatGroupScope = (
+  groupJids: readonly string[],
+  groups: ReadonlyMap<string, string> | ReadonlyMap<string, GroupMetadata>,
+): string => {
   if (groupJids.length === 1) {
     return formatGroupName(groupJids[0] ?? "", groups);
   }
@@ -391,6 +404,26 @@ const resolveGroupTargets = (
   }
 
   return { groupJids: [requestedGroupJid], invalid: false };
+};
+
+const getBanListingTargets = (
+  requestedGroupJid: string | null,
+  config: Config,
+  groups: ReadonlyMap<string, string> | ReadonlyMap<string, GroupMetadata>,
+): { groupJids: string[]; invalid: boolean; scopeLabel: string } => {
+  if (requestedGroupJid) {
+    const resolved = resolveGroupTargets(requestedGroupJid, config, groups);
+    return {
+      ...resolved,
+      scopeLabel: resolved.groupJids.length > 0 ? formatGroupScope(resolved.groupJids, groups) : "that group",
+    };
+  }
+
+  return {
+    groupJids: getBanGroupJids(),
+    invalid: false,
+    scopeLabel: "all groups",
+  };
 };
 
 const ensureAllowedGroup = async (
@@ -1299,10 +1332,10 @@ They can now rejoin the group.`,
   }
 
   if (parsed.command === "!bans") {
-    const { groupJids, invalid } = resolveGroupTargets(parsed.groupJid, config, groups);
-    if (groupJids.length === 0) {
+    const { groupJids, invalid, scopeLabel } = getBanListingTargets(parsed.groupJid, config, groups);
+    if (invalid) {
       await sock.sendMessage(replyJid, {
-        text: invalid ? "❌ That group isn't one of this bot's managed groups." : "Usage: !bans {groupJid?}",
+        text: "❌ That group isn't one of this bot's managed groups.",
       });
       logAudit(actorContext, parsed.command, null, null, parsed.groupJid, text, "error");
       return;
@@ -1314,7 +1347,7 @@ They can now rejoin the group.`,
 
     await sock.sendMessage(replyJid, {
       text: sections.length > 0
-        ? `Active bans in ${formatGroupScope(groupJids, groups)}:\n\n${sections
+        ? `Active bans in ${scopeLabel}:\n\n${sections
             .map(({ groupJid, bans }) => {
               const lines = bans.map(
                 (ban, index) =>
@@ -1326,7 +1359,7 @@ They can now rejoin the group.`,
               return `${formatGroupName(groupJid, groups)}:\n${lines.join("\n\n")}`;
             })
             .join("\n\n")}`
-        : `No active bans in ${formatGroupScope(groupJids, groups)}`,
+        : `No active bans in ${scopeLabel}`,
     });
     logAudit(actorContext, parsed.command, null, null, parsed.groupJid, text, "success");
     return;

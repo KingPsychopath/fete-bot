@@ -6,6 +6,7 @@ import {
   getActiveMutes,
   getActiveStrikesAcrossGroups,
   getAuditEntries,
+  getBanGroupJids,
   getBans,
   initDb,
   listModerators,
@@ -52,7 +53,7 @@ Strikes:
   pnpm admin:cli strikes clear-all [groupJid]
 
 Bans:
-  pnpm admin:cli bans list <groupJid>
+  pnpm admin:cli bans list [groupJid]
   pnpm admin:cli bans reset <identifier> <groupJid>
   pnpm admin:cli bans clear <identifier> <groupJid>
   pnpm admin:cli bans reset-all [groupJid]
@@ -283,20 +284,43 @@ const resetAllState = (groupJidInput?: string): void => {
 };
 
 const listBans = (groupJidInput: string | undefined): void => {
-  const groupJid = requireGroupJid(groupJidInput);
-  const bans = getBans(groupJid);
-  if (bans.length === 0) {
-    console.log(`No bans in ${groupJid}`);
+  if (groupJidInput) {
+    const groupJid = requireGroupJid(groupJidInput);
+    const bans = getBans(groupJid);
+    if (bans.length === 0) {
+      console.log(`No bans in ${groupJid}`);
+      return;
+    }
+
+    console.log(`Bans in ${groupJid}:`);
+    for (const ban of bans) {
+      console.log(
+        `- ${formatUserSummary(describeUser(ban.userId))} | by ${
+          ban.bannedByUserId ? formatUserSummary(describeUser(ban.bannedByUserId)) : ban.bannedByLabel
+        } | reason: ${ban.reason ?? "none"} | at: ${ban.createdAt}`,
+      );
+    }
     return;
   }
 
-  console.log(`Bans in ${groupJid}:`);
-  for (const ban of bans) {
-    console.log(
-      `- ${formatUserSummary(describeUser(ban.userId))} | by ${
-        ban.bannedByUserId ? formatUserSummary(describeUser(ban.bannedByUserId)) : ban.bannedByLabel
-      } | reason: ${ban.reason ?? "none"} | at: ${ban.createdAt}`,
-    );
+  const groupJids = getBanGroupJids();
+  if (groupJids.length === 0) {
+    console.log("No bans across all groups");
+    return;
+  }
+
+  console.log("Bans across all groups:");
+  for (const groupJid of groupJids) {
+    const bans = getBans(groupJid);
+    console.log("");
+    console.log(`${groupJid}:`);
+    for (const ban of bans) {
+      console.log(
+        `- ${formatUserSummary(describeUser(ban.userId))} | by ${
+          ban.bannedByUserId ? formatUserSummary(describeUser(ban.bannedByUserId)) : ban.bannedByLabel
+        } | reason: ${ban.reason ?? "none"} | at: ${ban.createdAt}`,
+      );
+    }
   }
 };
 
