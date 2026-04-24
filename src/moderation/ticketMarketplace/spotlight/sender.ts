@@ -52,9 +52,21 @@ export const formatObfuscatedPhone = (jid: string): string | null => {
   return `+${digits.slice(0, 4)}...${digits.slice(-4)}`;
 };
 
+export const findSpotlightPhoneJid = (
+  senderJid: string,
+  aliases: ReadonlyArray<{ alias: string; aliasType: string }> = [],
+): string | null => {
+  if (formatObfuscatedPhone(senderJid)) {
+    return senderJid;
+  }
+
+  return aliases.find((alias) => alias.aliasType === "phone" && formatObfuscatedPhone(alias.alias))?.alias ?? null;
+};
+
 export const formatSpotlightSenderLabel = (pending: SpotlightPendingRow): string | null => {
-  const displayName = describeUser(pending.senderUserId)?.displayName?.trim() || null;
-  const phone = formatObfuscatedPhone(pending.senderJid);
+  const summary = describeUser(pending.senderUserId);
+  const displayName = summary?.displayName?.trim() || null;
+  const phone = formatObfuscatedPhone(findSpotlightPhoneJid(pending.senderJid, summary?.aliases) ?? pending.senderJid);
 
   if (displayName && phone) {
     return `${displayName} (${phone})`;

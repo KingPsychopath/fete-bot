@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { Config } from "../../../config.js";
 import {
   buildSpotlightMessage,
+  findSpotlightPhoneJid,
   formatObfuscatedPhone,
   trimSpotlightBody,
 } from "../spotlight/sender.js";
@@ -53,5 +54,20 @@ describe("spotlight sender formatting", () => {
   it("obfuscates phone JIDs", () => {
     expect(formatObfuscatedPhone("447946811079@s.whatsapp.net")).toBe("+4479...1079");
     expect(formatObfuscatedPhone("abc@lid")).toBeNull();
+  });
+
+  it("finds a known phone alias when the queued sender is a LID", () => {
+    expect(
+      findSpotlightPhoneJid("abc@lid", [
+        {
+          alias: "abc@lid",
+          aliasType: "lid",
+        },
+        {
+          alias: "447957985377@s.whatsapp.net",
+          aliasType: "phone",
+        },
+      ]),
+    ).toBe("447957985377@s.whatsapp.net");
   });
 });
