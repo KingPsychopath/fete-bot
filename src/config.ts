@@ -92,8 +92,16 @@ const loadedConfig = {
   ticketSpotlightBuyingEnabled: parseBoolean(process.env.TICKET_SPOTLIGHT_BUYING_ENABLED, false),
   ticketSpotlightTargetJids: parseList(process.env.TICKET_SPOTLIGHT_TARGET_JIDS || DEFAULT_TICKET_SPOTLIGHT_TARGET_JIDS),
   ticketSpotlightDelayMinutes: parsePositiveInteger(process.env.TICKET_SPOTLIGHT_DELAY_MINUTES, 20),
+  ticketSpotlightSellingDelayMinutes: parsePositiveInteger(
+    process.env.TICKET_SPOTLIGHT_SELLING_DELAY_MINUTES,
+    parsePositiveInteger(process.env.TICKET_SPOTLIGHT_DELAY_MINUTES, 20),
+  ),
+  ticketSpotlightBuyingDelayMinutes: parsePositiveInteger(
+    process.env.TICKET_SPOTLIGHT_BUYING_DELAY_MINUTES,
+    parsePositiveInteger(process.env.TICKET_SPOTLIGHT_DELAY_MINUTES, 30),
+  ),
   ticketSpotlightUserCooldownHours: parsePositiveInteger(process.env.TICKET_SPOTLIGHT_USER_COOLDOWN_HOURS, 24),
-  ticketSpotlightGroupCooldownMinutes: parsePositiveInteger(process.env.TICKET_SPOTLIGHT_GROUP_COOLDOWN_MINUTES, 120),
+  ticketSpotlightGroupCooldownMinutes: parsePositiveInteger(process.env.TICKET_SPOTLIGHT_GROUP_COOLDOWN_MINUTES, 60),
   ticketSpotlightBuyingMaxPerDay: parsePositiveInteger(process.env.TICKET_SPOTLIGHT_BUYING_MAX_PER_DAY, 2),
   ticketSpotlightSellingMaxPerDay: parsePositiveInteger(process.env.TICKET_SPOTLIGHT_SELLING_MAX_PER_DAY, 4),
   ticketSpotlightQuietHours: normaliseEnvValue(process.env.TICKET_SPOTLIGHT_QUIET_HOURS) || "23-8",

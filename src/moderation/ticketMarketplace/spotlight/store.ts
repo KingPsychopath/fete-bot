@@ -270,6 +270,53 @@ export const requeueSpotlight = (
   return result.changes > 0 ? getPendingById(existing.id) : null;
 };
 
+export const requeueFailedSpotlights = (
+  sinceIso: string,
+  scheduledAt: string,
+  nowIso = new Date().toISOString(),
+  limit = 50,
+): SpotlightPendingRow[] =>
+  withImmediateTransaction(() => {
+    const rows = getDb()
+      .prepare<[string, number], SpotlightPendingDbRow>(`
+        SELECT *
+        FROM spotlight_pending
+        WHERE status = 'cancelled'
+          AND updated_at >= ?
+        ORDER BY updated_at DESC
+        LIMIT ?
+      `)
+      .all(sinceIso, limit);
+
+    if (rows.length === 0) {
+      return [];
+    }
+
+    const update = getDb().prepare<[string, string, string]>(`
+      UPDATE spotlight_pending
+      SET status = 'pending',
+          cancel_reason = NULL,
+          claimed_at = NULL,
+          claimed_by = NULL,
+          scheduled_at = ?,
+          updated_at = ?
+      WHERE id = ? AND status = 'cancelled'
+    `);
+
+    const requeued: SpotlightPendingRow[] = [];
+    for (const row of rows) {
+      const result = update.run(scheduledAt, nowIso, row.id);
+      if (result.changes > 0) {
+        const next = getPendingById(row.id);
+        if (next) {
+          requeued.push(next);
+        }
+      }
+    }
+
+    return requeued;
+  });
+
 export const cancelSpotlightsForSource = (
   sourceGroupJid: string,
   sourceMsgId: string,

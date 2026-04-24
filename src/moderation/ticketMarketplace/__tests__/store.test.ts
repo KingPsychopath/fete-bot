@@ -72,6 +72,33 @@ describe("spotlight store", () => {
     expect(store.getSpotlightByIdentifier("MSG-1")?.scheduledAt).toBe("2026-04-24T10:30:00.000Z");
   });
 
+  it("requeues cancelled spotlights in a time window", async () => {
+    const { store } = await setupDb();
+    const pending = store.queueSpotlight({
+      sourceGroupJid: "market@g.us",
+      sourceMsgId: "msg-1",
+      senderUserId: "user-1",
+      senderJid: "sender@s.whatsapp.net",
+      body: "Selling 2 Sunday tickets £80 each",
+      classifiedIntent: "selling",
+      scheduledAt: "2026-04-24T10:00:00.000Z",
+    });
+    expect(pending).not.toBeNull();
+
+    const claimed = store.claimDueSpotlights("2026-04-24T10:01:00.000Z", "2026-04-24T09:56:00.000Z", "worker-1");
+    expect(store.cancelClaimedSpotlight(claimed[0].id, "worker-1", "no_targets_available", "2026-04-24T10:02:00.000Z")).toBe(true);
+    const requeued = store.requeueFailedSpotlights(
+      "2026-04-24T09:00:00.000Z",
+      "2026-04-24T10:30:00.000Z",
+      "2026-04-24T10:03:00.000Z",
+    );
+
+    expect(requeued).toHaveLength(1);
+    expect(requeued[0].status).toBe("pending");
+    expect(requeued[0].scheduledAt).toBe("2026-04-24T10:30:00.000Z");
+    expect(requeued[0].cancelReason).toBeNull();
+  });
+
   it("reclaims stale claimed rows", async () => {
     const { store } = await setupDb();
     store.queueSpotlight({

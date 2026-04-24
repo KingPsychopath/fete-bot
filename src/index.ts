@@ -691,7 +691,10 @@ const queueTicketSpotlightIfEligible = (
     return;
   }
 
-  const scheduledAt = new Date(Date.now() + config.ticketSpotlightDelayMinutes * 60_000).toISOString();
+  const delayMinutes = ticketDecision.intent === "buying"
+    ? config.ticketSpotlightBuyingDelayMinutes
+    : config.ticketSpotlightSellingDelayMinutes;
+  const scheduledAt = new Date(Date.now() + delayMinutes * 60_000).toISOString();
   const queued = queueSpotlight({
     sourceGroupJid: groupJid,
     sourceMsgId: messageId,

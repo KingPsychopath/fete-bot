@@ -49,6 +49,7 @@ import {
   getSpotlightByIdentifier,
   listPendingSpotlights,
   listRecentSpotlightOutcomes,
+  requeueFailedSpotlights,
   requeueSpotlight,
 } from "./moderation/ticketMarketplace/spotlight/store.js";
 import {
@@ -902,6 +903,10 @@ const buildSpotlightRequeueText = (
   identifier: string,
   delayMinutes: number,
 ): string => {
+  if (identifier.toLowerCase() === "failed") {
+    return "Usage: !spotlight-requeue failed {hours?} {delayMinutes?}";
+  }
+
   const existing = getSpotlightByIdentifier(identifier);
   if (!existing) {
     return `No spotlight found for "${identifier}". Use !spotlight-history to copy the Message ID.`;
@@ -918,6 +923,30 @@ Message ID: ${requeued.sourceMsgId}
 Previous status: ${existing.status}${existing.cancelReason ? ` (${existing.cancelReason})` : ""}
 Expected release: ${formatDate(requeued.scheduledAt)}
 Text: "${formatPreview(requeued.body)}"`;
+};
+
+const buildFailedSpotlightRequeueText = (
+  hours: number,
+  delayMinutes: number,
+): string => {
+  const now = new Date();
+  const sinceIso = new Date(now.getTime() - hours * 60 * 60 * 1000).toISOString();
+  const scheduledAt = new Date(now.getTime() + delayMinutes * 60_000).toISOString();
+  const requeued = requeueFailedSpotlights(sinceIso, scheduledAt, now.toISOString());
+
+  if (requeued.length === 0) {
+    return `No cancelled spotlights found in the last ${hours}h.`;
+  }
+
+  const preview = requeued
+    .slice(0, 5)
+    .map((entry, index) => `${index + 1}. ${entry.classifiedIntent.toUpperCase()} ${entry.sourceMsgId}: "${formatPreview(entry.body, 80)}"`)
+    .join("\n");
+
+  return `Requeued ${requeued.length} failed spotlight${requeued.length === 1 ? "" : "s"} from the last ${hours}h.
+Expected release: ${formatDate(scheduledAt)}
+
+${preview}${requeued.length > 5 ? `\n...and ${requeued.length - 5} more` : ""}`;
 };
 
 const formatQuietSwitchStatus = (): string => {
@@ -1242,9 +1271,10 @@ ${configuredGroups.length > 0 ? configuredGroups.join("\n") : "• None configur
 	${formatGroupLines(config.ticketMarketplaceGroupJids, groups)}
 	
 	Ticket spotlight: ${config.ticketSpotlightEnabled ? "enabled" : "disabled"}
-	Spotlight selling: ${config.ticketSpotlightSellingEnabled ? "enabled" : "disabled"} (min ${config.ticketSpotlightSellingMinLength}, max/day ${config.ticketSpotlightSellingMaxPerDay})
+	Spotlight selling: ${config.ticketSpotlightSellingEnabled ? "enabled" : "disabled"} (delay ${config.ticketSpotlightSellingDelayMinutes}m, min ${config.ticketSpotlightSellingMinLength}, max/day ${config.ticketSpotlightSellingMaxPerDay})
 	Spotlight buying: ${config.ticketSpotlightBuyingEnabled ? "enabled" : "disabled"}
-	Spotlight buying rules: min ${config.ticketSpotlightBuyingMinLength}, max/day ${config.ticketSpotlightBuyingMaxPerDay}
+	Spotlight buying rules: delay ${config.ticketSpotlightBuyingDelayMinutes}m, min ${config.ticketSpotlightBuyingMinLength}, max/day ${config.ticketSpotlightBuyingMaxPerDay}
+	Spotlight group cooldown: ${config.ticketSpotlightGroupCooldownMinutes}m
 	Spotlight target source: ${spotlightTargetSource}
 	Spotlight target group(s):
 	${formatGroupLines(spotlightTargetGroupJids, groups)}
@@ -1293,14 +1323,28 @@ Forwarded messages seen today: ${getForwardedMessagesSeenToday()}`,
   }
 
   if (command === "!spotlight-requeue") {
-    const [, identifier, minutesText] = text.trim().split(/\s+/);
+    const [, identifier, firstNumberText, secondNumberText] = text.trim().split(/\s+/);
     if (!identifier) {
-      await sock.sendMessage(replyJid, { text: "Usage: !spotlight-requeue {messageId|rowId} {minutes?}" });
+      await sock.sendMessage(replyJid, { text: "Usage: !spotlight-requeue {messageId|rowId} {minutes?}\nOr: !spotlight-requeue failed {hours?} {delayMinutes?}" });
       logAudit(actorContext, "!spotlight-requeue", null, null, null, text, "error");
       return;
     }
 
-    const delayMinutes = Number(minutesText ?? "0");
+    if (identifier.toLowerCase() === "failed") {
+      const hours = Number(firstNumberText ?? "24");
+      const delayMinutes = Number(secondNumberText ?? "0");
+      const safeHours = Number.isInteger(hours) && hours > 0 ? Math.min(hours, 168) : 24;
+      const safeDelayMinutes = Number.isInteger(delayMinutes) && delayMinutes >= 0
+        ? Math.min(delayMinutes, 24 * 60)
+        : 0;
+      await sock.sendMessage(replyJid, {
+        text: buildFailedSpotlightRequeueText(safeHours, safeDelayMinutes),
+      });
+      logAudit(actorContext, "!spotlight-requeue", null, null, null, text, "success");
+      return;
+    }
+
+    const delayMinutes = Number(firstNumberText ?? "0");
     const safeDelayMinutes = Number.isInteger(delayMinutes) && delayMinutes >= 0
       ? Math.min(delayMinutes, 24 * 60)
       : 0;

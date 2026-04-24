@@ -150,6 +150,8 @@ Special rules:
 
 - Enabled by default with `TICKET_SPOTLIGHT_ENABLED=true`; set it to `false` to opt out
 - Priced selling posts in the marketplace can be reposted after a delay to the configured spotlight target groups
+- Selling spotlights default to a 20 minute delay; buying spotlights default to a 30 minute delay
+- Target groups default to a 60 minute cooldown between spotlight posts
 - Buying spotlights have a separate kill switch, stricter minimum length, and lower daily cap via `TICKET_SPOTLIGHT_BUYING_ENABLED`, `TICKET_SPOTLIGHT_BUYING_MIN_LENGTH`, and `TICKET_SPOTLIGHT_BUYING_MAX_PER_DAY`
 - Selling spotlights have separate controls via `TICKET_SPOTLIGHT_SELLING_ENABLED`, `TICKET_SPOTLIGHT_SELLING_MIN_LENGTH`, and `TICKET_SPOTLIGHT_SELLING_MAX_PER_DAY`
 - Announcement groups are hard-blocked from spotlight sends even if accidentally configured as targets
