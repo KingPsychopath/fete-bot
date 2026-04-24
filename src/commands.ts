@@ -46,6 +46,11 @@ import {
 } from "./identity.js";
 import { containsDisallowedUrl, type DisallowedUrlReason } from "./linkChecker.js";
 import { listPendingSpotlights } from "./moderation/ticketMarketplace/spotlight/store.js";
+import {
+  allowQuietSwitchSend,
+  getQuietSwitchState,
+  setQuietSwitchEnabled,
+} from "./quietSwitch.js";
 import { STARTED_AT, VERSION } from "./version.js";
 import {
   formatJidForDisplay,
@@ -105,7 +110,8 @@ const OWNER_HELP_BLOCK = `
 *Owner only*
   !addmod {identifier} {note?}
   !removemod {identifier}
-  !mods`;
+  !mods
+  !quiet {on|off|status} — global kill switch for all bot messages`;
 
 const INVALID_IDENTIFIER_MESSAGE = `❌ Couldn't parse that as a user identifier.
 
@@ -150,6 +156,8 @@ const destructiveCommandTimestamps = new Map<string, number[]>();
 const normaliseCommand = (text: string): string => text.trim().toLowerCase();
 const getCommandToken = (text: string): string => normaliseCommand(text).split(/\s+/)[0] ?? "";
 const canonicalCommand = (command: string): string => command === "!kick" ? "!remove" : command;
+const canonicalOwnerCommand = (command: string): string =>
+  ["!quiet", "!silence", "!killswitch"].includes(command) ? "!quiet" : command;
 const isDestructiveCommand = (command: string): boolean =>
   ["!ban", "!mute", "!strike", "!remove"].includes(canonicalCommand(command));
 const COMMANDS_WITH_TARGET = new Set([
@@ -851,6 +859,60 @@ const buildSpotlightQueueText = (
   return `Pending spotlight queue (${entries.length}${entries.length === limit ? "+" : ""}):\n\n${lines.join("\n\n")}`;
 };
 
+const formatQuietSwitchStatus = (): string => {
+  const state = getQuietSwitchState();
+  const status = state.enabled ? "ON - bot messages are blocked" : "OFF - bot messages are allowed";
+  return `Quiet switch: ${status}
+Updated: ${formatDate(state.updatedAt)}
+Updated by: ${state.updatedBy ?? "unknown"}`;
+};
+
+const sendQuietSwitchResponse = async (
+  sock: WASocket,
+  destinationJid: string,
+  text: string,
+): Promise<void> => {
+  const content = { text };
+  allowQuietSwitchSend(content);
+  await sock.sendMessage(destinationJid, content);
+};
+
+const handleQuietSwitchCommand = async (
+  sock: WASocket,
+  destinationJid: string,
+  actorContext: ActorContext,
+  text: string,
+): Promise<boolean> => {
+  if (actorContext.actorRole !== "owner") {
+    await sock.sendMessage(destinationJid, { text: "❌ Only owners can toggle the quiet switch." });
+    return true;
+  }
+
+  const mode = text.trim().split(/\s+/)[1]?.toLowerCase() ?? "status";
+  if (["on", "enable", "enabled", "true", "1"].includes(mode)) {
+    setQuietSwitchEnabled(true, actorContext.participantJid ?? actorContext.userId);
+    await sendQuietSwitchResponse(
+      sock,
+      destinationJid,
+      "🔇 Quiet switch is ON. All bot messages are now blocked until an owner runs !quiet off.",
+    );
+    return true;
+  }
+
+  if (["off", "disable", "disabled", "false", "0"].includes(mode)) {
+    setQuietSwitchEnabled(false, actorContext.participantJid ?? actorContext.userId);
+    await sendQuietSwitchResponse(
+      sock,
+      destinationJid,
+      "🔊 Quiet switch is OFF. Bot messages are allowed again.",
+    );
+    return true;
+  }
+
+  await sendQuietSwitchResponse(sock, destinationJid, formatQuietSwitchStatus());
+  return true;
+};
+
 export async function handleGroupCommand(
   sock: WASocket,
   actor: ResolvedUser,
@@ -867,7 +929,7 @@ export async function handleGroupCommand(
     return false;
   }
 
-  const command = canonicalCommand(getCommandToken(text));
+  const command = canonicalOwnerCommand(canonicalCommand(getCommandToken(text)));
   if (!command.startsWith("!")) {
     return false;
   }
@@ -882,6 +944,12 @@ export async function handleGroupCommand(
     await sock.sendMessage(actorContext.participantJid ?? groupJid, {
       text: actorContext.actorRole === "owner" ? `${HELP_MESSAGE}${OWNER_HELP_BLOCK}` : HELP_MESSAGE,
     });
+    logAudit(actorContext, command, null, null, groupJid, text, "success");
+    return true;
+  }
+
+  if (command === "!quiet") {
+    await handleQuietSwitchCommand(sock, actorContext.participantJid ?? groupJid, actorContext, text);
     logAudit(actorContext, command, null, null, groupJid, text, "success");
     return true;
   }
@@ -1035,7 +1103,7 @@ export async function handleAuthorisedCommand(
   groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
   selfJids: ReadonlySet<string>,
 ): Promise<void> {
-  const command = canonicalCommand(getCommandToken(text));
+  const command = canonicalOwnerCommand(canonicalCommand(getCommandToken(text)));
   if (!command.startsWith("!")) {
     return;
   }
@@ -1072,6 +1140,12 @@ ${buildIdentityDebugText(actor)}`,
     return;
   }
 
+  if (command === "!quiet") {
+    await handleQuietSwitchCommand(sock, replyJid, actorContext, text);
+    logAudit(actorContext, "!quiet", null, null, null, text, "success");
+    return;
+  }
+
 	  if (command === "!status") {
 	    const moderators = listModerators();
 	    const managedGroupJids = getManagedGroupJids(config, groups);
@@ -1095,6 +1169,7 @@ ${buildIdentityDebugText(actor)}`,
 Version: ${VERSION}
 Started: ${STARTED_AT}
 Mode: ${config.dryRun ? "DRY RUN (not deleting)" : "LIVE (deleting messages)"}
+${formatQuietSwitchStatus()}
 
 Active in ${configuredGroups.length} group(s):
 ${configuredGroups.length > 0 ? configuredGroups.join("\n") : "• None configured"}
@@ -1106,7 +1181,9 @@ ${configuredGroups.length > 0 ? configuredGroups.join("\n") : "• None configur
 	${formatGroupLines(config.ticketMarketplaceGroupJids, groups)}
 	
 	Ticket spotlight: ${config.ticketSpotlightEnabled ? "enabled" : "disabled"}
+	Spotlight selling: ${config.ticketSpotlightSellingEnabled ? "enabled" : "disabled"} (min ${config.ticketSpotlightSellingMinLength}, max/day ${config.ticketSpotlightSellingMaxPerDay})
 	Spotlight buying: ${config.ticketSpotlightBuyingEnabled ? "enabled" : "disabled"}
+	Spotlight buying rules: min ${config.ticketSpotlightBuyingMinLength}, max/day ${config.ticketSpotlightBuyingMaxPerDay}
 	Spotlight target source: ${spotlightTargetSource}
 	Spotlight target group(s):
 	${formatGroupLines(spotlightTargetGroupJids, groups)}

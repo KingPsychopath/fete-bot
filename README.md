@@ -84,7 +84,8 @@ Notes:
 - `ALLOWED_GROUP_JIDS` is optional; when empty, the bot acts in all joined groups
 - `TICKET_MARKETPLACE_MANAGEMENT=true` by default
 - `TICKET_MARKETPLACE_GROUP_JIDS` is comma-separated and defaults to `120363418331899807@g.us`
-- `TICKET_SPOTLIGHT_ENABLED=true` by default; `TICKET_SPOTLIGHT_TARGET_JIDS` defaults to FDLM Meet-Ups, FDLM General 2, FDLM General, and FDLM Parties & Events
+- `TICKET_SPOTLIGHT_ENABLED=true` by default; seller spotlights are enabled, buying spotlights are off by default for the first rollout
+- `TICKET_SPOTLIGHT_TARGET_JIDS` defaults to FDLM Meet-Ups, FDLM General 2, FDLM General, and FDLM Parties & Events
 - `OWNER_JIDS`, database moderators, and WhatsApp group admins are never moderated
 - The bot never responds in 1:1 chats unless the sender is an owner or moderator using a command
 - The bot never acts on its own messages, with an extra self-ID check as defence in depth
@@ -148,8 +149,9 @@ Special rules:
 ### Ticket spotlight reposts
 
 - Enabled by default with `TICKET_SPOTLIGHT_ENABLED=true`; set it to `false` to opt out
-- Eligible buying or priced selling posts in the marketplace can be reposted after a delay to the configured spotlight target groups
-- Buying spotlights have a separate kill switch and stricter minimum length via `TICKET_SPOTLIGHT_BUYING_ENABLED` and `TICKET_SPOTLIGHT_BUYING_MIN_LENGTH`
+- Priced selling posts in the marketplace can be reposted after a delay to the configured spotlight target groups
+- Buying spotlights have a separate kill switch, stricter minimum length, and lower daily cap via `TICKET_SPOTLIGHT_BUYING_ENABLED`, `TICKET_SPOTLIGHT_BUYING_MIN_LENGTH`, and `TICKET_SPOTLIGHT_BUYING_MAX_PER_DAY`
+- Selling spotlights have separate controls via `TICKET_SPOTLIGHT_SELLING_ENABLED`, `TICKET_SPOTLIGHT_SELLING_MIN_LENGTH`, and `TICKET_SPOTLIGHT_SELLING_MAX_PER_DAY`
 - Announcement groups are hard-blocked from spotlight sends even if accidentally configured as targets
 - Spotlight has per-user, per-target-group, quiet-hours, daily-cap, URL, reply/quote, and blocklist gates
 - Pending spotlight jobs and send history are stored in SQLite so restarts do not lose queued posts

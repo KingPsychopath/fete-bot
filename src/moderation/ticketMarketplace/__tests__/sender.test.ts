@@ -18,16 +18,19 @@ const config = {
   ticketMarketplaceGroupJids: ["market@g.us"],
   ticketMarketplaceGroupName: "FDLM Ticket Marketplace",
   ticketSpotlightEnabled: true,
+  ticketSpotlightSellingEnabled: true,
   ticketSpotlightBuyingEnabled: true,
   ticketSpotlightTargetJids: ["target@g.us"],
   ticketSpotlightDelayMinutes: 20,
   ticketSpotlightUserCooldownHours: 24,
   ticketSpotlightGroupCooldownMinutes: 120,
-  ticketSpotlightMaxPerDay: 4,
+  ticketSpotlightBuyingMaxPerDay: 2,
+  ticketSpotlightSellingMaxPerDay: 4,
   ticketSpotlightQuietHours: "23-8",
   ticketSpotlightTimezone: "Europe/London",
   ticketSpotlightMinLength: 15,
   ticketSpotlightBuyingMinLength: 30,
+  ticketSpotlightSellingMinLength: 15,
   ticketSpotlightMaxLength: 40,
   ticketSpotlightBlocklistJids: [],
   ticketSpotlightClaimStaleMinutes: 5,
@@ -41,7 +44,7 @@ describe("spotlight sender formatting", () => {
   });
 
   it("builds the configured spotlight message", () => {
-    expect(buildSpotlightMessage(config, "Selling 2 Sunday tickets £80 each")).toContain("From FDLM Ticket Marketplace");
+    expect(buildSpotlightMessage(config, "Selling 2 Sunday tickets £80 each")).toContain("Ticket available in FDLM Ticket Marketplace");
     expect(buildSpotlightMessage(config, "Selling 2 Sunday tickets £80 each")).toContain("Reply in *FDLM Ticket Marketplace*");
   });
 

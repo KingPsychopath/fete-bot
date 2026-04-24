@@ -3,6 +3,8 @@ import makeWASocket, {
   fetchLatestBaileysVersion,
   useMultiFileAuthState,
   type GroupMetadata,
+  type AnyMessageContent,
+  type MiscMessageGenerationOptions,
   type WASocket,
   type WAMessage,
   type WAMessageKey,
@@ -38,6 +40,7 @@ import { startSpotlightScheduler, stopSpotlightScheduler } from "./moderation/ti
 import { cancelSpotlightsForSource, hasPendingSpotlightForSender, queueSpotlight } from "./moderation/ticketMarketplace/spotlight/store.js";
 import { SpamDetector, type SpamReason } from "./spamDetector.js";
 import { error, log, warn } from "./logger.js";
+import { consumeQuietSwitchSendBypass, isQuietSwitchEnabled } from "./quietSwitch.js";
 import {
   AUTH_DIR,
   DATABASE_PATH,
@@ -113,6 +116,25 @@ healthServer.on("error", (serverError) => {
 
 const isBoomLike = (value: unknown): value is { output?: { statusCode?: number } } =>
   typeof value === "object" && value !== null && "output" in value;
+
+const installQuietSwitchSendGuard = (sock: WASocket): void => {
+  const originalSendMessage = sock.sendMessage.bind(sock);
+  sock.sendMessage = (async (
+    jid: string,
+    content: AnyMessageContent,
+    options?: MiscMessageGenerationOptions,
+  ) => {
+    if (isQuietSwitchEnabled() && !consumeQuietSwitchSendBypass(content)) {
+      warn("Quiet switch blocked outgoing bot message", {
+        jid,
+        keys: typeof content === "object" && content !== null ? Object.keys(content) : [],
+      });
+      return undefined;
+    }
+
+    return originalSendMessage(jid, content, options);
+  }) as WASocket["sendMessage"];
+};
 
 type MessageContextInfo = {
   participant?: string | null;
@@ -967,6 +989,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
           senderJid: canonicalSenderAlias,
           classification: ticketDecision.intent,
           matchedTokens: ticketDecision.matchedTokens,
+          matchedSignals: ticketDecision.matchedSignals,
           pricePresent: ticketDecision.hasPrice,
           action: ticketDecision.action,
           dryRun: config.dryRun,
@@ -1004,6 +1027,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
             senderJid: canonicalSenderAlias,
             classification: ticketDecision.intent,
             matchedTokens: ticketDecision.matchedTokens,
+            matchedSignals: ticketDecision.matchedSignals,
             pricePresent: ticketDecision.hasPrice,
             action: ticketDecision.action,
             wouldSendText: replyText,
@@ -1024,6 +1048,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
             senderJid: canonicalSenderAlias,
             classification: ticketDecision.intent,
             matchedTokens: ticketDecision.matchedTokens,
+            matchedSignals: ticketDecision.matchedSignals,
             pricePresent: ticketDecision.hasPrice,
             action: ticketDecision.action,
           });
@@ -1344,6 +1369,7 @@ export const startBot = async (): Promise<void> => {
     printQRInTerminal: false,
     logger: pino({ level: "silent" }),
   });
+  installQuietSwitchSendGuard(sock);
   activeSocket = sock;
   refreshSelfJids(sock);
 

@@ -32,7 +32,7 @@ export const trimSpotlightBody = (body: string, maxLength: number): string => {
 
 export const buildSpotlightMessage = (config: Config, body: string): string => {
   const marketplaceName = config.ticketMarketplaceGroupName;
-  return `🎟️ From ${marketplaceName}
+  return `🎟️ Ticket available in ${marketplaceName}
 
 ${trimSpotlightBody(body, config.ticketSpotlightMaxLength)}
 
@@ -65,16 +65,24 @@ export const buildSpotlightMessageForPending = (
   pending: SpotlightPendingRow,
 ): string => {
   const marketplaceName = config.ticketMarketplaceGroupName;
+  const header = pending.classifiedIntent === "buying"
+    ? `🔎 Someone's looking for a ticket in ${marketplaceName}`
+    : `🎟️ Ticket available in ${marketplaceName}`;
   const senderLabel = formatSpotlightSenderLabel(pending);
   const body = trimSpotlightBody(pending.body, config.ticketSpotlightMaxLength);
   const bodyWithSender = senderLabel ? `${senderLabel}:\n${body}` : body;
 
-  return `🎟️ From ${marketplaceName}
+  return `${header}
 
 ${bodyWithSender}
 
 — Reply in *${marketplaceName}* to connect.`;
 };
+
+const getDailyCapForPending = (config: Config, pending: SpotlightPendingRow): number =>
+  pending.classifiedIntent === "buying"
+    ? config.ticketSpotlightBuyingMaxPerDay
+    : config.ticketSpotlightSellingMaxPerDay;
 
 export const sendClaimedSpotlight = async (
   sock: WASocket,
@@ -121,7 +129,7 @@ export const sendClaimedSpotlight = async (
     }
 
     const daySince = subtractMs(now, 24 * 60 * 60 * 1000);
-    if (getTargetGroupSpotlightCountSince(targetGroupJid, daySince) >= config.ticketSpotlightMaxPerDay) {
+    if (getTargetGroupSpotlightCountSince(targetGroupJid, daySince) >= getDailyCapForPending(config, pending)) {
       warn("spotlight.cancelled.daily_cap", { pendingId: pending.id, targetGroupJid });
       continue;
     }

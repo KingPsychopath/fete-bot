@@ -14,16 +14,19 @@ const config = {
   ticketMarketplaceGroupJids: ["market@g.us"],
   ticketMarketplaceGroupName: "FDLM Ticket Marketplace",
   ticketSpotlightEnabled: false,
+  ticketSpotlightSellingEnabled: true,
   ticketSpotlightBuyingEnabled: true,
   ticketSpotlightTargetJids: [],
   ticketSpotlightDelayMinutes: 20,
   ticketSpotlightUserCooldownHours: 24,
   ticketSpotlightGroupCooldownMinutes: 120,
-  ticketSpotlightMaxPerDay: 4,
+  ticketSpotlightBuyingMaxPerDay: 2,
+  ticketSpotlightSellingMaxPerDay: 4,
   ticketSpotlightQuietHours: "23-8",
   ticketSpotlightTimezone: "Europe/London",
   ticketSpotlightMinLength: 15,
   ticketSpotlightBuyingMinLength: 30,
+  ticketSpotlightSellingMinLength: 15,
   ticketSpotlightMaxLength: 400,
   ticketSpotlightBlocklistJids: [],
   ticketSpotlightClaimStaleMinutes: 5,
@@ -37,6 +40,13 @@ describe("ticket marketplace routing decisions", () => {
 
   it("allows buying and priced selling inside the marketplace", () => {
     expect(getTicketMarketplaceDecision(config, "market@g.us", "Anyone selling?").action).toBe("allow");
+    expect(
+      getTicketMarketplaceDecision(
+        config,
+        "market@g.us",
+        "if anyone is selling two sixtion tickets for saturday please lmk",
+      ).action,
+    ).toBe("allow");
     expect(getTicketMarketplaceDecision(config, "market@g.us", "Selling 2 Sunday tickets £80 each").action).toBe("allow");
   });
 

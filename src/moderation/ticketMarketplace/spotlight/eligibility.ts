@@ -89,6 +89,10 @@ export const getSpotlightEligibility = (
     return { eligible: false, reason: "buying_disabled" };
   }
 
+  if (input.intent === "selling" && !config.ticketSpotlightSellingEnabled) {
+    return { eligible: false, reason: "selling_disabled" };
+  }
+
   if (input.intent === "selling" && !input.hasPrice) {
     return { eligible: false, reason: "selling_missing_price" };
   }
@@ -96,7 +100,7 @@ export const getSpotlightEligibility = (
   const trimmed = input.text.trim();
   const minLength = input.intent === "buying"
     ? config.ticketSpotlightBuyingMinLength
-    : config.ticketSpotlightMinLength;
+    : config.ticketSpotlightSellingMinLength;
   if (trimmed.length < minLength) {
     return { eligible: false, reason: "too_short" };
   }
