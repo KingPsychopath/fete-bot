@@ -126,10 +126,14 @@ export const sendClaimedSpotlight = async (
       continue;
     }
 
-    await sock.sendMessage(targetGroupJid, { text: message });
-    recordSpotlightHistory(pending, targetGroupJid, sentAt);
-    sentCount += 1;
-    log("spotlight.sent", { pendingId: pending.id, targetGroupJid });
+    try {
+      await sock.sendMessage(targetGroupJid, { text: message });
+      recordSpotlightHistory(pending, targetGroupJid, sentAt);
+      sentCount += 1;
+      log("spotlight.sent", { pendingId: pending.id, targetGroupJid });
+    } catch (sendError) {
+      warn("spotlight.send_failed", { pendingId: pending.id, targetGroupJid, error: sendError });
+    }
   }
 
   if (sentCount === 0) {
