@@ -419,6 +419,10 @@ const logConfig = (): void => {
     warn("ALLOWED_GROUP_JIDS is empty, so the bot will act in all joined groups.");
   }
 
+  if (config.groupCallGuardEnabled && config.groupCallGuardGroupJids.length === 0) {
+    warn("GROUP_CALL_GUARD_GROUP_JIDS is empty, so call guard will act in all managed groups.");
+  }
+
   if (config.ticketMarketplaceManagement && config.ticketMarketplaceGroupJids.length === 0) {
     warn("TICKET_MARKETPLACE_MANAGEMENT is enabled but TICKET_MARKETPLACE_GROUP_JIDS is empty.");
   }
@@ -456,6 +460,17 @@ const getEffectiveTicketSpotlightTargetJids = (): string[] => {
 };
 
 const handleCall = async (sock: WASocket, call: WACallEvent): Promise<void> => {
+  log("Received call event", {
+    callId: call.id,
+    status: call.status,
+    chatId: call.chatId,
+    callerJid: call.from,
+    groupJid: call.groupJid ?? null,
+    isGroup: call.isGroup ?? null,
+    isVideo: call.isVideo ?? null,
+    offline: call.offline,
+  });
+
   if (call.status !== "offer") {
     handledCallOfferIds.delete(call.id);
     return;
@@ -466,7 +481,17 @@ const handleCall = async (sock: WASocket, call: WACallEvent): Promise<void> => {
   }
 
   const groupJid = getCallGroupJid(call);
-  if (!groupJid || !call.isGroup || !isGroupCallGuarded(groupJid)) {
+  if (!groupJid || !isGroupCallGuarded(groupJid)) {
+    warn("Ignored call offer outside call guard scope", {
+      callId: call.id,
+      chatId: call.chatId,
+      callerJid: call.from,
+      groupJid,
+      isGroup: call.isGroup ?? null,
+      guardEnabled: config.groupCallGuardEnabled,
+      managedGroup: groupJid ? isManagedGroup(groupJid) : false,
+      guardGroupJidsConfigured: config.groupCallGuardGroupJids.length,
+    });
     return;
   }
 
