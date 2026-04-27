@@ -188,7 +188,7 @@ Special rules:
 
 ### Managed announcements
 
-- Enable with `ANNOUNCEMENTS_ENABLED=true` and set `ANNOUNCEMENTS_TARGET_GROUP_JID`
+- Enable with `ANNOUNCEMENTS_ENABLED=true`; `ANNOUNCEMENTS_TARGET_GROUP_JID` overrides the current code default
 - The schedule uses `ANNOUNCEMENTS_START_DATE`, `ANNOUNCEMENTS_TIME`, `ANNOUNCEMENTS_INTERVAL_DAYS`, and `ANNOUNCEMENTS_TIMEZONE` as a local wall-clock schedule
 - Queue items are text-only in v1 and have separate `draft`/`published` status plus persistent `on`/`off` state
 - Each cycle snapshots the active published bundle before sending, so retries use the same text even if a mod edits the live queue after a partial failure
@@ -532,7 +532,7 @@ Notes:
 - `GROUP_CALL_GUARD_WARNING_COOLDOWN_SECONDS=30`
 - `GROUP_CALL_GUARD_RECENT_ACTIVITY_TTL_MINUTES=10`
 - `ANNOUNCEMENTS_ENABLED=false`
-- `ANNOUNCEMENTS_TARGET_GROUP_JID=120363...@g.us`
+- `ANNOUNCEMENTS_TARGET_GROUP_JID=120363...@g.us` (optional while the code default is correct)
 - `ANNOUNCEMENTS_START_DATE=2026-04-30`
 - `ANNOUNCEMENTS_TIME=10:00`
 - `ANNOUNCEMENTS_INTERVAL_DAYS=3`

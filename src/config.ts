@@ -146,6 +146,8 @@ export const NEVER_SPOTLIGHT_GROUP_JIDS = [
   "120363418642438451@g.us",
 ] as const;
 
+const DEFAULT_ANNOUNCEMENTS_TARGET_GROUP_JID = "120363418642438451@g.us";
+
 const loadedConfig = {
   dryRun: parseBoolean(process.env.DRY_RUN, true),
   allowedGroupJids: parseList(process.env.ALLOWED_GROUP_JIDS),
@@ -211,7 +213,8 @@ const loadedConfig = {
   ticketSpotlightClaimStaleMinutes: parsePositiveInteger(process.env.TICKET_SPOTLIGHT_CLAIM_STALE_MINUTES, 5),
   ticketSpotlightReactionEmoji: normaliseEnvValue(process.env.TICKET_SPOTLIGHT_REACTION_EMOJI) || "⭐",
   announcementsEnabled: parseBoolean(process.env.ANNOUNCEMENTS_ENABLED, false),
-  announcementsTargetGroupJid: normaliseEnvValue(process.env.ANNOUNCEMENTS_TARGET_GROUP_JID) || "",
+  announcementsTargetGroupJid:
+    normaliseEnvValue(process.env.ANNOUNCEMENTS_TARGET_GROUP_JID) || DEFAULT_ANNOUNCEMENTS_TARGET_GROUP_JID,
   announcementsStartDate: parseLocalDate(process.env.ANNOUNCEMENTS_START_DATE),
   announcementsTime: parseLocalTime(process.env.ANNOUNCEMENTS_TIME, "10:00"),
   announcementsIntervalDays: parsePositiveInteger(process.env.ANNOUNCEMENTS_INTERVAL_DAYS, 3),
