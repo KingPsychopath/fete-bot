@@ -11,6 +11,7 @@ WhatsApp moderation bot for the Fete event groups. It runs through Baileys, appl
 - Warns users with friendlier reason-specific messages
 - Tracks strikes per user per group with 7-day expiry
 - Lets owners and moderators ban, mute, pardon, remove, undo, and inspect state by DM
+- Lets owners and moderators manage a recurring announcements bundle by DM
 - Silently deletes messages from muted users
 - Auto-removes banned users if they rejoin
 - Logs moderation actions and owner/moderator actions to SQLite
@@ -53,6 +54,8 @@ WhatsApp moderation bot for the Fete event groups. It runs through Baileys, appl
   - `audit_log`
   - `moderators`
   - `review_queue`
+  - `spotlight_pending` / `spotlight_history`
+  - `announcement_queue_items` / `announcement_cycles`
 
 ### Session storage
 
@@ -88,6 +91,7 @@ Notes:
 - `TICKET_MARKETPLACE_GROUP_JIDS` is comma-separated and defaults to `120363418331899807@g.us`
 - `TICKET_MARKETPLACE_RULE_REMINDER_ENABLED=true` sends a daily marketplace rules reminder after `TICKET_MARKETPLACE_RULE_REMINDER_TIME` in `TICKET_MARKETPLACE_RULE_REMINDER_TIMEZONE`; after a reminder, it waits for `TICKET_MARKETPLACE_RULE_REMINDER_MIN_ACTIVITY_MESSAGES` observed chat messages before sending another
 - `TICKET_SPOTLIGHT_ENABLED=true` by default; seller spotlights are enabled, buying spotlights are off by default for the first rollout
+- `ANNOUNCEMENTS_ENABLED=false` by default; when enabled, announcements are sent to `ANNOUNCEMENTS_TARGET_GROUP_JID` on a local wall-clock schedule
 - `TICKET_SPOTLIGHT_TARGET_JIDS` defaults to FDLM General 2, FDLM General, and FDLM Parties & Events
 - `OWNER_JIDS`, database moderators, and WhatsApp group admins are never moderated
 - The bot never responds in 1:1 chats unless the sender is an owner or moderator using a command
@@ -173,6 +177,17 @@ Special rules:
 - Pending spotlight jobs and send history are stored in SQLite so restarts do not lose queued posts
 - Delete events cancel pending spotlights on a best-effort basis
 
+### Managed announcements
+
+- Enable with `ANNOUNCEMENTS_ENABLED=true` and set `ANNOUNCEMENTS_TARGET_GROUP_JID`
+- The schedule uses `ANNOUNCEMENTS_START_DATE`, `ANNOUNCEMENTS_TIME`, `ANNOUNCEMENTS_INTERVAL_DAYS`, and `ANNOUNCEMENTS_TIMEZONE` as a local wall-clock schedule
+- Queue items are text-only in v1 and have separate `draft`/`published` status plus persistent `on`/`off` state
+- Each cycle snapshots the active published bundle before sending, so retries use the same text even if a mod edits the live queue after a partial failure
+- Empty active bundles are recorded as skipped and the schedule advances
+- In `DRY_RUN=true`, scheduled and forced real sends do not post or advance the schedule; `!announce test` still DMs the requesting mod
+- Optional group mentions use JSON, for example `ANNOUNCEMENTS_GROUP_MENTIONS_JSON=[{"label":"FDLM General","jid":"120363...@g.us"}]`
+- Mention labels are matched case-insensitively when message text contains `@FDLM General`
+
 ### Strike system
 
 Deleted violations add a strike for that user in that group. Strikes expire after 7 days.
@@ -243,6 +258,20 @@ Owners and moderators can control the bot in two ways:
 - `!audit {limit?}`
 - `!test {url}`
 - `!undo`
+- `!announce list`
+- `!announce show {id|position}`
+- `!announce preview`
+- `!announce next`
+- `!announce add` by replying to the text to store
+- `!announce edit {id|position}` by replying to replacement text
+- `!announce publish {id|position}`
+- `!announce on {id|position}` / `!announce off {id|position}`
+- `!announce move {id|position} {newPosition}`
+- `!announce remove {id|position}`
+- `!announce schedule YYYY-MM-DD HH:mm`
+- `!announce pause` / `!announce resume`
+- `!announce test`
+- `!announce send-now` owner-only
 - `!ban {jid or number} {groupJid?} {reason?}`
 - `!unban {jid or number} {groupJid}`
 - `!bans {groupJid?}`
@@ -487,6 +516,18 @@ Notes:
 - `GROUP_CALL_GUARD_ENABLED=true|false`
 - `GROUP_CALL_GUARD_GROUP_JIDS=120363...@g.us,120363...@g.us`
 - `GROUP_CALL_GUARD_WARNING_TEXT=Hey {mention} - calls aren't allowed in this group, so I ended that call. Don't do that again. 🙏🏾`
+- `ANNOUNCEMENTS_ENABLED=false`
+- `ANNOUNCEMENTS_TARGET_GROUP_JID=120363...@g.us`
+- `ANNOUNCEMENTS_START_DATE=2026-04-30`
+- `ANNOUNCEMENTS_TIME=10:00`
+- `ANNOUNCEMENTS_INTERVAL_DAYS=3`
+- `ANNOUNCEMENTS_TIMEZONE=Europe/London`
+- `ANNOUNCEMENTS_GROUP_MENTIONS_JSON=[{"label":"FDLM General","jid":"120363...@g.us"}]`
+
+Migration note:
+
+- Schema v4 adds announcement tables only; it does not alter existing moderation, identity, spotlight, or audit data
+- Rollback is forward-only operationally: deploy older code only after restoring a pre-v4 database backup or leaving the unused v4 tables in place
 
 ## Getting Group JIDs
 

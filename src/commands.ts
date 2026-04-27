@@ -1,6 +1,7 @@
 import type { GroupMetadata, WASocket } from "@whiskeysockets/baileys";
 import { randomUUID } from "node:crypto";
 
+import { handleAnnouncementCommand } from "./announcements/commands.js";
 import { NEVER_SPOTLIGHT_GROUP_JIDS, type Config } from "./config.js";
 import {
   addBan,
@@ -96,6 +97,7 @@ const HELP_MESSAGE = `*Fete Bot — Admin Help*
   !spotlights   {limit?}
   !spotlight-history {limit?}
   !spotlight-requeue {messageId|rowId} {minutes?}
+  !announce     list|show|preview|next|add|edit|publish|on|off|move|remove|schedule|pause|resume|test|send-now
   !bans         {groupJid?}
   !mutes        {groupJid?}
   !audit        {limit?}
@@ -1248,20 +1250,17 @@ export async function handleAuthorisedCommand(
   sock: WASocket,
   actor: ResolvedUser,
   text: string,
+  quotedText: string | null,
   config: Config,
   groups: Map<string, string>,
   groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
   selfJids: ReadonlySet<string>,
 ): Promise<void> {
   const command = canonicalOwnerCommand(canonicalCommand(getCommandToken(text)));
-  if (!command.startsWith("!")) {
-    return;
-  }
-
   const replyJid = getReplyJidForActor(actor);
   const actorContext = getActorContext(actor, config);
   if (!actorContext) {
-    if (replyJid) {
+    if (replyJid && command.startsWith("!")) {
       await sock.sendMessage(replyJid, {
         text: `⛔ You're not authorised to use Fete Bot commands. Ignoring this command.
 
@@ -1273,6 +1272,28 @@ ${buildIdentityDebugText(actor)}`,
   }
 
   if (!replyJid) {
+    return;
+  }
+
+  const handledAnnouncementCommand = await handleAnnouncementCommand(
+    sock,
+    {
+      userId: actorContext.userId,
+      label: actorContext.participantJid ?? actorContext.userId,
+      role: actorContext.actorRole,
+    },
+    replyJid,
+    text,
+    quotedText,
+    config,
+    groups,
+  );
+  if (handledAnnouncementCommand) {
+    logAudit(actorContext, "!announce", null, null, null, text, "success");
+    return;
+  }
+
+  if (!command.startsWith("!")) {
     return;
   }
 

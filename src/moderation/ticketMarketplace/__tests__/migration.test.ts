@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { migrateSchemaV2ToV3 } from "../../../db.js";
+import { migrateSchemaV2ToV3, migrateSchemaV3ToV4 } from "../../../db.js";
 
 let tempDir: string | null = null;
 
@@ -72,6 +72,28 @@ describe("v2 to v3 migration", () => {
       expect(Number(database.pragma("user_version", { simple: true }))).toBe(2);
       expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'spotlight_pending'").get()).toBeUndefined();
       expect(database.prepare("SELECT COUNT(*) AS count FROM users").get()).toEqual({ count: 1 });
+    } finally {
+      database.close();
+    }
+  });
+});
+
+describe("v3 to v4 migration", () => {
+  it("creates announcement tables without touching existing data", () => {
+    const database = createV2Database();
+    try {
+      migrateSchemaV2ToV3(database);
+      migrateSchemaV3ToV4(database);
+
+      expect(Number(database.pragma("user_version", { simple: true }))).toBe(4);
+      expect(database.prepare("SELECT COUNT(*) AS count FROM users").get()).toEqual({ count: 1 });
+      expect(database.prepare("SELECT COUNT(*) AS count FROM strikes").get()).toEqual({ count: 1 });
+      expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'announcement_queue_items'").get()).toEqual({
+        name: "announcement_queue_items",
+      });
+      expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'announcement_cycle_items'").get()).toEqual({
+        name: "announcement_cycle_items",
+      });
     } finally {
       database.close();
     }

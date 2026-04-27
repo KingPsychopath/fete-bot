@@ -143,6 +143,9 @@ const STRONG_SELL_REGEXES = [/\bfv\b/iu];
 const CANT_GO_REGEX = /\b(?:can't\s+go|cannot\s+go|can't\s+make\s+it)\b/iu;
 
 const ticketTermPattern = String.raw`(?:ticket|tickets|tix|pass|passes|wristband|wristbands|billet|billets|place|places|bracelet|bracelets|entree|entrée|entrada|entradas|boleto|boletos|billete|billetes|biglietto|biglietti|karte|karten|kaartje|kaartjes|bilet|bilety)`;
+const pricePattern = String.raw`(?:[£€$]\s*)?\d+[\d.,]*(?:\s*[£€$])?`;
+const thirdPartyActorPattern = String.raw`(?:(?:these|those)\s+(?:ppl|people|guys|lot|sellers)|someone|somebody|they|he|she|a\s+(?:guy|girl|person|seller)|this\s+(?:guy|girl|person|seller))`;
+const thirdPartyPluralActorPattern = String.raw`(?:(?:these|those)\s+(?:ppl|people|guys|lot|sellers)|people|ppl|they|sellers)`;
 
 const STRONG_BUY_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   {
@@ -204,6 +207,20 @@ const BUYER_INTENT_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   { label: "faites-moi savoir", regex: /\bfaites\s+moi\s+savoir\b/iu },
   { label: "je cherche", regex: /\bje\s+cherche\b/iu },
   { label: "je veux acheter", regex: /\bje\s+veux\s+acheter\b/iu },
+  {
+    label: "sell me ticket",
+    regex: new RegExp(
+      String.raw`\b(?:(?:can|could|will|would)\s+)?(?:anyone|anybody|any1|someone|somebody|some1)\s+(?:please\s+|pls\s+)?sell\s+me\s+(?:a\s+|an\s+|\d+\s+)?(?:[\p{L}\p{N}]+\s+){0,4}${ticketTermPattern}\b`,
+      "iu",
+    ),
+  },
+  {
+    label: "please sell me ticket",
+    regex: new RegExp(
+      String.raw`^(?:please\s+|pls\s+)?sell\s+me\s+(?:a\s+|an\s+|\d+\s+)?(?:[\p{L}\p{N}]+\s+){0,4}${ticketTermPattern}\b`,
+      "iu",
+    ),
+  },
 ];
 
 const TICKET_DEPENDENT_STRONG_BUY_SIGNALS = new Set([
@@ -221,6 +238,62 @@ const NEGATED_BUYER_INTENT_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   { label: "will pay", regex: /\b(?:not|never|dont|don't|do\s+not)\s+will\s+pay\b/iu },
   { label: "can pay", regex: /\b(?:not|never|dont|don't|do\s+not)\s+can\s+pay\b/iu },
 ];
+
+const NON_MARKETPLACE_PATTERNS: Array<{ label: string; regex: RegExp }> = [
+  {
+    label: "third party tried to sell me",
+    regex: new RegExp(
+      String.raw`\b${thirdPartyActorPattern}\s+(?:is\s+|are\s+|was\s+|were\s+|just\s+)?(?:trying|tryin|tryna|tried)\s+(?:to\s+)?sell\s+me\b`,
+      "iu",
+    ),
+  },
+  {
+    label: "third party selling me",
+    regex: new RegExp(
+      String.raw`\b${thirdPartyActorPattern}\s+(?:is\s+|are\s+|was\s+|were\s+)?selling\s+me\b`,
+      "iu",
+    ),
+  },
+  {
+    label: "third party charging for tickets",
+    regex: new RegExp(
+      String.raw`\b${thirdPartyPluralActorPattern}\s+(?:are\s+|were\s+|be\s+)?(?:charging|asking)\s+(?:me\s+)?${pricePattern}(?:\s+[\p{L}\p{N}]+){0,8}\s+${ticketTermPattern}\b`,
+      "iu",
+    ),
+  },
+  {
+    label: "general resale question",
+    regex: /\b(?:(?:are|is)\s+(?:people|ppl|they|tickets)\s+(?:selling|charging|asking)|tickets?\s+(?:are|is)\s+selling)\b/iu,
+  },
+  {
+    label: "ticket price complaint",
+    regex: new RegExp(
+      String.raw`\b(?:selling\s+)?(?:[\p{L}\p{N}]+\s+){0,4}${ticketTermPattern}\b(?:\s+[\p{L}\p{N}]+){0,8}\s+${pricePattern}\s+(?:is|are|feels|seems)\s+(?:crazy|mad|insane|ridiculous|wild|expensive|overpriced|too\s+much|a\s+joke)\b`,
+      "iu",
+    ),
+  },
+  {
+    label: "not selling complaint",
+    regex: /\b(?:i\s+(?:am\s+|'m\s+)?)?not\s+selling\b(?:\s+[\p{L}\p{N}']+){0,12}\s+complain(?:ing)?\b/iu,
+  },
+  {
+    label: "complaint not selling",
+    regex: /\bcomplain(?:ing)?\b(?:\s+[\p{L}\p{N}']+){0,12}\s+(?:i\s+(?:am\s+|'m\s+)?)?not\s+selling\b/iu,
+  },
+];
+
+const REFUTATION_PATTERNS: Array<{ label: string; regex: RegExp }> = [
+  { label: "not selling", regex: /\b(?:i\s+(?:am\s+|'m\s+)?)?not\s+selling\b/iu },
+  { label: "not a sale", regex: /\bnot\s+(?:a\s+)?(?:sale|ticket\s+sale|sales\s+post)\b/iu },
+  { label: "complaining", regex: /\b(?:just\s+)?complain(?:ing)?\b/iu },
+  { label: "not what I meant", regex: /\bnot\s+what\s+i\s+meant\b/iu },
+  { label: "bot misread", regex: /\b(?:wrong|misread|misunderstood)\b/iu },
+];
+
+const REFUTATION_EXCLUSION_PATTERNS = [
+  /\bnot\s+selling\s+for\s+(?:less|under|below)\b/iu,
+  /\bnot\s+selling\s+unless\b/iu,
+] as const;
 
 const normaliseText = (text: string): string =>
   text
@@ -302,6 +375,19 @@ const findPatternMatches = (
   text: string,
   patterns: ReadonlyArray<{ label: string; regex: RegExp }>,
 ): string[] => patterns.filter((pattern) => pattern.regex.test(text)).map((pattern) => pattern.label);
+
+export const isTicketMarketplaceRefutation = (text: string): boolean => {
+  const normalisedText = normaliseText(text);
+  if (!normalisedText) {
+    return false;
+  }
+
+  if (REFUTATION_EXCLUSION_PATTERNS.some((pattern) => pattern.test(normalisedText))) {
+    return false;
+  }
+
+  return findPatternMatches(normalisedText, REFUTATION_PATTERNS).length > 0;
+};
 
 const hasNearbyMatch = (
   leftMatches: readonly TokenMatch[],
@@ -387,6 +473,11 @@ export const classify = (text: string): TicketMarketplaceClassification => {
   const tokens = tokenise(normalisedText);
   const ticketMatches = findTermMatches(tokens, TICKET_TERMS);
   const concreteTicketMatches = ticketMatches.filter((match) => hasConcreteAccessContext(tokens, match));
+  const nonMarketplaceSignals = findPatternMatches(normalisedText, NON_MARKETPLACE_PATTERNS);
+  if (nonMarketplaceSignals.length > 0 && concreteTicketMatches.length > 0) {
+    return { intent: "none", matchedTokens: [], matchedSignals: emptySignals(), hasPrice: false };
+  }
+
   const weakBuyMatches = findTermMatches(tokens, WEAK_BUY_TERMS).filter((match) => !isNegatedMatch(tokens, match));
   const weakSellMatches = findTermMatches(tokens, WEAK_SELL_TERMS).filter((match) => !isNegatedMatch(tokens, match));
   const contextualWeakBuyMatches = getContextualWeakBuyMatches(weakBuyMatches, concreteTicketMatches);

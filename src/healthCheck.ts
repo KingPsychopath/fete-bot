@@ -46,6 +46,20 @@ export async function runStartupHealthCheck(
   const monitoredGroupJids = config.allowedGroupJids.length > 0
     ? config.allowedGroupJids
     : Array.from(groups.keys());
+  const findBotParticipant = (group: GroupMetadata) => group.participants.find((participant) => {
+    const possibleIds = [participant.id, participant.lid, participant.phoneNumber]
+      .map((value) => (value ? parseToJid(value) ?? value : null))
+      .filter((value): value is string => Boolean(value));
+
+    return possibleIds.some((value) => {
+      const normalised = jidNormalizedUser(value);
+      if (botIdentifiers.has(normalised)) {
+        return true;
+      }
+
+      return Array.from(botIdentifiers).some((botId) => areJidsSameUser(botId, value));
+    });
+  });
 
   for (const allowedGroupJid of monitoredGroupJids) {
     if (!groups.has(allowedGroupJid)) {
@@ -59,23 +73,37 @@ export async function runStartupHealthCheck(
       continue;
     }
 
-    const botParticipant = group.participants.find((participant) => {
-      const possibleIds = [participant.id, participant.lid, participant.phoneNumber]
-        .map((value) => (value ? parseToJid(value) ?? value : null))
-        .filter((value): value is string => Boolean(value));
-
-      return possibleIds.some((value) => {
-        const normalised = jidNormalizedUser(value);
-        if (botIdentifiers.has(normalised)) {
-          return true;
-        }
-
-        return Array.from(botIdentifiers).some((botId) => areJidsSameUser(botId, value));
-      });
-    });
+    const botParticipant = findBotParticipant(group);
 
     if (!botParticipant?.admin && !botParticipant?.isAdmin && !botParticipant?.isSuperAdmin) {
       criticalFailures.push(`Bot is not admin in monitored group: ${allowedGroupJid}`);
+    }
+  }
+
+  if (config.announcementsEnabled) {
+    const announcementGroup = groups.get(config.announcementsTargetGroupJid);
+    if (!config.announcementsTargetGroupJid) {
+      criticalFailures.push("Announcements enabled but ANNOUNCEMENTS_TARGET_GROUP_JID is not configured");
+    } else if (!announcementGroup) {
+      criticalFailures.push(`Announcements target group missing from fetched groups: ${config.announcementsTargetGroupJid}`);
+    } else {
+      const botParticipant = findBotParticipant(announcementGroup);
+      if (!botParticipant) {
+        criticalFailures.push(`Bot is not a participant in announcements target group: ${config.announcementsTargetGroupJid}`);
+      } else if (
+        announcementGroup.announce &&
+        !botParticipant.admin &&
+        !botParticipant.isAdmin &&
+        !botParticipant.isSuperAdmin
+      ) {
+        criticalFailures.push(`Announcements target appears admin-only but bot is not admin: ${config.announcementsTargetGroupJid}`);
+      }
+    }
+
+    for (const mention of config.announcementsGroupMentions) {
+      if (!groups.has(mention.jid)) {
+        criticalFailures.push(`Configured announcements mention group missing from fetched groups: ${mention.label} (${mention.jid})`);
+      }
     }
   }
 

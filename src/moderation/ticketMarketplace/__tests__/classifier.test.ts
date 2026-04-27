@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { classify } from "../classifier.js";
+import { classify, isTicketMarketplaceRefutation } from "../classifier.js";
 import {
   CONFUSIONS,
   KNOWN_FALSE_NEGATIVES,
@@ -119,5 +119,24 @@ describe("classifier - structural behavior", () => {
       classify(index % 2 === 0 ? "Selling 2 Sunday tickets £80 each" : "if anyone is selling please lmk");
     }
     expect(performance.now() - start).toBeLessThan(100);
+  });
+});
+
+describe("classifier - warning refutations", () => {
+  it.each([
+    "Im not selling, Im complaining",
+    "not a sale",
+    "bot misread that",
+    "that's not what I meant",
+  ])("%s -> refutation", (text) => {
+    expect(isTicketMarketplaceRefutation(text)).toBe(true);
+  });
+
+  it.each([
+    "Selling my ticket",
+    "not selling for less than 100, ticket available",
+    "not selling unless I get face value",
+  ])("%s -> not a refutation", (text) => {
+    expect(isTicketMarketplaceRefutation(text)).toBe(false);
   });
 });

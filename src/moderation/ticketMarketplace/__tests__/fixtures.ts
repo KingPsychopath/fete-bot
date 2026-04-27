@@ -19,6 +19,9 @@ export const TRUE_POSITIVES_BUYING = [
   "lmk if anyone is selling",
   "please let me know if someone is selling",
   "hey if someone is selling please dm me",
+  "can someone sell me 2 tickets",
+  "please sell me a ticket",
+  "someone sell me a ticket please",
   "does anyone have a spare wristband",
   "anyone have a ticket they're not using?",
   "happy to pay face value for Saturday",
@@ -37,6 +40,8 @@ export const TRUE_POSITIVES_BUYING = [
 
 export const TRUE_POSITIVES_SELLING = [
   "Selling 2 Sunday tickets £80 each",
+  "Selling my ticket",
+  "I am selling a ticket",
   "1 Saturday pass £70",
   "Spare Sunday wristband, face value",
   "Selling wristband FV",
@@ -48,6 +53,8 @@ export const TRUE_POSITIVES_SELLING = [
   "Spare wristband, DM for price",
   "Can't go, 2 Sunday passes available, DM me",
   "Got a spare Saturday ticket, PM me",
+  "My friend is selling a ticket, DM me",
+  "Posting for a mate, 2 tickets available £80",
   "à vendre: billet dimanche 70€",
   "For sale: 2 Saturday wristbands £80",
 ] as const;
@@ -90,6 +97,15 @@ export const TRUE_NEGATIVES = [
   "Need a train pass for tomorrow",
   "Want a gym pass for next week",
   "ISO train pass",
+  "These ppl tryna sell me 100€ for 2 tickets on 21st. Im not selling, Im complaining",
+  "Someone tried to sell me 2 tickets for 100",
+  "They are selling me a ticket for £50",
+  "People are asking 100 for 2 tickets",
+  "Are people selling tickets for 100?",
+  "People selling tickets for 100 is crazy",
+  "Are tickets selling for 100?",
+  "Tickets are selling fast",
+  "Not selling my ticket, just complaining about the prices",
 ] as const;
 
 export const KNOWN_FALSE_POSITIVES = [] as const;
@@ -146,6 +162,11 @@ export const CONFUSIONS = [
     text: "anyone have a spare",
     expected: "buying",
     reason: "Bare buyer phrase; should fire strong buy regex.",
+  },
+  {
+    text: "not selling for less than 100, ticket available",
+    expected: "selling",
+    reason: "Negotiation wording still announces ticket availability.",
   },
 ] as const satisfies ReadonlyArray<{
   text: string;

@@ -65,6 +65,74 @@ const parsePositiveInteger = (value: string | undefined, fallback: number): numb
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+export type AnnouncementGroupMentionConfig = {
+  label: string;
+  jid: string;
+};
+
+const parseAnnouncementGroupMentions = (value: string | undefined): AnnouncementGroupMentionConfig[] => {
+  const normalisedValue = normaliseEnvValue(value);
+  if (!normalisedValue) {
+    return [];
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(normalisedValue);
+  } catch {
+    throw new Error("ANNOUNCEMENTS_GROUP_MENTIONS_JSON must be valid JSON");
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new Error("ANNOUNCEMENTS_GROUP_MENTIONS_JSON must be a JSON array");
+  }
+
+  return parsed.map((entry, index) => {
+    if (
+      typeof entry !== "object" ||
+      entry === null ||
+      typeof (entry as AnnouncementGroupMentionConfig).label !== "string" ||
+      typeof (entry as AnnouncementGroupMentionConfig).jid !== "string"
+    ) {
+      throw new Error(`ANNOUNCEMENTS_GROUP_MENTIONS_JSON entry ${index + 1} must have label and jid strings`);
+    }
+
+    const label = (entry as AnnouncementGroupMentionConfig).label.trim();
+    const jid = (entry as AnnouncementGroupMentionConfig).jid.trim();
+    if (!label || label.startsWith("@")) {
+      throw new Error(`ANNOUNCEMENTS_GROUP_MENTIONS_JSON entry ${index + 1} has an invalid label`);
+    }
+
+    if (!jid.endsWith("@g.us")) {
+      throw new Error(`ANNOUNCEMENTS_GROUP_MENTIONS_JSON entry ${index + 1} has an invalid group jid`);
+    }
+
+    return { label, jid };
+  });
+};
+
+const parseLocalDate = (value: string | undefined): string => {
+  const normalisedValue = normaliseEnvValue(value);
+  if (!normalisedValue) {
+    return "";
+  }
+
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(normalisedValue)) {
+    throw new Error("ANNOUNCEMENTS_START_DATE must use YYYY-MM-DD");
+  }
+
+  return normalisedValue;
+};
+
+const parseLocalTime = (value: string | undefined, fallback: string): string => {
+  const normalisedValue = normaliseEnvValue(value) || fallback;
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/u.test(normalisedValue)) {
+    throw new Error("ANNOUNCEMENTS_TIME must use HH:mm");
+  }
+
+  return normalisedValue;
+};
+
 const DEFAULT_TICKET_SPOTLIGHT_TARGET_JIDS = [
   "120363417253211015@g.us",
   "120363417797746871@g.us",
@@ -99,6 +167,7 @@ const loadedConfig = {
   ticketMarketplaceManagement: parseBoolean(process.env.TICKET_MARKETPLACE_MANAGEMENT, true),
   ticketMarketplaceGroupJids: parseList(process.env.TICKET_MARKETPLACE_GROUP_JIDS || "120363418331899807@g.us"),
   ticketMarketplaceGroupName: normaliseEnvValue(process.env.TICKET_MARKETPLACE_GROUP_NAME) || "FDLM Ticket Marketplace",
+  ticketMarketplaceReplyCooldownMinutes: parsePositiveInteger(process.env.TICKET_MARKETPLACE_REPLY_COOLDOWN_MINUTES, 30),
   ticketMarketplaceRuleReminderEnabled: parseBoolean(process.env.TICKET_MARKETPLACE_RULE_REMINDER_ENABLED, true),
   ticketMarketplaceRuleReminderTime: normaliseEnvValue(process.env.TICKET_MARKETPLACE_RULE_REMINDER_TIME) || "10:00",
   ticketMarketplaceRuleReminderTimezone:
@@ -134,6 +203,13 @@ const loadedConfig = {
   ticketSpotlightBlocklistJids: parseList(process.env.TICKET_SPOTLIGHT_BLOCKLIST_JIDS),
   ticketSpotlightClaimStaleMinutes: parsePositiveInteger(process.env.TICKET_SPOTLIGHT_CLAIM_STALE_MINUTES, 5),
   ticketSpotlightReactionEmoji: normaliseEnvValue(process.env.TICKET_SPOTLIGHT_REACTION_EMOJI) || "⭐",
+  announcementsEnabled: parseBoolean(process.env.ANNOUNCEMENTS_ENABLED, false),
+  announcementsTargetGroupJid: normaliseEnvValue(process.env.ANNOUNCEMENTS_TARGET_GROUP_JID) || "",
+  announcementsStartDate: parseLocalDate(process.env.ANNOUNCEMENTS_START_DATE),
+  announcementsTime: parseLocalTime(process.env.ANNOUNCEMENTS_TIME, "10:00"),
+  announcementsIntervalDays: parsePositiveInteger(process.env.ANNOUNCEMENTS_INTERVAL_DAYS, 3),
+  announcementsTimezone: normaliseEnvValue(process.env.ANNOUNCEMENTS_TIMEZONE) || "Europe/London",
+  announcementsGroupMentions: parseAnnouncementGroupMentions(process.env.ANNOUNCEMENTS_GROUP_MENTIONS_JSON),
 } as const;
 
 export const config = Object.freeze(loadedConfig);

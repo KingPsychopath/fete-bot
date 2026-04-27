@@ -19,6 +19,7 @@ const config = {
   ticketMarketplaceManagement: true,
   ticketMarketplaceGroupJids: ["market@g.us"],
   ticketMarketplaceGroupName: "FDLM Ticket Marketplace",
+  ticketMarketplaceReplyCooldownMinutes: 30,
   ticketMarketplaceRuleReminderEnabled: true,
   ticketMarketplaceRuleReminderTime: "10:00",
   ticketMarketplaceRuleReminderTimezone: "Europe/London",
@@ -44,6 +45,13 @@ const config = {
   ticketSpotlightBlocklistJids: [],
   ticketSpotlightClaimStaleMinutes: 5,
   ticketSpotlightReactionEmoji: "⭐",
+  announcementsEnabled: false,
+  announcementsTargetGroupJid: "",
+  announcementsStartDate: "",
+  announcementsTime: "10:00",
+  announcementsIntervalDays: 3,
+  announcementsTimezone: "Europe/London",
+  announcementsGroupMentions: [],
 } satisfies Config;
 
 describe("ticket marketplace routing decisions", () => {
@@ -66,6 +74,19 @@ describe("ticket marketplace routing decisions", () => {
 
   it("requires price for seller posts inside the marketplace", () => {
     expect(getTicketMarketplaceDecision(config, "market@g.us", "Selling 2 Sunday tickets").action).toBe("require_price");
+  });
+
+  it("allows complaint and price-discussion messages outside the marketplace", () => {
+    expect(
+      getTicketMarketplaceDecision(
+        config,
+        "general@g.us",
+        "These ppl tryna sell me 100€ for 2 tickets on 21st. Im not selling, Im complaining",
+      ).action,
+    ).toBe("allow");
+    expect(getTicketMarketplaceDecision(config, "general@g.us", "People selling tickets for 100 is crazy").action).toBe(
+      "allow",
+    );
   });
 
   it("allows all when disabled", () => {

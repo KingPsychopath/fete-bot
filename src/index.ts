@@ -15,6 +15,7 @@ import { createServer } from "node:http";
 import pino from "pino";
 import QRCode from "qrcode";
 
+import { startAnnouncementScheduler, stopAnnouncementScheduler } from "./announcements/scheduler.js";
 import { config, NEVER_SPOTLIGHT_GROUP_JIDS } from "./config.js";
 import { handleAuthorisedCommand, handleGroupCommand } from "./commands.js";
 import {
@@ -36,11 +37,9 @@ import { runStartupHealthCheck } from "./healthCheck.js";
 import { loadLidMappings, recordLidMapping } from "./lidMap.js";
 import { containsDisallowedUrl } from "./linkChecker.js";
 import { buildGroupInviteLinkReply, classifyGroupInviteLinkRequest } from "./moderation/groupInviteLink.js";
+import { isTicketMarketplaceRefutation } from "./moderation/ticketMarketplace/classifier.js";
 import { getTicketMarketplaceDecision } from "./moderation/ticketMarketplace/index.js";
-import {
-  DEFAULT_TICKET_MARKETPLACE_REPLY_COOLDOWN_MS,
-  TicketMarketplaceReplyCooldown,
-} from "./moderation/ticketMarketplace/replyCooldown.js";
+import { TicketMarketplaceReplyCooldown } from "./moderation/ticketMarketplace/replyCooldown.js";
 import { getSpotlightEligibility } from "./moderation/ticketMarketplace/spotlight/eligibility.js";
 import { startSpotlightScheduler, stopSpotlightScheduler } from "./moderation/ticketMarketplace/spotlight/scheduler.js";
 import { cancelSpotlightsForSource, hasPendingSpotlightForSender, queueSpotlight } from "./moderation/ticketMarketplace/spotlight/store.js";
@@ -84,7 +83,9 @@ const discoveredGroups = new Map<string, string>();
 const discoveredGroupMetadata = new Map<string, GroupMetadata>();
 const mutedMessageCounts = new Map<string, number>();
 const handledCallOfferIds = new Set<string>();
-const ticketMarketplaceReplyCooldown = new TicketMarketplaceReplyCooldown();
+const ticketMarketplaceReplyCooldown = new TicketMarketplaceReplyCooldown(
+  config.ticketMarketplaceReplyCooldownMinutes * 60 * 1000,
+);
 let strikePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let mutePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let globalBanEnforcementTimer: ReturnType<typeof setInterval> | null = null;
@@ -181,8 +182,7 @@ const getMessageContextInfo = (message: WAMessage["message"]): MessageContextInf
   return null;
 };
 
-const extractMessageText = (msg: WAMessage): string => {
-  const message = msg.message;
+const extractTextFromMessageContent = (message: WAMessage["message"]): string => {
   if (!message) {
     return "";
   }
@@ -204,8 +204,16 @@ const extractMessageText = (msg: WAMessage): string => {
   );
 };
 
+const extractMessageText = (msg: WAMessage): string => extractTextFromMessageContent(msg.message);
+
 const getQuotedParticipant = (message: WAMessage["message"]): string | null => {
   return getMessageContextInfo(message)?.participant ?? null;
+};
+
+const getQuotedText = (message: WAMessage["message"]): string | null => {
+  const quotedMessage = getMessageContextInfo(message)?.quotedMessage;
+  const text = extractTextFromMessageContent(quotedMessage as WAMessage["message"]);
+  return text.trim() ? text : null;
 };
 
 const hasQuotedMessage = (message: WAMessage["message"]): boolean => {
@@ -962,6 +970,7 @@ Push name: ${getPushName(msg) ?? "unknown"}`,
           sock,
           directSender,
           text,
+          getQuotedText(msg.message),
           config,
           discoveredGroups,
           discoveredGroupMetadata,
@@ -1232,6 +1241,19 @@ They have been banned and removed after repeatedly trying to post while muted.`,
         return;
       }
 
+      const refutationNow = Date.now();
+      if (
+        ticketMarketplaceReplyCooldown.isCoolingDown(groupJid, sender.userId, refutationNow) &&
+        isTicketMarketplaceRefutation(text)
+      ) {
+        ticketMarketplaceReplyCooldown.record(groupJid, sender.userId, refutationNow);
+        log("Extended ticket marketplace reply cooldown after refutation", {
+          groupJid,
+          senderJid: canonicalSenderAlias,
+          cooldownMinutes: config.ticketMarketplaceReplyCooldownMinutes,
+        });
+      }
+
       const ticketDecision = getTicketMarketplaceDecision(config, groupJid, text);
 
       if (ticketDecision.reason) {
@@ -1268,8 +1290,9 @@ They have been banned and removed after repeatedly trying to post while muted.`,
           reason: ticketDecision.reason,
         };
         const cooldownNow = Date.now();
+        const replyCoolingDown = ticketMarketplaceReplyCooldown.isCoolingDown(groupJid, sender.userId, cooldownNow);
 
-        if (ticketMarketplaceReplyCooldown.isCoolingDown(groupJid, sender.userId, cooldownNow)) {
+        if (replyCoolingDown) {
           log("Suppressed ticket marketplace reply during cooldown", {
             groupJid,
             senderJid: canonicalSenderAlias,
@@ -1279,42 +1302,56 @@ They have been banned and removed after repeatedly trying to post while muted.`,
             pricePresent: ticketDecision.hasPrice,
             action: ticketDecision.action,
             deletionEnabled: shouldDeleteTicketMarketplaceMessage,
-            cooldownMinutes: DEFAULT_TICKET_MARKETPLACE_REPLY_COOLDOWN_MS / 60_000,
+            cooldownMinutes: config.ticketMarketplaceReplyCooldownMinutes,
           });
-        } else {
-          if (config.dryRun) {
+        }
+
+        if (config.dryRun) {
+          if (!replyCoolingDown) {
             logAction({
               ...logEntry,
               action: "DRY_RUN",
             });
-
-            warn("Dry run: would moderate ticket marketplace rule", {
-              groupJid,
-              senderJid: canonicalSenderAlias,
-              classification: ticketDecision.intent,
-              matchedTokens: ticketDecision.matchedTokens,
-              matchedSignals: ticketDecision.matchedSignals,
-              pricePresent: ticketDecision.hasPrice,
-              action: ticketDecision.action,
-              deletionEnabled: shouldDeleteTicketMarketplaceMessage,
-              wouldSendText: replyText,
-            });
             ticketMarketplaceReplyCooldown.record(groupJid, sender.userId, cooldownNow);
-            return;
           }
 
-          try {
-            if (shouldDeleteTicketMarketplaceMessage) {
-              await sock.sendMessage(groupJid, { delete: msg.key as WAMessageKey });
-            }
+          warn("Dry run: would moderate ticket marketplace rule", {
+            groupJid,
+            senderJid: canonicalSenderAlias,
+            classification: ticketDecision.intent,
+            matchedTokens: ticketDecision.matchedTokens,
+            matchedSignals: ticketDecision.matchedSignals,
+            pricePresent: ticketDecision.hasPrice,
+            action: ticketDecision.action,
+            deletionEnabled: shouldDeleteTicketMarketplaceMessage,
+            replySuppressedByCooldown: replyCoolingDown,
+            wouldSendText: replyCoolingDown ? null : replyText,
+          });
+          return;
+        }
+
+        try {
+          if (shouldDeleteTicketMarketplaceMessage) {
+            await sock.sendMessage(groupJid, { delete: msg.key as WAMessageKey });
+          }
+
+          if (!replyCoolingDown) {
             await sendModerationMessage(sock, groupJid, replyText, mentionTargetJid, msg);
             ticketMarketplaceReplyCooldown.record(groupJid, sender.userId, cooldownNow);
+          }
+
+          if (!replyCoolingDown || shouldDeleteTicketMarketplaceMessage) {
             logAction({
               ...logEntry,
               action: shouldDeleteTicketMarketplaceMessage ? "DELETED" : "WARN",
             });
+          }
 
-            warn("Responded to ticket marketplace rule", {
+          warn(
+            replyCoolingDown
+              ? "Moderated ticket marketplace rule during reply cooldown"
+              : "Responded to ticket marketplace rule",
+            {
               groupJid,
               senderJid: canonicalSenderAlias,
               classification: ticketDecision.intent,
@@ -1323,25 +1360,26 @@ They have been banned and removed after repeatedly trying to post while muted.`,
               pricePresent: ticketDecision.hasPrice,
               action: ticketDecision.action,
               deletionEnabled: shouldDeleteTicketMarketplaceMessage,
-            });
-          } catch (moderationError) {
-            logAction({
-              ...logEntry,
-              action: "ERROR",
-              message_text: buildErrorLogMessage(text, moderationError),
-            });
+              replySuppressedByCooldown: replyCoolingDown,
+            },
+          );
+        } catch (moderationError) {
+          logAction({
+            ...logEntry,
+            action: "ERROR",
+            message_text: buildErrorLogMessage(text, moderationError),
+          });
 
-            error("Failed to moderate ticket marketplace rule", {
-              groupJid,
-              senderJid: canonicalSenderAlias,
-              classification: ticketDecision.intent,
-              action: ticketDecision.action,
-              error: moderationError,
-            });
-          }
-
-          return;
+          error("Failed to moderate ticket marketplace rule", {
+            groupJid,
+            senderJid: canonicalSenderAlias,
+            classification: ticketDecision.intent,
+            action: ticketDecision.action,
+            error: moderationError,
+          });
         }
+
+        return;
       }
 
       await queueTicketSpotlightIfEligible(
@@ -1701,6 +1739,7 @@ export const startBot = async (): Promise<void> => {
         await runStartupHealthCheck(sock, config, discoveredGroupMetadata);
         startSpotlightScheduler(sock, config, getEffectiveTicketSpotlightTargetJids);
         startTicketMarketplaceRuleReminderScheduler(sock, config);
+        startAnnouncementScheduler(sock, config);
       })();
       return;
     }
@@ -1712,9 +1751,11 @@ export const startBot = async (): Promise<void> => {
 
       if (activeSocket === sock) {
         activeSocket = null;
-      }
-      stopSpotlightScheduler();
-      stopTicketMarketplaceRuleReminderScheduler();
+    }
+    stopSpotlightScheduler();
+    stopTicketMarketplaceRuleReminderScheduler();
+    stopAnnouncementScheduler();
+      stopAnnouncementScheduler();
 
       const statusCode = isBoomLike(lastDisconnect?.error)
         ? lastDisconnect.error.output?.statusCode
@@ -1881,6 +1922,7 @@ const shutdown = async (signal: string): Promise<void> => {
 
     stopSpotlightScheduler();
     stopTicketMarketplaceRuleReminderScheduler();
+    stopAnnouncementScheduler();
 
     await activeSocket?.end(undefined);
   } catch (shutdownError) {

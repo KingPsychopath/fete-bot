@@ -126,7 +126,7 @@ type CountRow = {
   count: number;
 };
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const RESET_DB_FLAG = "RESET_DB";
 export const GLOBAL_MODERATION_GROUP_JID = "__all_groups__";
 
@@ -169,10 +169,78 @@ const SPOTLIGHT_SCHEMA_SQL = `
   CREATE INDEX idx_spotlight_history_source ON spotlight_history(source_group_jid, source_msg_id);
 `;
 
+const ANNOUNCEMENT_SCHEMA_SQL = `
+  CREATE TABLE announcement_queue_items (
+    id TEXT PRIMARY KEY,
+    position INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('draft','published')) DEFAULT 'draft',
+    enabled INTEGER NOT NULL CHECK(enabled IN (0,1)) DEFAULT 1,
+    removed_at TEXT,
+    created_by_user_id TEXT REFERENCES users(id),
+    created_by_label TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_by_user_id TEXT REFERENCES users(id),
+    updated_by_label TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE UNIQUE INDEX idx_announcement_queue_position_active
+    ON announcement_queue_items(position)
+    WHERE removed_at IS NULL;
+  CREATE INDEX idx_announcement_queue_active ON announcement_queue_items(status, enabled, position)
+    WHERE removed_at IS NULL;
+
+  CREATE TABLE announcement_state (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    paused INTEGER NOT NULL CHECK(paused IN (0,1)) DEFAULT 0,
+    next_local_date TEXT NOT NULL,
+    next_local_time TEXT NOT NULL,
+    timezone TEXT NOT NULL,
+    active_cycle_id TEXT,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE announcement_cycles (
+    id TEXT PRIMARY KEY,
+    trigger TEXT NOT NULL CHECK(trigger IN ('scheduled','manual')),
+    target_group_jid TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('running','sent','failed','skipped')),
+    due_local_date TEXT NOT NULL,
+    due_local_time TEXT NOT NULL,
+    timezone TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    error TEXT
+  );
+  CREATE INDEX idx_announcement_cycles_created ON announcement_cycles(created_at);
+  CREATE INDEX idx_announcement_cycles_status ON announcement_cycles(status, updated_at);
+
+  CREATE TABLE announcement_cycle_items (
+    id TEXT PRIMARY KEY,
+    cycle_id TEXT NOT NULL REFERENCES announcement_cycles(id) ON DELETE CASCADE,
+    queue_item_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    group_mentions_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending','sent','failed')) DEFAULT 'pending',
+    sent_at TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_announcement_cycle_items_cycle ON announcement_cycle_items(cycle_id, position);
+  CREATE INDEX idx_announcement_cycle_items_status ON announcement_cycle_items(cycle_id, status);
+`;
+
 const recreateSchema = (database: Database.Database): void => {
   database.exec("PRAGMA foreign_keys = OFF");
 
   const tables = [
+    "announcement_cycle_items",
+    "announcement_cycles",
+    "announcement_state",
+    "announcement_queue_items",
     "spotlight_history",
     "spotlight_pending",
     "identity_merges",
@@ -307,6 +375,7 @@ const recreateSchema = (database: Database.Database): void => {
     CREATE INDEX idx_review_queue_flagged_at ON review_queue(flagged_at);
 
     ${SPOTLIGHT_SCHEMA_SQL}
+    ${ANNOUNCEMENT_SCHEMA_SQL}
   `);
 
   database.pragma(`user_version = ${SCHEMA_VERSION}`);
@@ -326,6 +395,30 @@ export const migrateSchemaV2ToV3 = (
     database.exec(SPOTLIGHT_SCHEMA_SQL);
     if (options.throwAfterSchemaForTest) {
       throw new Error("Intentional migration failure for test");
+    }
+    database.pragma("user_version = 3");
+    database.exec("COMMIT");
+  } catch (migrationError) {
+    if (database.inTransaction) {
+      database.exec("ROLLBACK");
+    }
+    throw migrationError;
+  }
+};
+
+export const migrateSchemaV3ToV4 = (
+  database: Database.Database,
+  options: { throwAfterSchemaForTest?: boolean } = {},
+): void => {
+  if (database.inTransaction) {
+    throw new Error("Cannot migrate schema while another transaction is active");
+  }
+
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    database.exec(ANNOUNCEMENT_SCHEMA_SQL);
+    if (options.throwAfterSchemaForTest) {
+      throw new Error("Intentional migration failure");
     }
     database.pragma(`user_version = ${SCHEMA_VERSION}`);
     database.exec("COMMIT");
@@ -347,6 +440,11 @@ export const ensureSchema = (database: Database.Database): void => {
 
   if (version === 2) {
     migrateSchemaV2ToV3(database);
+  }
+
+  const migratedVersion = Number(database.pragma("user_version", { simple: true }) ?? 0);
+  if (migratedVersion === 3) {
+    migrateSchemaV3ToV4(database);
     database.pragma("journal_mode = WAL");
     database.exec("PRAGMA foreign_keys = ON");
     return;

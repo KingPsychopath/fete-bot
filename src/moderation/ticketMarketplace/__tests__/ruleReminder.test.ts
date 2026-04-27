@@ -24,6 +24,7 @@ const config = {
   ticketMarketplaceManagement: true,
   ticketMarketplaceGroupJids: ["market@g.us"],
   ticketMarketplaceGroupName: "FDLM Ticket Marketplace",
+  ticketMarketplaceReplyCooldownMinutes: 30,
   ticketMarketplaceRuleReminderEnabled: true,
   ticketMarketplaceRuleReminderTime: "10:00",
   ticketMarketplaceRuleReminderTimezone: "Europe/London",
@@ -49,6 +50,13 @@ const config = {
   ticketSpotlightBlocklistJids: [],
   ticketSpotlightClaimStaleMinutes: 5,
   ticketSpotlightReactionEmoji: "⭐",
+  announcementsEnabled: false,
+  announcementsTargetGroupJid: "",
+  announcementsStartDate: "",
+  announcementsTime: "10:00",
+  announcementsIntervalDays: 3,
+  announcementsTimezone: "Europe/London",
+  announcementsGroupMentions: [],
 } satisfies Config;
 
 beforeEach(() => {
