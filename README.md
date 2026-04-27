@@ -136,7 +136,7 @@ Special rules:
 
 - WhatsApp invite links are removed
 - Same message sent 3+ times within 5 minutes by the same sender is treated as duplicate spam
-- 8+ messages within 60 seconds by the same sender is treated as flooding
+- 20+ messages within 60 seconds by the same sender is treated as flooding
 - Phone numbers trigger a warning only, not a deletion
 - Forwarded / heavily forwarded messages are logged for audit only
 
@@ -208,7 +208,7 @@ In practice:
 
 Command note:
 
-- `!pardon` and `!resetstrikes` currently do the same thing: clear active strikes and remove any pending review entry for that user in the targeted group(s)
+- `!pardon` and `!resetstrikes` currently do the same thing: clear active strikes, remove any pending review entry, and lift any mute for that user in the targeted group(s)
 
 Owners and moderators can control the bot in two ways:
 

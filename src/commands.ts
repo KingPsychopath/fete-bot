@@ -241,6 +241,12 @@ const formatGroupList = (
   groups: ReadonlyMap<string, string> | ReadonlyMap<string, GroupMetadata>,
 ): string => groupJids.map((groupJid) => formatGroupName(groupJid, groups)).join(", ");
 
+const pardonUserInGroup = (userId: string, groupJid: string): void => {
+  resetStrikes(userId, groupJid);
+  clearReviewQueueEntry(userId, groupJid);
+  removeMute(userId, groupJid);
+};
+
 const formatReason = (reason?: string | null): string => reason?.trim() || "none";
 
 const formatDate = (iso: string | null): string => {
@@ -1210,10 +1216,9 @@ They can now send messages again.`,
   }
 
   if (command === "!pardon" || command === "!resetstrikes") {
-    resetStrikes(target.userId, groupJid);
-    clearReviewQueueEntry(target.userId, groupJid);
+    pardonUserInGroup(target.userId, groupJid);
     await sock.sendMessage(groupJid, {
-      text: `✅ Strikes cleared for ${formatUserSummary(target)}`,
+      text: `✅ Strikes cleared and mute lifted for ${formatUserSummary(target)}`,
     });
     logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "success");
     return true;
@@ -1676,12 +1681,11 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
     }
 
     for (const groupJid of groupJids) {
-      resetStrikes(target.userId, groupJid);
-      clearReviewQueueEntry(target.userId, groupJid);
+      pardonUserInGroup(target.userId, groupJid);
     }
 
     await sock.sendMessage(replyJid, {
-      text: `✅ Strikes cleared for ${formatUserSummary(target)} in ${formatGroupScope(groupJids, groups)}`,
+      text: `✅ Strikes cleared and mute lifted for ${formatUserSummary(target)} in ${formatGroupScope(groupJids, groups)}`,
     });
     logAudit(actorContext, parsed.command, target.userId, target.participantJid, parsed.groupJid, text, "success");
     return;

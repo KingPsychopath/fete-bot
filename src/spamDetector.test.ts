@@ -40,13 +40,13 @@ describe("SpamDetector", () => {
     const detector = new SpamDetector();
     const nowSpy = vi.spyOn(Date, "now");
 
-    for (let index = 0; index < 7; index += 1) {
+    for (let index = 0; index < 19; index += 1) {
       nowSpy.mockReturnValueOnce(10_000 + index * 1_000);
       expect(detector.check("sender@s.whatsapp.net", `message ${index}`)).toEqual({ spam: false });
     }
 
-    nowSpy.mockReturnValueOnce(17_000);
-    expect(detector.check("sender@s.whatsapp.net", "message 7")).toEqual({
+    nowSpy.mockReturnValueOnce(29_000);
+    expect(detector.check("sender@s.whatsapp.net", "message 19")).toEqual({
       spam: true,
       reason: "message_flood",
       action: "delete",

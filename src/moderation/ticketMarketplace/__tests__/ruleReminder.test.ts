@@ -65,9 +65,8 @@ describe("ticket marketplace rule reminder", () => {
     const { buildTicketMarketplaceRuleReminderMessage } = await import("../ruleReminder.js");
 
     expect(buildTicketMarketplaceRuleReminderMessage(config)).toContain("pinned message and group description");
-    expect(buildTicketMarketplaceRuleReminderMessage(config, "Rule 1\nRule 2")).toContain(
-      "Group description:\nRule 1\nRule 2",
-    );
+    expect(buildTicketMarketplaceRuleReminderMessage(config, "Rule 1\nRule 2")).toContain("\n\nRule 1\nRule 2");
+    expect(buildTicketMarketplaceRuleReminderMessage(config, "Rule 1\nRule 2")).not.toContain("Group description:");
   });
 
   it("sends once per marketplace group after the configured local time", async () => {
@@ -98,7 +97,7 @@ describe("ticket marketplace rule reminder", () => {
     expect(sendMessage).toHaveBeenCalledWith(
       "market@g.us",
       expect.objectContaining({
-        text: expect.stringContaining("Group description:\n1. Face value only\n2. No screenshots"),
+        text: expect.stringContaining("\n\n1. Face value only\n2. No screenshots"),
       }),
     );
 

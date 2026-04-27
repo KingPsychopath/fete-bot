@@ -115,7 +115,7 @@ export const buildTicketMarketplaceRuleReminderMessage = (
   const reminder = `📌 Daily reminder: please make sure you follow the rules of ${config.ticketMarketplaceGroupName}. You can refer to them by reading the pinned message and group description in this chat.`;
   const descriptionText = groupDescription?.trim();
 
-  return descriptionText ? `${reminder}\n\nGroup description:\n${descriptionText}` : reminder;
+  return descriptionText ? `${reminder}\n\n${descriptionText}` : reminder;
 };
 
 const getGroupDescription = async (sock: RuleReminderSocket, groupJid: string): Promise<string | null> => {

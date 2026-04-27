@@ -11,6 +11,7 @@ type SenderMessage = {
 
 const DUPLICATE_WINDOW_MS = 5 * 60 * 1000;
 const FLOOD_WINDOW_MS = 60 * 1000;
+const FLOOD_MESSAGE_LIMIT = 20;
 const INACTIVITY_RESET_MS = 60 * 1000;
 const PURGE_WINDOW_MS = 10 * 60 * 1000;
 const PURGE_INTERVAL_MS = 10 * 60 * 1000;
@@ -97,7 +98,7 @@ export class SpamDetector {
     );
 
     this.messageTimestamps.set(senderJid, timestamps);
-    return timestamps.length >= 8;
+    return timestamps.length >= FLOOD_MESSAGE_LIMIT;
   }
 
   private containsPhoneNumber(text: string): boolean {
