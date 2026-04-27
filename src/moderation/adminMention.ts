@@ -26,6 +26,34 @@ const ADMIN_MENTION_REGEX = /(^|[^\p{L}\p{N}_])@admin\b/iu;
 
 export const hasAdminMention = (text: string): boolean => ADMIN_MENTION_REGEX.test(text);
 
+const normalizeMentionJid = (jid: string): string => {
+  const trimmed = jid.trim().toLowerCase();
+  const atIndex = trimmed.lastIndexOf("@");
+
+  if (atIndex < 0) {
+    return trimmed;
+  }
+
+  const user = trimmed.slice(0, atIndex);
+  const server = trimmed.slice(atIndex + 1);
+  const normalizedUser = server === "s.whatsapp.net" || server === "lid"
+    ? user.split(":")[0] ?? user
+    : user;
+
+  return `${normalizedUser}@${server}`;
+};
+
+export const hasBotSelfMention = (
+  mentionedJids: readonly string[],
+  selfJids: ReadonlySet<string>,
+): boolean => mentionedJids.some((jid) => selfJids.has(normalizeMentionJid(jid)));
+
+export const hasAdminSummon = (
+  text: string,
+  mentionedJids: readonly string[],
+  selfJids: ReadonlySet<string>,
+): boolean => hasAdminMention(text) || hasBotSelfMention(mentionedJids, selfJids);
+
 export const pickAdminMentionReply = (
   random = Math.random,
   replies: readonly string[] = ADMIN_MENTION_REPLIES,

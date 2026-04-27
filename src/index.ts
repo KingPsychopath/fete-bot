@@ -40,7 +40,7 @@ import {
 import { runStartupHealthCheck } from "./healthCheck.js";
 import { loadLidMappings, recordLidMapping } from "./lidMap.js";
 import { containsDisallowedUrl } from "./linkChecker.js";
-import { AdminMentionCooldown, hasAdminMention, pickAdminMentionReply } from "./moderation/adminMention.js";
+import { AdminMentionCooldown, hasAdminSummon, pickAdminMentionReply } from "./moderation/adminMention.js";
 import { buildGroupInviteLinkReply, classifyGroupInviteLinkRequest } from "./moderation/groupInviteLink.js";
 import { isTicketMarketplaceRefutation } from "./moderation/ticketMarketplace/classifier.js";
 import { getTicketMarketplaceDecision } from "./moderation/ticketMarketplace/index.js";
@@ -166,6 +166,7 @@ const installQuietSwitchSendGuard = (sock: WASocket): void => {
 
 type MessageContextInfo = {
   participant?: string | null;
+  mentionedJid?: string[] | null;
   isForwarded?: boolean | null;
   forwardingScore?: number | null;
   stanzaId?: string | null;
@@ -229,6 +230,8 @@ const hasQuotedMessage = (message: WAMessage["message"]): boolean => {
   const contextInfo = getMessageContextInfo(message);
   return Boolean(contextInfo?.quotedMessage || contextInfo?.stanzaId);
 };
+
+const getMentionedJids = (message: WAMessage["message"]): string[] => getMessageContextInfo(message)?.mentionedJid ?? [];
 
 const getPushName = (msg: WAMessage): string | null => msg.pushName ?? null;
 
@@ -1532,7 +1535,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
     }
 
     const isCommandText = text.trim().startsWith("!");
-    if (!isCommandText && hasAdminMention(text)) {
+    if (!isCommandText && hasAdminSummon(text, getMentionedJids(msg.message), selfJids)) {
       const adminMentionNow = Date.now();
 
       if (adminMentionCooldown.isCoolingDown(groupJid, adminMentionNow)) {
@@ -1541,38 +1544,34 @@ They have been banned and removed after repeatedly trying to post while muted.`,
           senderJid: canonicalSenderAlias,
           cooldownMinutes: config.adminMentionCooldownMinutes,
         });
-        return;
+      } else {
+        const replyText = pickAdminMentionReply();
+        adminMentionCooldown.record(groupJid, adminMentionNow);
+
+        if (config.dryRun) {
+          warn("Dry run: would respond to admin mention", {
+            groupJid,
+            senderJid: canonicalSenderAlias,
+            cooldownMinutes: config.adminMentionCooldownMinutes,
+            wouldSendText: replyText,
+          });
+        } else {
+          try {
+            await sock.sendMessage(groupJid, { text: replyText }, { quoted: msg });
+            log("Responded to admin mention", {
+              groupJid,
+              senderJid: canonicalSenderAlias,
+              cooldownMinutes: config.adminMentionCooldownMinutes,
+            });
+          } catch (adminMentionError) {
+            error("Failed to respond to admin mention", {
+              groupJid,
+              senderJid: canonicalSenderAlias,
+              error: adminMentionError,
+            });
+          }
+        }
       }
-
-      const replyText = pickAdminMentionReply();
-      adminMentionCooldown.record(groupJid, adminMentionNow);
-
-      if (config.dryRun) {
-        warn("Dry run: would respond to admin mention", {
-          groupJid,
-          senderJid: canonicalSenderAlias,
-          cooldownMinutes: config.adminMentionCooldownMinutes,
-          wouldSendText: replyText,
-        });
-        return;
-      }
-
-      try {
-        await sock.sendMessage(groupJid, { text: replyText }, { quoted: msg });
-        log("Responded to admin mention", {
-          groupJid,
-          senderJid: canonicalSenderAlias,
-          cooldownMinutes: config.adminMentionCooldownMinutes,
-        });
-      } catch (adminMentionError) {
-        error("Failed to respond to admin mention", {
-          groupJid,
-          senderJid: canonicalSenderAlias,
-          error: adminMentionError,
-        });
-      }
-
-      return;
     }
 
     if (!isCommandText) {

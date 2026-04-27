@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   ADMIN_MENTION_REPLIES,
   AdminMentionCooldown,
+  hasAdminSummon,
   hasAdminMention,
+  hasBotSelfMention,
   pickAdminMentionReply,
 } from "../adminMention.js";
 
@@ -18,6 +20,22 @@ describe("admin mention", () => {
     expect(hasAdminMention("@admins")).toBe(false);
     expect(hasAdminMention("email me@admin.com")).toBe(false);
     expect(hasAdminMention("@administrator")).toBe(false);
+  });
+
+  it("matches the bot's WhatsApp mention metadata", () => {
+    const selfJids = new Set(["12345@s.whatsapp.net", "abc@lid"]);
+
+    expect(hasBotSelfMention(["12345:9@s.whatsapp.net"], selfJids)).toBe(true);
+    expect(hasBotSelfMention(["ABC@LID"], selfJids)).toBe(true);
+    expect(hasBotSelfMention(["67890@s.whatsapp.net"], selfJids)).toBe(false);
+  });
+
+  it("treats @admin text and bot mentions as summons", () => {
+    const selfJids = new Set(["12345@s.whatsapp.net"]);
+
+    expect(hasAdminSummon("call @admin", [], selfJids)).toBe(true);
+    expect(hasAdminSummon("hello bot", ["12345@s.whatsapp.net"], selfJids)).toBe(true);
+    expect(hasAdminSummon("hello everyone", [], selfJids)).toBe(false);
   });
 
   it("picks from the configured reply pool", () => {
