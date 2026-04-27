@@ -66,7 +66,6 @@ const parsePositiveInteger = (value: string | undefined, fallback: number): numb
 };
 
 const DEFAULT_TICKET_SPOTLIGHT_TARGET_JIDS = [
-  "120363398450564664@g.us",
   "120363417253211015@g.us",
   "120363417797746871@g.us",
   "120363401608823361@g.us",

@@ -85,7 +85,7 @@ Notes:
 - `TICKET_MARKETPLACE_MANAGEMENT=true` by default
 - `TICKET_MARKETPLACE_GROUP_JIDS` is comma-separated and defaults to `120363418331899807@g.us`
 - `TICKET_SPOTLIGHT_ENABLED=true` by default; seller spotlights are enabled, buying spotlights are off by default for the first rollout
-- `TICKET_SPOTLIGHT_TARGET_JIDS` defaults to FDLM Meet-Ups, FDLM General 2, FDLM General, and FDLM Parties & Events
+- `TICKET_SPOTLIGHT_TARGET_JIDS` defaults to FDLM General 2, FDLM General, and FDLM Parties & Events
 - `OWNER_JIDS`, database moderators, and WhatsApp group admins are never moderated
 - The bot never responds in 1:1 chats unless the sender is an owner or moderator using a command
 - The bot never acts on its own messages, with an extra self-ID check as defence in depth
