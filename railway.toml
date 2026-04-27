@@ -12,3 +12,5 @@ restartPolicyType = "ALWAYS"
 numReplicas = 1
 healthcheckPath = "/health"
 healthcheckTimeout = 30
+overlapSeconds = 0
+drainingSeconds = 30

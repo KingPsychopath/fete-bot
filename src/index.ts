@@ -1751,10 +1751,9 @@ export const startBot = async (): Promise<void> => {
 
       if (activeSocket === sock) {
         activeSocket = null;
-    }
-    stopSpotlightScheduler();
-    stopTicketMarketplaceRuleReminderScheduler();
-    stopAnnouncementScheduler();
+      }
+      stopSpotlightScheduler();
+      stopTicketMarketplaceRuleReminderScheduler();
       stopAnnouncementScheduler();
 
       const statusCode = isBoomLike(lastDisconnect?.error)
@@ -1924,7 +1923,9 @@ const shutdown = async (signal: string): Promise<void> => {
     stopTicketMarketplaceRuleReminderScheduler();
     stopAnnouncementScheduler();
 
-    await activeSocket?.end(undefined);
+    const socketToClose = activeSocket;
+    activeSocket = null;
+    socketToClose?.end(undefined);
   } catch (shutdownError) {
     error("Error during shutdown", shutdownError);
   }

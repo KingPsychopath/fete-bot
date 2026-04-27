@@ -81,6 +81,13 @@ Notes:
 - The app will prefer `RAILWAY_VOLUME_MOUNT_PATH` automatically when it is present
 - Volumes are mounted at runtime, not during build or pre-deploy steps
 
+## Railway Deploy Contract
+
+- `numReplicas = 1` keeps one Railway deployment active for the service
+- `overlapSeconds = 0` minimizes the window where two Baileys sockets can use the same WhatsApp session
+- `drainingSeconds = 30` gives the bot time to handle `SIGTERM`, close the Baileys socket, and exit cleanly before Railway sends `SIGKILL`
+- The healthcheck should stay on `/health`; `/ready` waits for WhatsApp connection and can prolong deploy overlap for this single-session bot
+
 ## Safety Defaults
 
 - `DRY_RUN=true` by default
