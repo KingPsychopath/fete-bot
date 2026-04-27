@@ -22,7 +22,7 @@ export const ADMIN_MENTION_REPLIES = [
   "Who do I have to side-eye today?",
 ] as const;
 
-const ADMIN_MENTION_REGEX = /(^|[^\p{L}\p{N}_])@admin\b/iu;
+const ADMIN_MENTION_REGEX = /(^|[^\p{L}\p{N}_])@admins?\b/iu;
 
 export const hasAdminMention = (text: string): boolean => ADMIN_MENTION_REGEX.test(text);
 

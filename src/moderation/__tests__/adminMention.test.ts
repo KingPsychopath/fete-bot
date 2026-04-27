@@ -12,12 +12,13 @@ import {
 describe("admin mention", () => {
   it("matches standalone @admin mentions", () => {
     expect(hasAdminMention("@admin")).toBe(true);
+    expect(hasAdminMention("@admins")).toBe(true);
     expect(hasAdminMention("can someone call @admin pls")).toBe(true);
+    expect(hasAdminMention("can someone call @admins pls")).toBe(true);
     expect(hasAdminMention("POLICE @ADMIN")).toBe(true);
   });
 
   it("ignores partial words and non-admin mentions", () => {
-    expect(hasAdminMention("@admins")).toBe(false);
     expect(hasAdminMention("email me@admin.com")).toBe(false);
     expect(hasAdminMention("@administrator")).toBe(false);
   });
