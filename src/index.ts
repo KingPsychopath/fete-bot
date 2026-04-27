@@ -436,6 +436,12 @@ const isGroupCallGuarded = (groupJid: string): boolean =>
   isManagedGroup(groupJid) &&
   (config.groupCallGuardGroupJids.length === 0 || config.groupCallGuardGroupJids.includes(groupJid));
 
+const shouldRejectUnknownGroupCall = (call: WACallEvent): boolean =>
+  config.groupCallGuardEnabled &&
+  call.isGroup === true &&
+  config.allowedGroupJids.length === 0 &&
+  config.groupCallGuardGroupJids.length === 0;
+
 const getCallGroupJid = (call: WACallEvent): string | null => {
   for (const candidate of [call.groupJid, call.chatId]) {
     if (candidate?.endsWith("@g.us")) {
@@ -481,6 +487,40 @@ const handleCall = async (sock: WASocket, call: WACallEvent): Promise<void> => {
   }
 
   const groupJid = getCallGroupJid(call);
+  if (!groupJid && shouldRejectUnknownGroupCall(call)) {
+    handledCallOfferIds.add(call.id);
+
+    if (config.dryRun) {
+      warn("Dry run: would reject group call without group JID", {
+        callId: call.id,
+        chatId: call.chatId,
+        callerJid: call.from,
+        isVideo: call.isVideo,
+      });
+      return;
+    }
+
+    try {
+      await sock.rejectCall(call.id, call.from);
+      warn("Rejected group call without group JID", {
+        callId: call.id,
+        chatId: call.chatId,
+        callerJid: call.from,
+        isVideo: call.isVideo,
+      });
+    } catch (callGuardError) {
+      handledCallOfferIds.delete(call.id);
+      error("Failed to reject group call without group JID", {
+        callId: call.id,
+        chatId: call.chatId,
+        callerJid: call.from,
+        isVideo: call.isVideo,
+        error: callGuardError,
+      });
+    }
+    return;
+  }
+
   if (!groupJid || !isGroupCallGuarded(groupJid)) {
     warn("Ignored call offer outside call guard scope", {
       callId: call.id,
