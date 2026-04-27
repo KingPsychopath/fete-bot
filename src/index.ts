@@ -370,6 +370,22 @@ const getGroupCallWarningText = (callerJid: string): string => {
   return config.groupCallGuardWarningText.replace(/\{mention\}/gu, mentionLabel);
 };
 
+const appendCallGuardConsequenceText = (
+  warningText: string,
+  activeViolations?: number,
+): string => {
+  if (activeViolations === undefined) {
+    return `${warningText}\n\nFurther call attempts may get you removed from the group.`;
+  }
+
+  const warningNumber = Math.min(activeViolations, config.groupCallGuardRemoveOn);
+  const consequenceText = activeViolations >= config.groupCallGuardRemoveOn
+    ? "You are being removed from the group for repeated call attempts."
+    : `Warning ${warningNumber}/${config.groupCallGuardRemoveOn}. Another call attempt will get you removed from the group.`;
+
+  return `${warningText}\n\n${consequenceText}`;
+};
+
 const getCallGuardWindowMs = (): number => config.groupCallGuardWindowHours * 60 * 60 * 1000;
 const getCallGuardWarningCooldownMs = (): number => config.groupCallGuardWarningCooldownSeconds * 1000;
 const getCallGuardRecentActivityTtlMs = (): number => config.groupCallGuardRecentActivityTtlMinutes * 60 * 1000;
@@ -632,6 +648,61 @@ const sendCallGuardWarning = async (
   }
 };
 
+const getCallGuardDmTargetJid = (caller: ResolvedUser | null, call: WACallEvent): string | null => {
+  const candidates = [
+    ...(caller?.knownAliases ?? []),
+    caller?.participantJid ?? null,
+    call.from,
+    call.chatId,
+  ]
+    .map((jid) => jid ? normalizeJid(jid) : null)
+    .filter((jid): jid is string => Boolean(jid));
+
+  return (
+    candidates.find((jid) => jid.endsWith("@s.whatsapp.net")) ??
+    candidates.find((jid) => jid.endsWith("@lid")) ??
+    null
+  );
+};
+
+const sendCallGuardDmWarning = async (
+  sock: WASocket,
+  call: WACallEvent,
+  caller: ResolvedUser | null,
+): Promise<boolean> => {
+  const dmTargetJid = getCallGuardDmTargetJid(caller, call);
+  if (!dmTargetJid) {
+    warn("Unable to find DM target for group call guard warning", {
+      callId: call.id,
+      callerJid: call.from,
+      callerUserId: caller?.userId ?? null,
+    });
+    return false;
+  }
+
+  try {
+    await sock.sendMessage(dmTargetJid, {
+      text: "Calls aren't allowed in the groups managed by Fete Bot. Don't do that again. 🙏🏾\n\nFurther call attempts may get you removed from the group.",
+    });
+    warn("Sent DM warning for group call without group JID", {
+      callId: call.id,
+      callerJid: call.from,
+      callerUserId: caller?.userId ?? null,
+      dmTargetJid,
+    });
+    return true;
+  } catch (dmError) {
+    warn("Failed to send DM warning for group call without group JID", {
+      callId: call.id,
+      callerJid: call.from,
+      callerUserId: caller?.userId ?? null,
+      dmTargetJid,
+      error: dmError,
+    });
+    return false;
+  }
+};
+
 const getEffectiveTicketSpotlightTargetJids = (): string[] => {
   const candidateTargetJids = config.ticketSpotlightTargetJids.length > 0
     ? config.ticketSpotlightTargetJids
@@ -708,7 +779,7 @@ const handleCall = async (sock: WASocket, call: WACallEvent): Promise<void> => {
           const warned = await sendCallGuardWarning(
             sock,
             inferredGroupJid,
-            getGroupCallWarningText(caller.participantJid ?? normalizeJid(call.from)),
+            appendCallGuardConsequenceText(getGroupCallWarningText(caller.participantJid ?? normalizeJid(call.from))),
             getMentionTargetJid(caller.participantJid ?? normalizeJid(call.from)),
             call,
           );
@@ -743,6 +814,14 @@ const handleCall = async (sock: WASocket, call: WACallEvent): Promise<void> => {
           detail: candidates.length === 0 ? "no_recent_group_activity" : `ambiguous_recent_group_activity:${candidates.join(",")}`,
           nowMs,
         });
+        const dmWarned = await sendCallGuardDmWarning(sock, call, caller);
+        if (dmWarned) {
+          auditCallGuard(call, caller, "warn", {
+            inferred: true,
+            detail: "dm_fallback",
+            nowMs,
+          });
+        }
       }
     }
     return;
@@ -764,7 +843,6 @@ const handleCall = async (sock: WASocket, call: WACallEvent): Promise<void> => {
 
   handledCallOfferIds.add(call.id);
   const callerMentionJid = caller?.participantJid ?? normalizeJid(call.from);
-  const warningText = getGroupCallWarningText(callerMentionJid);
   const mentionTargetJid = getMentionTargetJid(callerMentionJid);
 
   if (config.dryRun) {
@@ -773,7 +851,7 @@ const handleCall = async (sock: WASocket, call: WACallEvent): Promise<void> => {
       groupJid,
       callerJid: call.from,
       isVideo: call.isVideo,
-      wouldSendText: warningText,
+      wouldSendText: appendCallGuardConsequenceText(getGroupCallWarningText(callerMentionJid)),
     });
     return;
   }
@@ -794,6 +872,7 @@ const handleCall = async (sock: WASocket, call: WACallEvent): Promise<void> => {
   );
 
   if (shouldSendCallGuardWarning(caller.userId, groupJid, nowMs)) {
+    const warningText = appendCallGuardConsequenceText(getGroupCallWarningText(callerMentionJid), activeViolations);
     const warned = await sendCallGuardWarning(sock, groupJid, warningText, mentionTargetJid, call);
     if (warned) {
       auditCallGuard(call, caller, "warn", { groupJid, nowMs });
