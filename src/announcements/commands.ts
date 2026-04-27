@@ -50,7 +50,7 @@ const pendingConfirmations = new Map<string, PendingConfirmation>();
 
 export const ANNOUNCEMENT_HELP_TEXT = `*Announcement Help*
 
-Use this in DM with the bot. Queue positions are the numbers shown by !announce list.
+Use this in DM with the bot for queue management. Queue positions are the numbers shown by !announce list.
 
 *Normal workflow*
 1. Send the announcement text to the bot as a normal message.
@@ -58,7 +58,7 @@ Use this in DM with the bot. Queue positions are the numbers shown by !announce 
 3. Check the draft with: !announce show {position}
 4. When ready: !announce publish {position}
 5. Preview the live bundle: !announce preview
-6. Send the live bundle to yourself: !announce test
+6. Send the live bundle to yourself, or to the group you run it in: !announce test
 7. Check timing/status: !announce next
 8. Run a final safety check: !announce check
 9. Owner-only real group test: !announce test-group {groupJid}
@@ -68,7 +68,10 @@ Use this in DM with the bot. Queue positions are the numbers shown by !announce 
 - preview and test only include items that are published and on.
 - show works for drafts, published items, on items, and off items.
 - list only shows compact previews, not full message bodies.
+- test does not advance the recurring schedule.
+- In groups, only help/list/show/preview/next/check/test are allowed. Add, edit, publish, remove, schedule, and send-now must be done in DM.
 - To mention group chats, type a configured label like @FDLM General. The bot also understands known group names and exact @120...@g.us group JIDs when it can resolve them.
+- The automatic schedule only runs when announcements are enabled in config.
 
 *Queue commands*
 !announce list
@@ -88,6 +91,9 @@ Use this in DM with the bot. Queue positions are the numbers shown by !announce 
 !announce schedule YYYY-MM-DD HH:mm
 !announce pause
 !announce resume
+
+Schedule format is local 24-hour time in the configured timezone.
+Example: !announce schedule 2026-04-30 10:00
 
 *Owner only*
 !announce send-now
