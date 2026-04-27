@@ -269,6 +269,7 @@ Owners and moderators can control the bot in two ways:
 - `!undo`
 - `!announce list`
 - `!announce show {id|position}`
+- `!announce raw {id|position}`
 - `!announce preview`
 - `!announce next`
 - `!announce check`

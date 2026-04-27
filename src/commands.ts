@@ -98,7 +98,7 @@ const HELP_MESSAGE = `*Fete Bot — Admin Help*
   !spotlights   {limit?}
   !spotlight-history {limit?}
   !spotlight-requeue {messageId|rowId} {minutes?}
-  !announce     help|list|show|preview|next|check|add|edit|publish|on|off|move|remove|schedule|pause|resume|test|test-group|send-now
+  !announce     help|list|show|raw|preview|next|check|add|edit|publish|on|off|move|remove|schedule|pause|resume|test|test-group|send-now
   !bans         {groupJid?}
   !mutes        {groupJid?}
   !audit        {limit?}
@@ -1171,7 +1171,7 @@ export async function handleGroupCommand(
       config,
       groups,
       {
-        allowedSubcommands: ["help", "list", "show", "preview", "next", "check", "test"],
+        allowedSubcommands: ["help", "list", "show", "raw", "copy", "preview", "next", "check", "test"],
         restrictedMessage: "Use DM with the bot to add, edit, publish, remove, schedule, or send announcements.",
       },
     );

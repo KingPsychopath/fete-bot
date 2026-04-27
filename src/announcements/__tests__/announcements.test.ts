@@ -151,6 +151,12 @@ describe("announcements", () => {
         text: expect.stringContaining("publish does not send immediately"),
       }),
     );
+    expect(sendMessage).toHaveBeenCalledWith(
+      "owner@s.whatsapp.net",
+      expect.objectContaining({
+        text: expect.stringContaining("!announce raw {id|position}"),
+      }),
+    );
   });
 
   it("shows sendability and mention diagnostics for one item", async () => {
@@ -185,6 +191,42 @@ describe("announcements", () => {
       "owner@s.whatsapp.net",
       expect.objectContaining({
         text: expect.stringContaining("@Unknown Crew"),
+      }),
+    );
+  });
+
+  it("shows raw queue item text in a copyable code block", async () => {
+    const { store } = await setup();
+    const item = store.addAnnouncementItem("Welcome to *OOOC* and _Paris_", actor);
+    const { handleAnnouncementCommand } = await import("../commands.js");
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+
+    await handleAnnouncementCommand(
+      { sendMessage } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "owner@s.whatsapp.net",
+      `!announce raw ${item.position}`,
+      null,
+      config,
+      new Map(),
+    );
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      "owner@s.whatsapp.net",
+      expect.objectContaining({
+        text: expect.stringContaining("```"),
+      }),
+    );
+    expect(sendMessage).toHaveBeenCalledWith(
+      "owner@s.whatsapp.net",
+      expect.objectContaining({
+        text: expect.stringContaining("Welcome to *OOOC* and _Paris_"),
+      }),
+    );
+    expect(sendMessage).toHaveBeenCalledWith(
+      "owner@s.whatsapp.net",
+      expect.objectContaining({
+        text: expect.stringContaining(`!announce edit ${item.position}`),
       }),
     );
   });
@@ -277,7 +319,7 @@ describe("announcements", () => {
     const { handleAnnouncementCommand } = await import("../commands.js");
     const sendMessage = vi.fn().mockResolvedValue(undefined);
     const options = {
-      allowedSubcommands: ["help", "list", "show", "preview", "next", "check", "test"],
+      allowedSubcommands: ["help", "list", "show", "raw", "copy", "preview", "next", "check", "test"],
       restrictedMessage: "Use DM with the bot to manage announcements.",
     };
 
@@ -301,6 +343,24 @@ describe("announcements", () => {
         contextInfo: {
           groupMentions: [{ groupJid: "general@g.us", groupSubject: "FDLM General" }],
         },
+      }),
+    );
+
+    await handleAnnouncementCommand(
+      { sendMessage } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "group@g.us",
+      "!announce raw 1",
+      null,
+      config,
+      new Map(),
+      options,
+    );
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      "group@g.us",
+      expect.objectContaining({
+        text: expect.stringContaining("```"),
       }),
     );
 

@@ -51,6 +51,16 @@ Updated: ${item.updatedAt}
 
 ${item.body}`;
 
+const escapeCodeFence = (text: string): string => text.replaceAll("```", "`\u200b``");
+
+export const formatRawQueueItem = (item: AnnouncementQueueItemRow): string => `Raw announcement ${item.position} (${item.id})
+Copy the text inside this block, edit it, then reply to the edited text with:
+!announce edit ${item.position}
+
+\`\`\`
+${escapeCodeFence(item.body)}
+\`\`\``;
+
 export const formatBundlePreview = (items: readonly AnnouncementQueueItemRow[]): string => {
   const active = items.filter((item) => item.status === "published" && item.enabled);
   if (active.length === 0) {

@@ -19,7 +19,7 @@ import {
   type AnnouncementActor,
   type AnnouncementQueueItemRow,
 } from "./store.js";
-import { formatBundlePreview, formatNextAnnouncement, formatQueueItem, formatQueueList } from "./format.js";
+import { formatBundlePreview, formatNextAnnouncement, formatQueueItem, formatQueueList, formatRawQueueItem } from "./format.js";
 import { isValidLocalDate, isValidLocalTime } from "./time.js";
 import { sendAnnouncementBundleNow } from "./scheduler.js";
 import {
@@ -56,26 +56,29 @@ Use this in DM with the bot for queue management. Queue positions are the number
 1. Send the announcement text to the bot as a normal message.
 2. Reply to that text with: !announce add
 3. Check the draft with: !announce show {position}
-4. When ready: !announce publish {position}
-5. Preview the live bundle: !announce preview
-6. Send the live bundle to yourself, or to the group you run it in: !announce test
-7. Check timing/status: !announce next
-8. Run a final safety check: !announce check
-9. Owner-only real group test: !announce test-group {groupJid}
+4. To copy formatting markers for editing: !announce raw {position}
+5. When ready: !announce publish {position}
+6. Preview the live bundle: !announce preview
+7. Send the live bundle to yourself, or to the group you run it in: !announce test
+8. Check timing/status: !announce next
+9. Run a final safety check: !announce check
+10. Owner-only real group test: !announce test-group {groupJid}
 
 *Important*
 - publish does not send immediately.
 - preview and test only include items that are published and on.
 - show works for drafts, published items, on items, and off items.
+- raw shows the stored text in a copyable code block, including WhatsApp *bold* and _italic_ markers.
 - list only shows compact previews, not full message bodies.
 - test does not advance the recurring schedule.
-- In groups, only help/list/show/preview/next/check/test are allowed. Add, edit, publish, remove, schedule, and send-now must be done in DM.
+- In groups, only help/list/show/raw/preview/next/check/test are allowed. Add, edit, publish, remove, schedule, and send-now must be done in DM.
 - To mention group chats, type a configured label like @FDLM General. The bot also understands known group names and exact @120...@g.us group JIDs when it can resolve them.
 - The automatic schedule only runs when announcements are enabled in config.
 
 *Queue commands*
 !announce list
 !announce show {id|position}
+!announce raw {id|position}
 !announce preview
 !announce next
 !announce check
@@ -319,6 +322,15 @@ export const handleAnnouncementCommand = async (
     return true;
   }
 
+  if (subcommand === "raw" || subcommand === "copy") {
+    const identifier = parseIdentifier(tokens);
+    const item = identifier ? getAnnouncementItemByIdentifier(identifier) : null;
+    await sock.sendMessage(replyJid, {
+      text: item ? formatRawQueueItem(item) : "No announcement item found for that id or position.",
+    });
+    return true;
+  }
+
   if (subcommand === "preview") {
     await sock.sendMessage(replyJid, { text: formatBundlePreview(listAnnouncementItems()) });
     return true;
@@ -503,7 +515,7 @@ export const handleAnnouncementCommand = async (
   }
 
   await sock.sendMessage(replyJid, {
-    text: "Usage: !announce help | list | show | preview | next | check | add | edit | publish | on | off | move | remove | schedule | pause | resume | test | test-group | send-now",
+    text: "Usage: !announce help | list | show | raw | preview | next | check | add | edit | publish | on | off | move | remove | schedule | pause | resume | test | test-group | send-now",
   });
   return true;
 };
