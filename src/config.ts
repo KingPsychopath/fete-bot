@@ -173,6 +173,7 @@ const loadedConfig = {
     process.env.GROUP_CALL_GUARD_RECENT_ACTIVITY_TTL_MINUTES,
     10,
   ),
+  adminMentionCooldownMinutes: parsePositiveInteger(process.env.ADMIN_MENTION_COOLDOWN_MINUTES, 10),
   ticketMarketplaceManagement: parseBoolean(process.env.TICKET_MARKETPLACE_MANAGEMENT, true),
   ticketMarketplaceGroupJids: parseList(process.env.TICKET_MARKETPLACE_GROUP_JIDS || "120363418331899807@g.us"),
   ticketMarketplaceGroupName: normaliseEnvValue(process.env.TICKET_MARKETPLACE_GROUP_NAME) || "FDLM Ticket Marketplace",

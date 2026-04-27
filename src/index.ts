@@ -40,6 +40,7 @@ import {
 import { runStartupHealthCheck } from "./healthCheck.js";
 import { loadLidMappings, recordLidMapping } from "./lidMap.js";
 import { containsDisallowedUrl } from "./linkChecker.js";
+import { AdminMentionCooldown, hasAdminMention, pickAdminMentionReply } from "./moderation/adminMention.js";
 import { buildGroupInviteLinkReply, classifyGroupInviteLinkRequest } from "./moderation/groupInviteLink.js";
 import { isTicketMarketplaceRefutation } from "./moderation/ticketMarketplace/classifier.js";
 import { getTicketMarketplaceDecision } from "./moderation/ticketMarketplace/index.js";
@@ -92,6 +93,7 @@ const callGuardWarningLastSentByKey = new Map<string, number>();
 const ticketMarketplaceReplyCooldown = new TicketMarketplaceReplyCooldown(
   config.ticketMarketplaceReplyCooldownMinutes * 60 * 1000,
 );
+const adminMentionCooldown = new AdminMentionCooldown(config.adminMentionCooldownMinutes * 60 * 1000);
 let strikePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let mutePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let callViolationPurgeTimer: ReturnType<typeof setInterval> | null = null;
@@ -1530,6 +1532,49 @@ They have been banned and removed after repeatedly trying to post while muted.`,
     }
 
     const isCommandText = text.trim().startsWith("!");
+    if (!isCommandText && hasAdminMention(text)) {
+      const adminMentionNow = Date.now();
+
+      if (adminMentionCooldown.isCoolingDown(groupJid, adminMentionNow)) {
+        log("Suppressed admin mention reply during cooldown", {
+          groupJid,
+          senderJid: canonicalSenderAlias,
+          cooldownMinutes: config.adminMentionCooldownMinutes,
+        });
+        return;
+      }
+
+      const replyText = pickAdminMentionReply();
+      adminMentionCooldown.record(groupJid, adminMentionNow);
+
+      if (config.dryRun) {
+        warn("Dry run: would respond to admin mention", {
+          groupJid,
+          senderJid: canonicalSenderAlias,
+          cooldownMinutes: config.adminMentionCooldownMinutes,
+          wouldSendText: replyText,
+        });
+        return;
+      }
+
+      try {
+        await sock.sendMessage(groupJid, { text: replyText }, { quoted: msg });
+        log("Responded to admin mention", {
+          groupJid,
+          senderJid: canonicalSenderAlias,
+          cooldownMinutes: config.adminMentionCooldownMinutes,
+        });
+      } catch (adminMentionError) {
+        error("Failed to respond to admin mention", {
+          groupJid,
+          senderJid: canonicalSenderAlias,
+          error: adminMentionError,
+        });
+      }
+
+      return;
+    }
+
     if (!isCommandText) {
       const groupInviteLinkRequest = classifyGroupInviteLinkRequest(text);
 
