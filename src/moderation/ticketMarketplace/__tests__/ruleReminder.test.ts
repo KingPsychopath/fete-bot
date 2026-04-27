@@ -13,6 +13,9 @@ const config = {
   allowedGroupJids: [],
   ownerJids: [],
   muteOnStrike3: true,
+  spamDuplicateMinLength: 20,
+  spamFloodWarnMessageLimit: 20,
+  spamFloodDeleteMessageLimit: 25,
   defaultPhoneRegion: null,
   botName: "Fete Bot",
   ticketMarketplaceManagement: true,
@@ -22,6 +25,7 @@ const config = {
   ticketMarketplaceRuleReminderTime: "10:00",
   ticketMarketplaceRuleReminderTimezone: "Europe/London",
   ticketMarketplaceRuleReminderText: "",
+  ticketMarketplaceRuleReminderMinActivityMessages: 3,
   ticketSpotlightEnabled: true,
   ticketSpotlightSellingEnabled: true,
   ticketSpotlightBuyingEnabled: true,
@@ -70,7 +74,7 @@ describe("ticket marketplace rule reminder", () => {
   });
 
   it("sends once per marketplace group after the configured local time", async () => {
-    const { runTicketMarketplaceRuleReminderTick } = await import("../ruleReminder.js");
+    const { recordTicketMarketplaceRuleReminderActivity, runTicketMarketplaceRuleReminderTick } = await import("../ruleReminder.js");
     const sendMessage = vi.fn().mockResolvedValue(undefined);
     const groupMetadata = vi.fn().mockResolvedValue({ desc: "1. Face value only\n2. No screenshots" });
     const sock = { groupMetadata, sendMessage };
@@ -105,6 +109,69 @@ describe("ticket marketplace rule reminder", () => {
       sock as never,
       config,
       new Date("2026-04-25T09:00:00.000Z"),
+    );
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+
+    recordTicketMarketplaceRuleReminderActivity("market@g.us", new Date("2026-04-25T12:00:00.000Z"));
+
+    await runTicketMarketplaceRuleReminderTick(
+      sock as never,
+      config,
+      new Date("2026-04-25T12:01:00.000Z"),
+    );
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+
+    recordTicketMarketplaceRuleReminderActivity("market@g.us", new Date("2026-04-25T12:02:00.000Z"));
+    recordTicketMarketplaceRuleReminderActivity("market@g.us", new Date("2026-04-25T12:03:00.000Z"));
+
+    await runTicketMarketplaceRuleReminderTick(
+      sock as never,
+      config,
+      new Date("2026-04-25T12:04:00.000Z"),
+    );
+
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+
+    await runTicketMarketplaceRuleReminderTick(
+      sock as never,
+      config,
+      new Date("2026-04-26T09:00:00.000Z"),
+    );
+
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+
+    recordTicketMarketplaceRuleReminderActivity("market@g.us", new Date("2026-04-26T12:00:00.000Z"));
+    recordTicketMarketplaceRuleReminderActivity("market@g.us", new Date("2026-04-26T12:01:00.000Z"));
+    recordTicketMarketplaceRuleReminderActivity("market@g.us", new Date("2026-04-26T12:02:00.000Z"));
+
+    await runTicketMarketplaceRuleReminderTick(
+      sock as never,
+      config,
+      new Date("2026-04-26T12:03:00.000Z"),
+    );
+
+    expect(sendMessage).toHaveBeenCalledTimes(3);
+  });
+
+  it("allows the activity threshold to be configured", async () => {
+    const { recordTicketMarketplaceRuleReminderActivity, runTicketMarketplaceRuleReminderTick } = await import("../ruleReminder.js");
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const groupMetadata = vi.fn().mockResolvedValue({ desc: null });
+    const sock = { groupMetadata, sendMessage };
+    const oneActivityConfig = { ...config, ticketMarketplaceRuleReminderMinActivityMessages: 1 };
+
+    await runTicketMarketplaceRuleReminderTick(
+      sock as never,
+      oneActivityConfig,
+      new Date("2026-04-24T09:00:00.000Z"),
+    );
+    recordTicketMarketplaceRuleReminderActivity("market@g.us", new Date("2026-04-25T12:00:00.000Z"));
+    await runTicketMarketplaceRuleReminderTick(
+      sock as never,
+      oneActivityConfig,
+      new Date("2026-04-25T12:01:00.000Z"),
     );
 
     expect(sendMessage).toHaveBeenCalledTimes(2);

@@ -13,6 +13,9 @@ const DEFAULT_TIME_ZONE = "Europe/London";
 
 type RuleReminderState = {
   sentLocalDateByGroupJid: Record<string, string>;
+  lastSentAtByGroupJid: Record<string, string>;
+  lastActivityAtByGroupJid: Record<string, string>;
+  activityCountSinceLastReminderByGroupJid: Record<string, number>;
 };
 
 type RuleReminderSocket = Pick<WASocket, "groupMetadata" | "sendMessage">;
@@ -22,7 +25,28 @@ let reminderRunning = false;
 
 const defaultState = (): RuleReminderState => ({
   sentLocalDateByGroupJid: {},
+  lastSentAtByGroupJid: {},
+  lastActivityAtByGroupJid: {},
+  activityCountSinceLastReminderByGroupJid: {},
 });
+
+const readStringRecord = (value: unknown): Record<string, string> =>
+  value && typeof value === "object"
+    ? Object.fromEntries(
+        Object.entries(value).filter(
+          (entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string",
+        ),
+      )
+    : {};
+
+const readNumberRecord = (value: unknown): Record<string, number> =>
+  value && typeof value === "object"
+    ? Object.fromEntries(
+        Object.entries(value).filter(
+          (entry): entry is [string, number] => typeof entry[0] === "string" && typeof entry[1] === "number",
+        ),
+      )
+    : {};
 
 const readState = (): RuleReminderState => {
   if (!existsSync(RULE_REMINDER_STATE_PATH)) {
@@ -32,14 +56,10 @@ const readState = (): RuleReminderState => {
   try {
     const parsed = JSON.parse(readFileSync(RULE_REMINDER_STATE_PATH, "utf8")) as Partial<RuleReminderState>;
     return {
-      sentLocalDateByGroupJid:
-        parsed.sentLocalDateByGroupJid && typeof parsed.sentLocalDateByGroupJid === "object"
-          ? Object.fromEntries(
-              Object.entries(parsed.sentLocalDateByGroupJid).filter(
-                (entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string",
-              ),
-            )
-          : {},
+      sentLocalDateByGroupJid: readStringRecord(parsed.sentLocalDateByGroupJid),
+      lastSentAtByGroupJid: readStringRecord(parsed.lastSentAtByGroupJid),
+      lastActivityAtByGroupJid: readStringRecord(parsed.lastActivityAtByGroupJid),
+      activityCountSinceLastReminderByGroupJid: readNumberRecord(parsed.activityCountSinceLastReminderByGroupJid),
     };
   } catch {
     return defaultState();
@@ -127,6 +147,26 @@ const getGroupDescription = async (sock: RuleReminderSocket, groupJid: string): 
   }
 };
 
+export const recordTicketMarketplaceRuleReminderActivity = (groupJid: string, now = new Date()): void => {
+  const state = readState();
+  state.lastActivityAtByGroupJid[groupJid] = now.toISOString();
+  state.activityCountSinceLastReminderByGroupJid[groupJid] =
+    (state.activityCountSinceLastReminderByGroupJid[groupJid] ?? 0) + 1;
+  writeState(state);
+};
+
+const hasEnoughActivitySinceLastReminder = (state: RuleReminderState, config: Config, groupJid: string): boolean => {
+  const lastSentAt = state.lastSentAtByGroupJid[groupJid];
+  if (!lastSentAt) {
+    return true;
+  }
+
+  return (
+    (state.activityCountSinceLastReminderByGroupJid[groupJid] ?? 0) >=
+    config.ticketMarketplaceRuleReminderMinActivityMessages
+  );
+};
+
 export const runTicketMarketplaceRuleReminderTick = async (
   sock: RuleReminderSocket,
   config: Config,
@@ -152,11 +192,17 @@ export const runTicketMarketplaceRuleReminderTick = async (
         continue;
       }
 
+      if (!hasEnoughActivitySinceLastReminder(state, config, groupJid)) {
+        continue;
+      }
+
       try {
         const groupDescription = await getGroupDescription(sock, groupJid);
         const message = buildTicketMarketplaceRuleReminderMessage(config, groupDescription);
         await sock.sendMessage(groupJid, { text: message });
         state.sentLocalDateByGroupJid[groupJid] = localDateKey;
+        state.lastSentAtByGroupJid[groupJid] = now.toISOString();
+        state.activityCountSinceLastReminderByGroupJid[groupJid] = 0;
         writeState(state);
       } catch (sendError) {
         warn("Failed to send ticket marketplace rule reminder", { groupJid, error: sendError });

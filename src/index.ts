@@ -44,6 +44,7 @@ import { getSpotlightEligibility } from "./moderation/ticketMarketplace/spotligh
 import { startSpotlightScheduler, stopSpotlightScheduler } from "./moderation/ticketMarketplace/spotlight/scheduler.js";
 import { cancelSpotlightsForSource, hasPendingSpotlightForSender, queueSpotlight } from "./moderation/ticketMarketplace/spotlight/store.js";
 import {
+  recordTicketMarketplaceRuleReminderActivity,
   startTicketMarketplaceRuleReminderScheduler,
   stopTicketMarketplaceRuleReminderScheduler,
 } from "./moderation/ticketMarketplace/ruleReminder.js";
@@ -73,7 +74,11 @@ import {
 import { extractAllIdentifiers, isProtectedGroupMember, parseToJid } from "./utils.js";
 import { STARTED_AT, VERSION } from "./version.js";
 
-const spamDetector = new SpamDetector();
+const spamDetector = new SpamDetector({
+  duplicateMinLength: config.spamDuplicateMinLength,
+  floodWarnMessageLimit: config.spamFloodWarnMessageLimit,
+  floodDeleteMessageLimit: config.spamFloodDeleteMessageLimit,
+});
 const discoveredGroups = new Map<string, string>();
 const discoveredGroupMetadata = new Map<string, GroupMetadata>();
 const mutedMessageCounts = new Map<string, number>();
@@ -844,6 +849,10 @@ Push name: ${getPushName(msg) ?? "unknown"}`,
       return;
     }
 
+    if (config.ticketMarketplaceGroupJids.includes(groupJid)) {
+      recordTicketMarketplaceRuleReminderActivity(groupJid);
+    }
+
     if (text) {
       const handledGroupCommand = await handleGroupCommand(
         sock,
@@ -1331,7 +1340,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
       return;
     }
 
-    const spamResult = spamDetector.check(sender.userId, text);
+    const spamResult = spamDetector.check(sender.userId, groupJid, text);
     if (!spamResult.spam) {
       return;
     }

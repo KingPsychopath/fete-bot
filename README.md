@@ -84,7 +84,7 @@ Notes:
 - `ALLOWED_GROUP_JIDS` is optional; when empty, the bot acts in all joined groups
 - `TICKET_MARKETPLACE_MANAGEMENT=true` by default
 - `TICKET_MARKETPLACE_GROUP_JIDS` is comma-separated and defaults to `120363418331899807@g.us`
-- `TICKET_MARKETPLACE_RULE_REMINDER_ENABLED=true` sends a daily marketplace rules reminder after `TICKET_MARKETPLACE_RULE_REMINDER_TIME` in `TICKET_MARKETPLACE_RULE_REMINDER_TIMEZONE`
+- `TICKET_MARKETPLACE_RULE_REMINDER_ENABLED=true` sends a daily marketplace rules reminder after `TICKET_MARKETPLACE_RULE_REMINDER_TIME` in `TICKET_MARKETPLACE_RULE_REMINDER_TIMEZONE`; after a reminder, it waits for `TICKET_MARKETPLACE_RULE_REMINDER_MIN_ACTIVITY_MESSAGES` observed chat messages before sending another
 - `TICKET_SPOTLIGHT_ENABLED=true` by default; seller spotlights are enabled, buying spotlights are off by default for the first rollout
 - `TICKET_SPOTLIGHT_TARGET_JIDS` defaults to FDLM General 2, FDLM General, and FDLM Parties & Events
 - `OWNER_JIDS`, database moderators, and WhatsApp group admins are never moderated
@@ -135,8 +135,9 @@ Special rules:
 ### Spam detection
 
 - WhatsApp invite links are removed
-- Same message sent 3+ times within 5 minutes by the same sender is treated as duplicate spam
-- 20+ messages within 60 seconds by the same sender is treated as flooding
+- Same message sent 3+ times within 5 minutes by the same sender in the same group is treated as duplicate spam, but only when the message is at least 20 characters
+- 20+ messages within 60 seconds by the same sender in the same group gets a flood warning
+- 25+ messages within 60 seconds by the same sender in the same group is treated as flooding and deleted
 - Phone numbers trigger a warning only, not a deletion
 - Forwarded / heavily forwarded messages are logged for audit only
 

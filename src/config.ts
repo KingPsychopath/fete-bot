@@ -71,6 +71,8 @@ const DEFAULT_TICKET_SPOTLIGHT_TARGET_JIDS = [
   "120363401608823361@g.us",
 ].join(",");
 
+const spamFloodWarnMessageLimit = parsePositiveInteger(process.env.SPAM_FLOOD_WARN_MESSAGE_LIMIT, 20);
+
 export const NEVER_SPOTLIGHT_GROUP_JIDS = [
   "120363399525661721@g.us",
   "120363418642438451@g.us",
@@ -81,6 +83,12 @@ const loadedConfig = {
   allowedGroupJids: parseList(process.env.ALLOWED_GROUP_JIDS),
   ownerJids: parseList(process.env.OWNER_JIDS),
   muteOnStrike3: parseBoolean(process.env.MUTE_ON_STRIKE_3, true),
+  spamDuplicateMinLength: parsePositiveInteger(process.env.SPAM_DUPLICATE_MIN_LENGTH, 20),
+  spamFloodWarnMessageLimit,
+  spamFloodDeleteMessageLimit: Math.max(
+    parsePositiveInteger(process.env.SPAM_FLOOD_DELETE_MESSAGE_LIMIT, 25),
+    spamFloodWarnMessageLimit + 1,
+  ),
   defaultPhoneRegion: normaliseEnvValue(process.env.DEFAULT_PHONE_REGION)?.toUpperCase() || null,
   botName: normaliseEnvValue(process.env.BOT_NAME) || "Fete Bot",
   ticketMarketplaceManagement: parseBoolean(process.env.TICKET_MARKETPLACE_MANAGEMENT, true),
@@ -91,6 +99,10 @@ const loadedConfig = {
   ticketMarketplaceRuleReminderTimezone:
     normaliseEnvValue(process.env.TICKET_MARKETPLACE_RULE_REMINDER_TIMEZONE) || "Europe/London",
   ticketMarketplaceRuleReminderText: normaliseEnvValue(process.env.TICKET_MARKETPLACE_RULE_REMINDER_TEXT) || "",
+  ticketMarketplaceRuleReminderMinActivityMessages: parsePositiveInteger(
+    process.env.TICKET_MARKETPLACE_RULE_REMINDER_MIN_ACTIVITY_MESSAGES,
+    3,
+  ),
   ticketSpotlightEnabled: parseBoolean(process.env.TICKET_SPOTLIGHT_ENABLED, true),
   ticketSpotlightSellingEnabled: parseBoolean(process.env.TICKET_SPOTLIGHT_SELLING_ENABLED, true),
   ticketSpotlightBuyingEnabled: parseBoolean(process.env.TICKET_SPOTLIGHT_BUYING_ENABLED, false),
