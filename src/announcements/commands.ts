@@ -25,11 +25,17 @@ import { sendAnnouncementBundleNow } from "./scheduler.js";
 import {
   analyseAnnouncementMentions,
   buildAnnouncementMentionCandidates,
+  buildGroupMentionContext,
   type AnnouncementMentionCandidate,
 } from "./mentions.js";
 
 type AnnouncementCommandActor = AnnouncementActor & {
   role: "owner" | "moderator";
+};
+
+type AnnouncementCommandOptions = {
+  allowedSubcommands?: readonly string[];
+  restrictedMessage?: string;
 };
 
 type PendingConfirmation = {
@@ -55,6 +61,7 @@ Use this in DM with the bot. Queue positions are the numbers shown by !announce 
 6. Send the live bundle to yourself: !announce test
 7. Check timing/status: !announce next
 8. Run a final safety check: !announce check
+9. Owner-only real group test: !announce test-group {groupJid}
 
 *Important*
 - publish does not send immediately.
@@ -84,6 +91,7 @@ Use this in DM with the bot. Queue positions are the numbers shown by !announce 
 
 *Owner only*
 !announce send-now
+!announce test-group {groupJid}
 
 Commands that can remove, reschedule, or send to the real announcements chat ask for a confirmation token first.`;
 
@@ -213,6 +221,29 @@ Queue:
 ${itemLines}`;
 };
 
+const sleep = (delayMs: number): Promise<void> =>
+  delayMs > 0 ? new Promise((resolve) => setTimeout(resolve, delayMs)) : Promise.resolve();
+
+const sendActiveBundleToGroup = async (
+  sock: Pick<WASocket, "sendMessage">,
+  targetGroupJid: string,
+  candidates: readonly AnnouncementMentionCandidate[],
+): Promise<number> => {
+  const active = listActiveAnnouncementItems();
+  let sent = 0;
+  for (const [index, item] of active.entries()) {
+    if (index > 0) {
+      await sleep(1_500);
+    }
+
+    const contextInfo = buildGroupMentionContext(item.body, candidates);
+    await sock.sendMessage(targetGroupJid, contextInfo ? { text: item.body, contextInfo } : { text: item.body });
+    sent += 1;
+  }
+
+  return sent;
+};
+
 const requireQuotedText = async (
   sock: Pick<WASocket, "sendMessage">,
   replyJid: string,
@@ -236,6 +267,7 @@ export const handleAnnouncementCommand = async (
   quotedText: string | null,
   config: Config,
   groups: ReadonlyMap<string, string>,
+  options: AnnouncementCommandOptions = {},
 ): Promise<boolean> => {
   const confirmation = consumeConfirmation(actor.userId ?? actor.label, text);
   if (confirmation) {
@@ -254,6 +286,13 @@ export const handleAnnouncementCommand = async (
   ensureAnnouncementState(config);
   const subcommand = tokens[1]?.toLowerCase() ?? "list";
   const mentionCandidates = buildAnnouncementMentionCandidates(config.announcementsGroupMentions, groups);
+
+  if (options.allowedSubcommands && !options.allowedSubcommands.includes(subcommand)) {
+    await sock.sendMessage(replyJid, {
+      text: options.restrictedMessage ?? "Use DM with the bot for that announcement command.",
+    });
+    return true;
+  }
 
   if (subcommand === "help") {
     await sock.sendMessage(replyJid, { text: ANNOUNCEMENT_HELP_TEXT });
@@ -401,9 +440,41 @@ export const handleAnnouncementCommand = async (
       await sock.sendMessage(replyJid, { text: "No active published announcement items to test." });
       return true;
     }
-    for (const item of active) {
-      await sock.sendMessage(replyJid, { text: item.body });
+    await sendActiveBundleToGroup(sock, replyJid, mentionCandidates);
+    return true;
+  }
+
+  if (subcommand === "test-group" || subcommand === "test-chat") {
+    if (actor.role !== "owner") {
+      await sock.sendMessage(replyJid, { text: "Only owners can use !announce test-group." });
+      return true;
     }
+
+    const targetGroupJid = tokens[2] === "target"
+      ? config.announcementsTargetGroupJid
+      : tokens[2];
+    if (!targetGroupJid?.endsWith("@g.us")) {
+      await sock.sendMessage(replyJid, { text: "Usage: !announce test-group {groupJid|target}" });
+      return true;
+    }
+
+    const activeCount = listActiveAnnouncementItems().length;
+    if (activeCount === 0) {
+      await sock.sendMessage(replyJid, { text: "No active published announcement items to test." });
+      return true;
+    }
+
+    const targetLabel = groups.get(targetGroupJid) ?? targetGroupJid;
+    await requestConfirmation(
+      sock,
+      replyJid,
+      actor.userId ?? actor.label,
+      `Send ${activeCount} active announcement test item(s) to ${targetLabel} (${targetGroupJid}) without advancing the schedule?`,
+      async () => {
+        const sent = await sendActiveBundleToGroup(sock, targetGroupJid, mentionCandidates);
+        return `Sent ${sent} announcement test item(s) to ${targetLabel}. The recurring schedule was not changed.`;
+      },
+    );
     return true;
   }
 
@@ -426,7 +497,7 @@ export const handleAnnouncementCommand = async (
   }
 
   await sock.sendMessage(replyJid, {
-    text: "Usage: !announce help | list | show | preview | next | check | add | edit | publish | on | off | move | remove | schedule | pause | resume | test | send-now",
+    text: "Usage: !announce help | list | show | preview | next | check | add | edit | publish | on | off | move | remove | schedule | pause | resume | test | test-group | send-now",
   });
   return true;
 };

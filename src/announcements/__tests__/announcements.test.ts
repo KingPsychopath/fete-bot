@@ -228,6 +228,98 @@ describe("announcements", () => {
     );
   });
 
+  it("can send an owner-confirmed group test without advancing the schedule", async () => {
+    const { store } = await setup();
+    const item = store.addAnnouncementItem("Hey @FDLM General", actor);
+    store.publishAnnouncementItem(item.id, actor);
+    const { handleAnnouncementCommand } = await import("../commands.js");
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+
+    await handleAnnouncementCommand(
+      { sendMessage } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "owner@s.whatsapp.net",
+      "!announce test-group test@g.us",
+      null,
+      config,
+      new Map([["test@g.us", "Test Group"]]),
+    );
+
+    const confirmation = sendMessage.mock.calls[0]?.[1]?.text.match(/confirm [a-z0-9]+/u)?.[0];
+    expect(confirmation).toBeTruthy();
+
+    await handleAnnouncementCommand(
+      { sendMessage } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "owner@s.whatsapp.net",
+      confirmation!,
+      null,
+      config,
+      new Map([["test@g.us", "Test Group"]]),
+    );
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      "test@g.us",
+      expect.objectContaining({
+        text: "Hey @FDLM General",
+        contextInfo: {
+          groupMentions: [{ groupJid: "general@g.us", groupSubject: "FDLM General" }],
+        },
+      }),
+    );
+    expect(store.getAnnouncementState()?.nextLocalDate).toBe("2026-04-24");
+  });
+
+  it("allows test in restricted group mode but blocks write commands", async () => {
+    const { store } = await setup();
+    const item = store.addAnnouncementItem("Hey @FDLM General", actor);
+    store.publishAnnouncementItem(item.id, actor);
+    const { handleAnnouncementCommand } = await import("../commands.js");
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const options = {
+      allowedSubcommands: ["help", "list", "show", "preview", "next", "check", "test"],
+      restrictedMessage: "Use DM with the bot to manage announcements.",
+    };
+
+    expect(
+      await handleAnnouncementCommand(
+        { sendMessage } as never,
+        { userId: "owner", label: "owner", role: "owner" },
+        "group@g.us",
+        "!announce test",
+        null,
+        config,
+        new Map(),
+        options,
+      ),
+    ).toBe(true);
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      "group@g.us",
+      expect.objectContaining({
+        text: "Hey @FDLM General",
+        contextInfo: {
+          groupMentions: [{ groupJid: "general@g.us", groupSubject: "FDLM General" }],
+        },
+      }),
+    );
+
+    await handleAnnouncementCommand(
+      { sendMessage } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "group@g.us",
+      "!announce publish 1",
+      null,
+      config,
+      new Map(),
+      options,
+    );
+
+    expect(sendMessage).toHaveBeenCalledWith("group@g.us", {
+      text: "Use DM with the bot to manage announcements.",
+    });
+  });
+
   it("sends cycle snapshots and retries failures without picking up later edits", async () => {
     const { db, store } = await setup();
     const scheduler = await import("../scheduler.js");

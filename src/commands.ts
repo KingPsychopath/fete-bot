@@ -98,7 +98,7 @@ const HELP_MESSAGE = `*Fete Bot — Admin Help*
   !spotlights   {limit?}
   !spotlight-history {limit?}
   !spotlight-requeue {messageId|rowId} {minutes?}
-  !announce     help|list|show|preview|next|check|add|edit|publish|on|off|move|remove|schedule|pause|resume|test|send-now
+  !announce     help|list|show|preview|next|check|add|edit|publish|on|off|move|remove|schedule|pause|resume|test|test-group|send-now
   !bans         {groupJid?}
   !mutes        {groupJid?}
   !audit        {limit?}
@@ -1155,6 +1155,30 @@ export async function handleGroupCommand(
     await handleTicketMarketplaceDeletionCommand(sock, actorContext.participantJid ?? groupJid, actorContext, text);
     logAudit(actorContext, command, null, null, groupJid, text, "success");
     return true;
+  }
+
+  if (command === "!announce" || command === "!announcements") {
+    const handledAnnouncementCommand = await handleAnnouncementCommand(
+      sock,
+      {
+        userId: actorContext.userId,
+        label: actorContext.participantJid ?? actorContext.userId,
+        role: actorContext.actorRole,
+      },
+      groupJid,
+      text,
+      null,
+      config,
+      groups,
+      {
+        allowedSubcommands: ["help", "list", "show", "preview", "next", "check", "test"],
+        restrictedMessage: "Use DM with the bot to add, edit, publish, remove, schedule, or send announcements.",
+      },
+    );
+    if (handledAnnouncementCommand) {
+      logAudit(actorContext, "!announce", null, null, groupJid, text, "success");
+      return true;
+    }
   }
 
   if (!quotedParticipant) {

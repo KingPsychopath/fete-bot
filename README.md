@@ -281,6 +281,7 @@ Owners and moderators can control the bot in two ways:
 - `!announce schedule YYYY-MM-DD HH:mm`
 - `!announce pause` / `!announce resume`
 - `!announce test`
+- `!announce test-group {groupJid|target}` owner-only, sends a test to a real group without advancing the schedule
 - `!announce send-now` owner-only
 - `!ban {jid or number} {groupJid?} {reason?}`
 - `!unban {jid or number} {groupJid}`
