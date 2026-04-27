@@ -6,6 +6,7 @@ import makeWASocket, {
   type AnyMessageContent,
   type MiscMessageGenerationOptions,
   type WASocket,
+  type WACallEvent,
   type WAMessage,
   type WAMessageKey,
 } from "@whiskeysockets/baileys";
@@ -82,6 +83,7 @@ const spamDetector = new SpamDetector({
 const discoveredGroups = new Map<string, string>();
 const discoveredGroupMetadata = new Map<string, GroupMetadata>();
 const mutedMessageCounts = new Map<string, number>();
+const handledCallOfferIds = new Set<string>();
 const ticketMarketplaceReplyCooldown = new TicketMarketplaceReplyCooldown();
 let strikePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let mutePurgeTimer: ReturnType<typeof setInterval> | null = null;
@@ -346,6 +348,13 @@ const getSpamWarningText = (
   return `Hey ${mentionLabel} - please don't share phone numbers in the group. For event info use fete.outofofficecollective.co.uk 🙏`;
 };
 
+const getGroupCallWarningText = (callerJid: string): string => {
+  const mentionTargetJid = getMentionTargetJid(callerJid);
+  const mentionToken = mentionTargetJid ? (mentionTargetJid.split("@")[0] ?? "there") : "there";
+  const mentionLabel = mentionToken === "there" ? "there" : `@${mentionToken}`;
+  return config.groupCallGuardWarningText.replace(/\{mention\}/gu, mentionLabel);
+};
+
 const appendStrikeWarning = (warningText: string, strikeCount: number): string => {
   if (strikeCount === 2) {
     return `${warningText}\n\n⚠️ This is your second warning — one more and you'll be removed from the group.`;
@@ -418,6 +427,21 @@ const logConfig = (): void => {
 const isManagedGroup = (groupJid: string): boolean =>
   config.allowedGroupJids.length === 0 || config.allowedGroupJids.includes(groupJid);
 
+const isGroupCallGuarded = (groupJid: string): boolean =>
+  config.groupCallGuardEnabled &&
+  isManagedGroup(groupJid) &&
+  (config.groupCallGuardGroupJids.length === 0 || config.groupCallGuardGroupJids.includes(groupJid));
+
+const getCallGroupJid = (call: WACallEvent): string | null => {
+  for (const candidate of [call.groupJid, call.chatId]) {
+    if (candidate?.endsWith("@g.us")) {
+      return candidate;
+    }
+  }
+
+  return null;
+};
+
 const getEffectiveTicketSpotlightTargetJids = (): string[] => {
   const candidateTargetJids = config.ticketSpotlightTargetJids.length > 0
     ? config.ticketSpotlightTargetJids
@@ -429,6 +453,57 @@ const getEffectiveTicketSpotlightTargetJids = (): string[] => {
       !config.ticketMarketplaceGroupJids.includes(groupJid) &&
       !NEVER_SPOTLIGHT_GROUP_JIDS.includes(groupJid as (typeof NEVER_SPOTLIGHT_GROUP_JIDS)[number]),
   );
+};
+
+const handleCall = async (sock: WASocket, call: WACallEvent): Promise<void> => {
+  if (call.status !== "offer") {
+    handledCallOfferIds.delete(call.id);
+    return;
+  }
+
+  if (handledCallOfferIds.has(call.id)) {
+    return;
+  }
+
+  const groupJid = getCallGroupJid(call);
+  if (!groupJid || !call.isGroup || !isGroupCallGuarded(groupJid)) {
+    return;
+  }
+
+  handledCallOfferIds.add(call.id);
+  const warningText = getGroupCallWarningText(call.from);
+  const mentionTargetJid = getMentionTargetJid(call.from);
+
+  if (config.dryRun) {
+    warn("Dry run: would reject group call and send warning", {
+      callId: call.id,
+      groupJid,
+      callerJid: call.from,
+      isVideo: call.isVideo,
+      wouldSendText: warningText,
+    });
+    return;
+  }
+
+  try {
+    await sock.rejectCall(call.id, call.from);
+    await sendModerationMessage(sock, groupJid, warningText, mentionTargetJid);
+    warn("Rejected group call and warned chat", {
+      callId: call.id,
+      groupJid,
+      callerJid: call.from,
+      isVideo: call.isVideo,
+    });
+  } catch (callGuardError) {
+    handledCallOfferIds.delete(call.id);
+    error("Failed to reject group call", {
+      callId: call.id,
+      groupJid,
+      callerJid: call.from,
+      isVideo: call.isVideo,
+      error: callGuardError,
+    });
+  }
 };
 
 const isSelfParticipant = (
@@ -1684,6 +1759,12 @@ Use !unban ${participant.knownAliases[0] ?? participant.userId} ${update.id} to 
   sock.ev.on("messages.upsert", ({ messages }) => {
     for (const message of messages) {
       void handleMessage(sock, message);
+    }
+  });
+
+  sock.ev.on("call", (calls) => {
+    for (const call of calls) {
+      void handleCall(sock, call);
     }
   });
 

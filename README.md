@@ -82,6 +82,8 @@ Notes:
 
 - `DRY_RUN=true` by default
 - `ALLOWED_GROUP_JIDS` is optional; when empty, the bot acts in all joined groups
+- `GROUP_CALL_GUARD_ENABLED=true` rejects incoming group calls in guarded chats and warns the caller in the group
+- `GROUP_CALL_GUARD_GROUP_JIDS` is optional; when empty, call guarding applies to all managed groups
 - `TICKET_MARKETPLACE_MANAGEMENT=true` by default
 - `TICKET_MARKETPLACE_GROUP_JIDS` is comma-separated and defaults to `120363418331899807@g.us`
 - `TICKET_MARKETPLACE_RULE_REMINDER_ENABLED=true` sends a daily marketplace rules reminder after `TICKET_MARKETPLACE_RULE_REMINDER_TIME` in `TICKET_MARKETPLACE_RULE_REMINDER_TIMEZONE`; after a reminder, it waits for `TICKET_MARKETPLACE_RULE_REMINDER_MIN_ACTIVITY_MESSAGES` observed chat messages before sending another
@@ -140,6 +142,13 @@ Special rules:
 - 25+ messages within 60 seconds by the same sender in the same group is treated as flooding and deleted
 - Phone numbers trigger a warning only, not a deletion
 - Forwarded / heavily forwarded messages are logged for audit only
+
+### Group call guard
+
+- Incoming audio and video group calls are rejected when `GROUP_CALL_GUARD_ENABLED=true`
+- `GROUP_CALL_GUARD_GROUP_JIDS` follows the same empty-list behavior as group JID config: empty applies to all managed groups; a comma-separated list applies only to those groups
+- The bot sends `GROUP_CALL_GUARD_WARNING_TEXT` in the group after rejecting the call; use `{mention}` where the caller mention should appear
+- `DRY_RUN=true` logs what would happen without rejecting the call or sending the warning
 
 ### Ticket marketplace routing
 
@@ -475,6 +484,9 @@ Notes:
 - `OWNER_JIDS=447911123456@s.whatsapp.net,447922234567@s.whatsapp.net`
 - `BOT_NAME=Fete Bot`
 - `PORT=3000`
+- `GROUP_CALL_GUARD_ENABLED=true|false`
+- `GROUP_CALL_GUARD_GROUP_JIDS=120363...@g.us,120363...@g.us`
+- `GROUP_CALL_GUARD_WARNING_TEXT=Hey {mention} - calls aren't allowed in this group, so I ended that call. Don't do that again. 🙏🏾`
 
 ## Getting Group JIDs
 
@@ -523,6 +535,7 @@ Notes:
 
 - The bot must be an admin in each moderated group to delete messages or remove members
 - `DRY_RUN=true` still logs what would happen, but does not delete or send moderation replies
+- With `DRY_RUN=false`, group call guard rejects calls and sends its warning immediately
 - Ticket marketplace routing replies to buying/selling intent without adding strikes; `!ticketdelete on` enables deletion after the reply
 - Ticket spotlight reposts are enabled by default and use SQLite claims to avoid duplicate sends across overlapping bot processes
 - Ticket-platform links get a specific redirect message to `fete.outofofficecollective.co.uk`
