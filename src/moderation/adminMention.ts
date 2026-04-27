@@ -17,7 +17,7 @@ export const ADMIN_MENTION_REPLIES = [
   "I have arrived. Unfortunately.",
   "Calling admin is not a toy, you know",
   "Somebody say my government name?",
-  "Who's claaling me from an unknown number",
+  "Who's calling me from an unknown number",
   "Please hold while I pretend to be professional",
   "Who do I have to side-eye today?",
 ] as const;
