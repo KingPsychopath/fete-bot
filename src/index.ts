@@ -87,7 +87,7 @@ const discoveredGroups = new Map<string, string>();
 const discoveredGroupMetadata = new Map<string, GroupMetadata>();
 const mutedMessageCounts = new Map<string, number>();
 const handledCallOfferIds = new Set<string>();
-const callGuardRecentActivityByUserId = new Map<string, Map<string, number>>();
+const callGuardRecentActivityByKey = new Map<string, Map<string, number>>();
 const callGuardWarningLastSentByKey = new Map<string, number>();
 const ticketMarketplaceReplyCooldown = new TicketMarketplaceReplyCooldown(
   config.ticketMarketplaceReplyCooldownMinutes * 60 * 1000,
@@ -474,26 +474,85 @@ const shouldSendCallGuardWarning = (userId: string, groupJid: string, nowMs: num
   return true;
 };
 
-const recordCallGuardRecentActivity = (userId: string, groupJid: string, nowMs = Date.now()): void => {
-  const groupActivity = callGuardRecentActivityByUserId.get(userId) ?? new Map<string, number>();
-  groupActivity.set(groupJid, nowMs);
-  callGuardRecentActivityByUserId.set(userId, groupActivity);
-};
-
-const getCallGuardRecentGroupCandidates = (userId: string, nowMs = Date.now()): string[] => {
-  const groupActivity = callGuardRecentActivityByUserId.get(userId);
-  if (!groupActivity) {
-    return [];
+const normaliseCallGuardActivityKey = (value: string | null | undefined): string | null => {
+  if (!value) {
+    return null;
   }
 
-  const cutoff = nowMs - getCallGuardRecentActivityTtlMs();
-  return Array.from(groupActivity.entries())
-    .filter(([groupJid, lastActiveAt]) => lastActiveAt > cutoff && isGroupCallGuarded(groupJid))
-    .map(([groupJid]) => groupJid);
+  return normalizeJid(value);
 };
 
-const getInferredCallGuardGroupJid = (userId: string, nowMs = Date.now()): string | null => {
-  const candidates = getCallGuardRecentGroupCandidates(userId, nowMs);
+const getCallGuardActivityKeys = (values: ReadonlyArray<string | null | undefined>): string[] =>
+  Array.from(new Set(values.map(normaliseCallGuardActivityKey).filter((value): value is string => Boolean(value))));
+
+const recordCallGuardRecentActivity = (
+  keys: readonly string[],
+  groupJid: string,
+  nowMs = Date.now(),
+): void => {
+  for (const key of keys) {
+    const groupActivity = callGuardRecentActivityByKey.get(key) ?? new Map<string, number>();
+    groupActivity.set(groupJid, nowMs);
+    callGuardRecentActivityByKey.set(key, groupActivity);
+  }
+};
+
+const getCallGuardRecentGroupCandidates = (keys: readonly string[], nowMs = Date.now()): string[] => {
+  const cutoff = nowMs - getCallGuardRecentActivityTtlMs();
+  const candidates = new Set<string>();
+
+  for (const key of keys) {
+    const groupActivity = callGuardRecentActivityByKey.get(key);
+    if (!groupActivity) {
+      continue;
+    }
+
+    for (const [groupJid, lastActiveAt] of groupActivity.entries()) {
+      if (lastActiveAt > cutoff && isGroupCallGuarded(groupJid)) {
+        candidates.add(groupJid);
+      }
+    }
+  }
+
+  return Array.from(candidates);
+};
+
+const recordCallGuardRecentActivityForUser = (
+  user: ResolvedUser,
+  extraAliases: ReadonlyArray<string | null | undefined>,
+  groupJid: string,
+  nowMs = Date.now(),
+): void => {
+  const keys = getCallGuardActivityKeys([
+    user.userId,
+    user.participantJid,
+    ...user.knownAliases,
+    ...extraAliases,
+  ]);
+  recordCallGuardRecentActivity(keys, groupJid, nowMs);
+};
+
+const getCallGuardActivityKeysForCall = (call: WACallEvent, caller: ResolvedUser): string[] =>
+  getCallGuardActivityKeys([
+    caller.userId,
+    caller.participantJid,
+    ...caller.knownAliases,
+    call.from,
+    call.chatId,
+  ]);
+
+const getCallGuardRecentGroupCandidatesForCall = (
+  call: WACallEvent,
+  caller: ResolvedUser,
+  nowMs = Date.now(),
+): string[] => getCallGuardRecentGroupCandidates(getCallGuardActivityKeysForCall(call, caller), nowMs);
+
+const getInferredCallGuardGroupJidForCall = (
+  call: WACallEvent,
+  caller: ResolvedUser,
+  nowMs = Date.now(),
+): string | null => {
+  const candidates = getCallGuardRecentGroupCandidatesForCall(call, caller, nowMs);
   return candidates.length === 1 ? candidates[0] ?? null : null;
 };
 
@@ -643,7 +702,7 @@ const handleCall = async (sock: WASocket, call: WACallEvent): Promise<void> => {
 
     if (caller) {
       const nowMs = Date.now();
-      const inferredGroupJid = getInferredCallGuardGroupJid(caller.userId, nowMs);
+      const inferredGroupJid = getInferredCallGuardGroupJidForCall(call, caller, nowMs);
       if (inferredGroupJid) {
         if (shouldSendCallGuardWarning(caller.userId, inferredGroupJid, nowMs)) {
           const warned = await sendCallGuardWarning(
@@ -660,10 +719,25 @@ const handleCall = async (sock: WASocket, call: WACallEvent): Promise<void> => {
               detail: "recent_activity_inference",
               nowMs,
             });
+            warn("Warned inferred group for call offer without group JID", {
+              callId: call.id,
+              callerJid: call.from,
+              callerUserId: caller.userId,
+              inferredGroupJid,
+            });
           }
         }
       } else {
-        const candidates = getCallGuardRecentGroupCandidates(caller.userId, nowMs);
+        const activityKeys = getCallGuardActivityKeysForCall(call, caller);
+        const candidates = getCallGuardRecentGroupCandidatesForCall(call, caller, nowMs);
+        warn("Could not infer a unique group for call offer without group JID", {
+          callId: call.id,
+          callerJid: call.from,
+          callerUserId: caller.userId,
+          activityKeys,
+          recentGroupCandidates: candidates,
+          reason: candidates.length === 0 ? "no_recent_group_activity" : "ambiguous_recent_group_activity",
+        });
         auditCallGuard(call, caller, "infer_skip", {
           inferred: true,
           detail: candidates.length === 0 ? "no_recent_group_activity" : `ambiguous_recent_group_activity:${candidates.join(",")}`,
@@ -1192,7 +1266,11 @@ Push name: ${getPushName(msg) ?? "unknown"}`,
       return;
     }
 
-    recordCallGuardRecentActivity(sender.userId, groupJid);
+    recordCallGuardRecentActivityForUser(
+      sender,
+      [senderJid, liveSenderJid, lidJid, phoneJid, canonicalSenderAlias],
+      groupJid,
+    );
 
     if (config.ticketMarketplaceGroupJids.includes(groupJid)) {
       recordTicketMarketplaceRuleReminderActivity(groupJid);
@@ -1942,7 +2020,7 @@ export const startBot = async (): Promise<void> => {
         await runStartupHealthCheck(sock, config, discoveredGroupMetadata);
         startSpotlightScheduler(sock, config, getEffectiveTicketSpotlightTargetJids);
         startTicketMarketplaceRuleReminderScheduler(sock, config);
-        startAnnouncementScheduler(sock, config);
+        startAnnouncementScheduler(sock, config, () => discoveredGroups);
       })();
       return;
     }

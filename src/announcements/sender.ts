@@ -1,26 +1,25 @@
 import type { WASocket } from "@whiskeysockets/baileys";
 
-import type { AnnouncementGroupMentionConfig } from "../config.js";
 import { warn } from "../logger.js";
-import { buildGroupMentionContext } from "./mentions.js";
+import { buildGroupMentionContext, type AnnouncementMentionCandidate } from "./mentions.js";
 import {
   markCycleItemFailed,
   markCycleItemSent,
   type AnnouncementCycleItemRow,
 } from "./store.js";
 
-const parseMentions = (value: string): AnnouncementGroupMentionConfig[] => {
+const parseMentions = (value: string): AnnouncementMentionCandidate[] => {
   try {
     const parsed = JSON.parse(value) as unknown;
     if (!Array.isArray(parsed)) {
       return [];
     }
     return parsed.filter(
-      (entry): entry is AnnouncementGroupMentionConfig =>
+      (entry): entry is AnnouncementMentionCandidate =>
         typeof entry === "object" &&
         entry !== null &&
-        typeof (entry as AnnouncementGroupMentionConfig).label === "string" &&
-        typeof (entry as AnnouncementGroupMentionConfig).jid === "string",
+        typeof (entry as AnnouncementMentionCandidate).label === "string" &&
+        typeof (entry as AnnouncementMentionCandidate).jid === "string",
     );
   } catch {
     return [];

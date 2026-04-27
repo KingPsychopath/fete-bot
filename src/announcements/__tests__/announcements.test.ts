@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Config } from "../../config.js";
-import { buildGroupMentionContext } from "../mentions.js";
+import { buildAnnouncementMentionCandidates, buildGroupMentionContext } from "../mentions.js";
 import { addDaysToLocalDate, isDue } from "../time.js";
 
 let tempDir: string;
@@ -122,6 +122,112 @@ describe("announcements", () => {
     expect(list).not.toContain(first.body);
   });
 
+  it("returns dedicated announcement help text", async () => {
+    await setup();
+    const { handleAnnouncementCommand } = await import("../commands.js");
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+
+    expect(
+      await handleAnnouncementCommand(
+        { sendMessage } as never,
+        { userId: "owner", label: "owner", role: "owner" },
+        "owner@s.whatsapp.net",
+        "!announce help",
+        null,
+        config,
+        new Map(),
+      ),
+    ).toBe(true);
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      "owner@s.whatsapp.net",
+      expect.objectContaining({
+        text: expect.stringContaining("Normal workflow"),
+      }),
+    );
+    expect(sendMessage).toHaveBeenCalledWith(
+      "owner@s.whatsapp.net",
+      expect.objectContaining({
+        text: expect.stringContaining("publish does not send immediately"),
+      }),
+    );
+  });
+
+  it("shows sendability and mention diagnostics for one item", async () => {
+    const { store } = await setup();
+    const item = store.addAnnouncementItem("Hey @FDLM General @Unknown Crew", actor);
+    const { handleAnnouncementCommand } = await import("../commands.js");
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+
+    await handleAnnouncementCommand(
+      { sendMessage } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "owner@s.whatsapp.net",
+      `!announce show ${item.position}`,
+      null,
+      config,
+      new Map(),
+    );
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      "owner@s.whatsapp.net",
+      expect.objectContaining({
+        text: expect.stringContaining("Will send: no - draft"),
+      }),
+    );
+    expect(sendMessage).toHaveBeenCalledWith(
+      "owner@s.whatsapp.net",
+      expect.objectContaining({
+        text: expect.stringContaining("@FDLM General -> FDLM General (general@g.us)"),
+      }),
+    );
+    expect(sendMessage).toHaveBeenCalledWith(
+      "owner@s.whatsapp.net",
+      expect.objectContaining({
+        text: expect.stringContaining("@Unknown Crew"),
+      }),
+    );
+  });
+
+  it("checks the full announcement queue before sending", async () => {
+    const { store } = await setup();
+    const draft = store.addAnnouncementItem("Draft @Unknown Crew", actor);
+    const live = store.addAnnouncementItem("Hey @FDLM General", actor);
+    store.publishAnnouncementItem(live.id, actor);
+    const { handleAnnouncementCommand } = await import("../commands.js");
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+
+    await handleAnnouncementCommand(
+      { sendMessage } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "owner@s.whatsapp.net",
+      "!announce check",
+      null,
+      config,
+      new Map([["announcements@g.us", "Announcements"]]),
+    );
+
+    expect(draft).toBeTruthy();
+    expect(sendMessage).toHaveBeenCalledWith(
+      "owner@s.whatsapp.net",
+      expect.objectContaining({
+        text: expect.stringContaining("Active published items for next cycle: 1"),
+      }),
+    );
+    expect(sendMessage).toHaveBeenCalledWith(
+      "owner@s.whatsapp.net",
+      expect.objectContaining({
+        text: expect.stringContaining("will send: yes"),
+      }),
+    );
+    expect(sendMessage).toHaveBeenCalledWith(
+      "owner@s.whatsapp.net",
+      expect.objectContaining({
+        text: expect.stringContaining("unresolved: @Unknown Crew"),
+      }),
+    );
+  });
+
   it("sends cycle snapshots and retries failures without picking up later edits", async () => {
     const { db, store } = await setup();
     const scheduler = await import("../scheduler.js");
@@ -199,6 +305,23 @@ describe("announcements", () => {
     expect(
       buildGroupMentionContext("Hey @fdlm general", [{ label: "FDLM General", jid: "general@g.us" }]),
     ).toEqual({ groupMentions: [{ groupJid: "general@g.us", groupSubject: "FDLM General" }] });
+  });
+
+  it("builds mention candidates from configured labels, known group names, exact jids, and pasted mention text", () => {
+    const candidates = buildAnnouncementMentionCandidates(
+      [{ label: "FDLM General", jid: "general@g.us" }],
+      new Map([["solo@g.us", "FDLM Solo"]]),
+    );
+
+    expect(buildGroupMentionContext("Hey @⁨FDLM General⁩", candidates)).toEqual({
+      groupMentions: [{ groupJid: "general@g.us", groupSubject: "FDLM General" }],
+    });
+    expect(buildGroupMentionContext("Hey @fdlm solo", candidates)).toEqual({
+      groupMentions: [{ groupJid: "solo@g.us", groupSubject: "FDLM Solo" }],
+    });
+    expect(buildGroupMentionContext("Hey @solo@g.us", candidates)).toEqual({
+      groupMentions: [{ groupJid: "solo@g.us", groupSubject: "FDLM Solo" }],
+    });
   });
 
   it("uses local wall-clock comparisons and calendar-day addition", () => {

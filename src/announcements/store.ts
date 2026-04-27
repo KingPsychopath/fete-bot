@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 
 import { getDb, withImmediateTransaction } from "../db.js";
-import type { AnnouncementGroupMentionConfig, Config } from "../config.js";
+import type { Config } from "../config.js";
+import type { AnnouncementMentionCandidate } from "./mentions.js";
 import { advanceLocalSchedule, nextLocalFromNow, type LocalDateTime } from "./time.js";
 
 export type AnnouncementStatus = "draft" | "published";
@@ -491,7 +492,7 @@ export const listPendingCycleItems = (cycleId: string): AnnouncementCycleItemRow
 export const startAnnouncementCycle = (
   config: Config,
   trigger: "scheduled" | "manual",
-  mentions: readonly AnnouncementGroupMentionConfig[],
+  mentions: readonly AnnouncementMentionCandidate[],
   now = new Date(),
 ): { cycle: AnnouncementCycleRow; items: AnnouncementCycleItemRow[] } =>
   withImmediateTransaction(() => {

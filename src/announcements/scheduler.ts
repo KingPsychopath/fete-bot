@@ -4,6 +4,9 @@ import { randomUUID } from "node:crypto";
 import type { Config } from "../config.js";
 import { log, warn } from "../logger.js";
 import {
+  buildAnnouncementMentionCandidates,
+} from "./mentions.js";
+import {
   advanceAnnouncementSchedule,
   completeAnnouncementCycle,
   ensureAnnouncementState,
@@ -21,12 +24,18 @@ const LARGE_BUNDLE_WARNING_COUNT = 10;
 let schedulerTimer: ReturnType<typeof setInterval> | null = null;
 let schedulerRunning = false;
 const processId = `announcements-${randomUUID()}`;
+type KnownGroupResolver = () => ReadonlyMap<string, string>;
 
 export const runAnnouncementSchedulerTick = async (
   sock: Pick<WASocket, "sendMessage">,
   config: Config,
   now = new Date(),
-  options: { force?: boolean; trigger?: "scheduled" | "manual"; interMessageDelayMs?: number } = {},
+  options: {
+    force?: boolean;
+    trigger?: "scheduled" | "manual";
+    interMessageDelayMs?: number;
+    getKnownGroups?: KnownGroupResolver;
+  } = {},
 ): Promise<void> => {
   if (!config.announcementsEnabled || !config.announcementsTargetGroupJid || schedulerRunning) {
     return;
@@ -62,7 +71,7 @@ export const runAnnouncementSchedulerTick = async (
     const { cycle, items } = startAnnouncementCycle(
       config,
       options.trigger ?? (options.force ? "manual" : "scheduled"),
-      config.announcementsGroupMentions,
+      buildAnnouncementMentionCandidates(config.announcementsGroupMentions, options.getKnownGroups?.()),
       now,
     );
 
@@ -109,27 +118,30 @@ export const sendAnnouncementBundleNow = async (
   sock: Pick<WASocket, "sendMessage">,
   config: Config,
   now = new Date(),
+  getKnownGroups?: KnownGroupResolver,
 ): Promise<void> => {
   await runAnnouncementSchedulerTick(sock, config, now, {
     force: true,
     trigger: "manual",
+    getKnownGroups,
   });
 };
 
 export const startAnnouncementScheduler = (
   sock: Pick<WASocket, "sendMessage">,
   config: Config,
+  getKnownGroups?: KnownGroupResolver,
 ): void => {
   if (!config.announcementsEnabled || schedulerTimer) {
     return;
   }
 
   schedulerTimer = setInterval(() => {
-    void runAnnouncementSchedulerTick(sock, config);
+    void runAnnouncementSchedulerTick(sock, config, new Date(), { getKnownGroups });
   }, POLL_INTERVAL_MS);
   schedulerTimer.unref();
 
-  void runAnnouncementSchedulerTick(sock, config);
+  void runAnnouncementSchedulerTick(sock, config, new Date(), { getKnownGroups });
 };
 
 export const stopAnnouncementScheduler = (): void => {

@@ -17,10 +17,16 @@ import {
   setAnnouncementSchedule,
   updateAnnouncementBody,
   type AnnouncementActor,
+  type AnnouncementQueueItemRow,
 } from "./store.js";
 import { formatBundlePreview, formatNextAnnouncement, formatQueueItem, formatQueueList } from "./format.js";
 import { isValidLocalDate, isValidLocalTime } from "./time.js";
 import { sendAnnouncementBundleNow } from "./scheduler.js";
+import {
+  analyseAnnouncementMentions,
+  buildAnnouncementMentionCandidates,
+  type AnnouncementMentionCandidate,
+} from "./mentions.js";
 
 type AnnouncementCommandActor = AnnouncementActor & {
   role: "owner" | "moderator";
@@ -35,6 +41,51 @@ type PendingConfirmation = {
 
 const CONFIRMATION_TTL_MS = 60_000;
 const pendingConfirmations = new Map<string, PendingConfirmation>();
+
+export const ANNOUNCEMENT_HELP_TEXT = `*Announcement Help*
+
+Use this in DM with the bot. Queue positions are the numbers shown by !announce list.
+
+*Normal workflow*
+1. Send the announcement text to the bot as a normal message.
+2. Reply to that text with: !announce add
+3. Check the draft with: !announce show {position}
+4. When ready: !announce publish {position}
+5. Preview the live bundle: !announce preview
+6. Send the live bundle to yourself: !announce test
+7. Check timing/status: !announce next
+8. Run a final safety check: !announce check
+
+*Important*
+- publish does not send immediately.
+- preview and test only include items that are published and on.
+- show works for drafts, published items, on items, and off items.
+- list only shows compact previews, not full message bodies.
+- To mention group chats, type a configured label like @FDLM General. The bot also understands known group names and exact @120...@g.us group JIDs when it can resolve them.
+
+*Queue commands*
+!announce list
+!announce show {id|position}
+!announce preview
+!announce next
+!announce check
+!announce add
+!announce edit {id|position}
+!announce publish {id|position}
+!announce on {id|position}
+!announce off {id|position}
+!announce move {id|position} {newPosition}
+!announce remove {id|position}
+
+*Schedule commands*
+!announce schedule YYYY-MM-DD HH:mm
+!announce pause
+!announce resume
+
+*Owner only*
+!announce send-now
+
+Commands that can remove, reschedule, or send to the real announcements chat ask for a confirmation token first.`;
 
 const getConfirmToken = (): string => `confirm ${Math.random().toString(36).slice(2, 8)}`;
 
@@ -84,6 +135,84 @@ This confirmation expires in 60 seconds.`,
 
 const parseIdentifier = (tokens: string[]): string | null => tokens[2] ?? null;
 
+const getWillSendReason = (item: AnnouncementQueueItemRow): string => {
+  if (item.status !== "published") {
+    return "no - draft";
+  }
+
+  if (!item.enabled) {
+    return "no - off";
+  }
+
+  return "yes";
+};
+
+const formatMentionDiagnostics = (
+  body: string,
+  candidates: readonly AnnouncementMentionCandidate[],
+): string => {
+  const analysis = analyseAnnouncementMentions(body, candidates);
+  const resolved = analysis.resolved.length > 0
+    ? analysis.resolved.map((mention) => `- ${mention.token} -> ${mention.label} (${mention.jid})`).join("\n")
+    : "- none";
+  const unresolved = analysis.unresolved.length > 0
+    ? analysis.unresolved.map((token) => `- ${token}`).join("\n")
+    : "- none";
+
+  return `Detected mentions:
+${resolved}
+Unresolved @ text:
+${unresolved}`;
+};
+
+const formatQueueItemWithDiagnostics = (
+  item: AnnouncementQueueItemRow,
+  candidates: readonly AnnouncementMentionCandidate[],
+): string => `${formatQueueItem(item)}
+
+Will send: ${getWillSendReason(item)}
+${formatMentionDiagnostics(item.body, candidates)}`;
+
+const formatAnnouncementCheck = (
+  config: Config,
+  groups: ReadonlyMap<string, string>,
+): string => {
+  const state = ensureAnnouncementState(config);
+  const items = listAnnouncementItems();
+  const active = items.filter((item) => item.status === "published" && item.enabled);
+  const candidates = buildAnnouncementMentionCandidates(config.announcementsGroupMentions, groups);
+  const targetLabel = groups.get(config.announcementsTargetGroupJid) ?? (config.announcementsTargetGroupJid || "(not configured)");
+  const targetStatus = config.announcementsTargetGroupJid
+    ? groups.has(config.announcementsTargetGroupJid)
+      ? "configured and known"
+      : "configured but not seen by bot yet"
+    : "missing";
+  const itemLines = items.length > 0
+    ? items.map((item) => {
+        const analysis = analyseAnnouncementMentions(item.body, candidates);
+        const resolved = analysis.resolved.length > 0
+          ? analysis.resolved.map((mention) => `${mention.token}->${mention.label}`).join(", ")
+          : "none";
+        const unresolved = analysis.unresolved.length > 0 ? ` | unresolved: ${analysis.unresolved.join(", ")}` : "";
+        return `${item.position}. ${item.id.slice(0, 8)} | ${item.status} | ${item.enabled ? "on" : "off"} | will send: ${getWillSendReason(item)} | mentions: ${resolved}${unresolved}`;
+      }).join("\n")
+    : "No queue items.";
+  const lastCycle = getLastAnnouncementCycle();
+
+  return `Announcement check
+
+Enabled: ${config.announcementsEnabled ? "yes" : "no"}
+Paused: ${state.paused ? "yes" : "no"}
+Target: ${targetLabel}
+Target status: ${targetStatus}
+Next send: ${state.nextLocalDate} ${state.nextLocalTime} (${state.timezone})
+Active published items for next cycle: ${active.length}
+Last cycle: ${lastCycle ? `${lastCycle.status} at ${lastCycle.completedAt ?? lastCycle.updatedAt}${lastCycle.error ? ` (${lastCycle.error})` : ""}` : "none"}
+
+Queue:
+${itemLines}`;
+};
+
 const requireQuotedText = async (
   sock: Pick<WASocket, "sendMessage">,
   replyJid: string,
@@ -124,6 +253,12 @@ export const handleAnnouncementCommand = async (
 
   ensureAnnouncementState(config);
   const subcommand = tokens[1]?.toLowerCase() ?? "list";
+  const mentionCandidates = buildAnnouncementMentionCandidates(config.announcementsGroupMentions, groups);
+
+  if (subcommand === "help") {
+    await sock.sendMessage(replyJid, { text: ANNOUNCEMENT_HELP_TEXT });
+    return true;
+  }
 
   if (subcommand === "list") {
     await sock.sendMessage(replyJid, { text: formatQueueList(listAnnouncementItems()) });
@@ -133,7 +268,9 @@ export const handleAnnouncementCommand = async (
   if (subcommand === "show") {
     const identifier = parseIdentifier(tokens);
     const item = identifier ? getAnnouncementItemByIdentifier(identifier) : null;
-    await sock.sendMessage(replyJid, { text: item ? formatQueueItem(item) : "No announcement item found for that id or position." });
+    await sock.sendMessage(replyJid, {
+      text: item ? formatQueueItemWithDiagnostics(item, mentionCandidates) : "No announcement item found for that id or position.",
+    });
     return true;
   }
 
@@ -148,6 +285,11 @@ export const handleAnnouncementCommand = async (
     await sock.sendMessage(replyJid, {
       text: formatNextAnnouncement(state, listActiveAnnouncementItems().length, targetLabel, getLastAnnouncementCycle()),
     });
+    return true;
+  }
+
+  if (subcommand === "check") {
+    await sock.sendMessage(replyJid, { text: formatAnnouncementCheck(config, groups) });
     return true;
   }
 
@@ -276,7 +418,7 @@ export const handleAnnouncementCommand = async (
       actor.userId ?? actor.label,
       `Send ${listActiveAnnouncementItems().length} active announcement item(s) to the announcements chat now?`,
       async () => {
-        await sendAnnouncementBundleNow(sock, config);
+        await sendAnnouncementBundleNow(sock, config, new Date(), () => groups);
         return "Announcement send-now has run. Use !announce next to check the latest cycle result.";
       },
     );
@@ -284,7 +426,7 @@ export const handleAnnouncementCommand = async (
   }
 
   await sock.sendMessage(replyJid, {
-    text: "Usage: !announce list | show | preview | next | add | edit | publish | on | off | move | remove | schedule | pause | resume | test | send-now",
+    text: "Usage: !announce help | list | show | preview | next | check | add | edit | publish | on | off | move | remove | schedule | pause | resume | test | send-now",
   });
   return true;
 };

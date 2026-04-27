@@ -98,7 +98,7 @@ const HELP_MESSAGE = `*Fete Bot — Admin Help*
   !spotlights   {limit?}
   !spotlight-history {limit?}
   !spotlight-requeue {messageId|rowId} {minutes?}
-  !announce     list|show|preview|next|add|edit|publish|on|off|move|remove|schedule|pause|resume|test|send-now
+  !announce     help|list|show|preview|next|check|add|edit|publish|on|off|move|remove|schedule|pause|resume|test|send-now
   !bans         {groupJid?}
   !mutes        {groupJid?}
   !audit        {limit?}

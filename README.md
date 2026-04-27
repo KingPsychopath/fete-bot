@@ -195,7 +195,7 @@ Special rules:
 - Empty active bundles are recorded as skipped and the schedule advances
 - In `DRY_RUN=true`, scheduled and forced real sends do not post or advance the schedule; `!announce test` still DMs the requesting mod
 - Optional group mentions use JSON, for example `ANNOUNCEMENTS_GROUP_MENTIONS_JSON=[{"label":"FDLM General","jid":"120363...@g.us"}]`
-- Mention labels are matched case-insensitively when message text contains `@FDLM General`
+- Mention labels are matched case-insensitively when message text contains `@FDLM General`; the bot also tries known group subjects and exact `@120363...@g.us` group JID tokens
 
 ### Strike system
 
@@ -271,6 +271,7 @@ Owners and moderators can control the bot in two ways:
 - `!announce show {id|position}`
 - `!announce preview`
 - `!announce next`
+- `!announce check`
 - `!announce add` by replying to the text to store
 - `!announce edit {id|position}` by replying to replacement text
 - `!announce publish {id|position}`
