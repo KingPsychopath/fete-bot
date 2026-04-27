@@ -34,6 +34,7 @@ import {
 import { runStartupHealthCheck } from "./healthCheck.js";
 import { loadLidMappings, recordLidMapping } from "./lidMap.js";
 import { containsDisallowedUrl } from "./linkChecker.js";
+import { buildGroupInviteLinkReply, classifyGroupInviteLinkRequest } from "./moderation/groupInviteLink.js";
 import { getTicketMarketplaceDecision } from "./moderation/ticketMarketplace/index.js";
 import {
   DEFAULT_TICKET_MARKETPLACE_REPLY_COOLDOWN_MS,
@@ -42,6 +43,10 @@ import {
 import { getSpotlightEligibility } from "./moderation/ticketMarketplace/spotlight/eligibility.js";
 import { startSpotlightScheduler, stopSpotlightScheduler } from "./moderation/ticketMarketplace/spotlight/scheduler.js";
 import { cancelSpotlightsForSource, hasPendingSpotlightForSender, queueSpotlight } from "./moderation/ticketMarketplace/spotlight/store.js";
+import {
+  startTicketMarketplaceRuleReminderScheduler,
+  stopTicketMarketplaceRuleReminderScheduler,
+} from "./moderation/ticketMarketplace/ruleReminder.js";
 import { SpamDetector, type SpamReason } from "./spamDetector.js";
 import { error, log, warn } from "./logger.js";
 import { consumeQuietSwitchSendBypass, isQuietSwitchEnabled } from "./quietSwitch.js";
@@ -990,6 +995,69 @@ They have been banned and removed after repeatedly trying to post while muted.`,
 
     const isCommandText = text.trim().startsWith("!");
     if (!isCommandText) {
+      const groupInviteLinkRequest = classifyGroupInviteLinkRequest(text);
+
+      if (groupInviteLinkRequest.matched) {
+        const mentionTargetJid = getMentionTargetJid(senderJid, phoneJid);
+        const mentionLabel = formatMentionLabel(senderJid, getPushName(msg), phoneJid);
+        const replyText = buildGroupInviteLinkReply(mentionLabel);
+        const logEntry = {
+          timestamp: new Date().toISOString(),
+          group_jid: groupJid,
+          user_id: sender.userId,
+          participant_jid: liveSenderJid,
+          push_name: getPushName(msg),
+          message_text: text,
+          url_found: null,
+          reason: groupInviteLinkRequest.reason,
+        };
+
+        if (config.dryRun) {
+          logAction({
+            ...logEntry,
+            action: "DRY_RUN",
+          });
+
+          warn("Dry run: would respond to group invite link request", {
+            groupJid,
+            senderJid: canonicalSenderAlias,
+            matchedSignal: groupInviteLinkRequest.matchedSignal,
+            wouldSendText: replyText,
+          });
+
+          return;
+        }
+
+        try {
+          await sendModerationMessage(sock, groupJid, replyText, mentionTargetJid, msg);
+          logAction({
+            ...logEntry,
+            action: "WARN",
+          });
+
+          log("Responded to group invite link request", {
+            groupJid,
+            senderJid: canonicalSenderAlias,
+            matchedSignal: groupInviteLinkRequest.matchedSignal,
+          });
+        } catch (moderationError) {
+          logAction({
+            ...logEntry,
+            action: "ERROR",
+            message_text: buildErrorLogMessage(text, moderationError),
+          });
+
+          error("Failed to respond to group invite link request", {
+            groupJid,
+            senderJid: canonicalSenderAlias,
+            matchedSignal: groupInviteLinkRequest.matchedSignal,
+            error: moderationError,
+          });
+        }
+
+        return;
+      }
+
       const ticketDecision = getTicketMarketplaceDecision(config, groupJid, text);
 
       if (ticketDecision.reason) {
@@ -1457,6 +1525,7 @@ export const startBot = async (): Promise<void> => {
         await enforceGlobalBans(sock);
         await runStartupHealthCheck(sock, config, discoveredGroupMetadata);
         startSpotlightScheduler(sock, config, getEffectiveTicketSpotlightTargetJids);
+        startTicketMarketplaceRuleReminderScheduler(sock, config);
       })();
       return;
     }
@@ -1470,6 +1539,7 @@ export const startBot = async (): Promise<void> => {
         activeSocket = null;
       }
       stopSpotlightScheduler();
+      stopTicketMarketplaceRuleReminderScheduler();
 
       const statusCode = isBoomLike(lastDisconnect?.error)
         ? lastDisconnect.error.output?.statusCode
@@ -1629,6 +1699,7 @@ const shutdown = async (signal: string): Promise<void> => {
     }
 
     stopSpotlightScheduler();
+    stopTicketMarketplaceRuleReminderScheduler();
 
     await activeSocket?.end(undefined);
   } catch (shutdownError) {

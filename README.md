@@ -84,6 +84,7 @@ Notes:
 - `ALLOWED_GROUP_JIDS` is optional; when empty, the bot acts in all joined groups
 - `TICKET_MARKETPLACE_MANAGEMENT=true` by default
 - `TICKET_MARKETPLACE_GROUP_JIDS` is comma-separated and defaults to `120363418331899807@g.us`
+- `TICKET_MARKETPLACE_RULE_REMINDER_ENABLED=true` sends a daily marketplace rules reminder after `TICKET_MARKETPLACE_RULE_REMINDER_TIME` in `TICKET_MARKETPLACE_RULE_REMINDER_TIMEZONE`
 - `TICKET_SPOTLIGHT_ENABLED=true` by default; seller spotlights are enabled, buying spotlights are off by default for the first rollout
 - `TICKET_SPOTLIGHT_TARGET_JIDS` defaults to FDLM General 2, FDLM General, and FDLM Parties & Events
 - `OWNER_JIDS`, database moderators, and WhatsApp group admins are never moderated
@@ -142,6 +143,7 @@ Special rules:
 ### Ticket marketplace routing
 
 - Buying or selling intent outside `FDLM Ticket Marketplace` gets a reply redirecting the poster there without a strike
+- The marketplace receives a daily reminder to follow the rules and check the pinned message and group description
 - Ticket redirect replies are rate-limited per user per group for 30 minutes; repeated matches during cooldown are allowed silently
 - Owners can run `!ticketdelete on` to delete ticket redirect messages after replying, and `!ticketdelete off` to return to reply-only mode
 - General ticket or event discussion is still allowed outside the marketplace

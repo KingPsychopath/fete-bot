@@ -86,6 +86,11 @@ const loadedConfig = {
   ticketMarketplaceManagement: parseBoolean(process.env.TICKET_MARKETPLACE_MANAGEMENT, true),
   ticketMarketplaceGroupJids: parseList(process.env.TICKET_MARKETPLACE_GROUP_JIDS || "120363418331899807@g.us"),
   ticketMarketplaceGroupName: normaliseEnvValue(process.env.TICKET_MARKETPLACE_GROUP_NAME) || "FDLM Ticket Marketplace",
+  ticketMarketplaceRuleReminderEnabled: parseBoolean(process.env.TICKET_MARKETPLACE_RULE_REMINDER_ENABLED, true),
+  ticketMarketplaceRuleReminderTime: normaliseEnvValue(process.env.TICKET_MARKETPLACE_RULE_REMINDER_TIME) || "10:00",
+  ticketMarketplaceRuleReminderTimezone:
+    normaliseEnvValue(process.env.TICKET_MARKETPLACE_RULE_REMINDER_TIMEZONE) || "Europe/London",
+  ticketMarketplaceRuleReminderText: normaliseEnvValue(process.env.TICKET_MARKETPLACE_RULE_REMINDER_TEXT) || "",
   ticketSpotlightEnabled: parseBoolean(process.env.TICKET_SPOTLIGHT_ENABLED, true),
   ticketSpotlightSellingEnabled: parseBoolean(process.env.TICKET_SPOTLIGHT_SELLING_ENABLED, true),
   ticketSpotlightBuyingEnabled: parseBoolean(process.env.TICKET_SPOTLIGHT_BUYING_ENABLED, false),

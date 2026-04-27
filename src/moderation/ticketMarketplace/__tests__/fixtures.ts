@@ -46,7 +46,7 @@ export const TRUE_POSITIVES_SELLING = [
   "Verkaufe Ticket Samstag 60€",
   "Selling 2 Sunday tickets, DM me",
   "Spare wristband, DM for price",
-  "Can't go, 2 passes available, DM me",
+  "Can't go, 2 Sunday passes available, DM me",
   "Got a spare Saturday ticket, PM me",
   "à vendre: billet dimanche 70€",
   "For sale: 2 Saturday wristbands £80",
@@ -75,6 +75,8 @@ export const TRUE_NEGATIVES = [
   "I don't want to book tickets for events or clubs, I just want to go somewhere and see for myself",
   "I do not want to buy tickets, I just want to see what is happening",
   "I'm not looking to buy tickets, just asking what people are doing later",
+  "Looking for ticket advice",
+  "Looking for ticket info",
   "After the set we should meet",
   "I'm after the headliner set",
   "Got 2 tickets and I'm buzzing!",
@@ -82,6 +84,12 @@ export const TRUE_NEGATIVES = [
   "Finally got tickets for Sunday 🎉",
   "Can't go tonight, see you tomorrow",
   "I can't make it to lunch",
+  "buy that lime pass easy peasy",
+  "Looking for a lime pass",
+  "Looking for 2 passes",
+  "Need a train pass for tomorrow",
+  "Want a gym pass for next week",
+  "ISO train pass",
 ] as const;
 
 export const KNOWN_FALSE_POSITIVES = [] as const;

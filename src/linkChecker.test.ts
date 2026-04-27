@@ -49,5 +49,19 @@ describe("linkChecker accommodation links", () => {
       url: "https://youtube.com/watch?v=123",
       reason: "youtube (music.youtube.com only)",
     });
+    expect(containsDisallowedUrl("join https://chat.whatsapp.com/abc123")).toEqual({
+      found: true,
+      url: "https://chat.whatsapp.com/abc123",
+      reason: "whatsapp invite link",
+    });
+  });
+
+  it("distinguishes allowed social profiles from blocked content URLs", () => {
+    expect(isAllowed("https://instagram.com/outofofficecollective")).toBe(true);
+    expect(isAllowed("https://instagram.com/p/abc123")).toBe(false);
+    expect(isAllowed("https://tiktok.com/@outofofficecollective")).toBe(true);
+    expect(isAllowed("https://tiktok.com/@outofofficecollective/video/123")).toBe(false);
+    expect(isAllowed("https://music.youtube.com/watch?v=123")).toBe(true);
+    expect(isAllowed("https://youtu.be/abc123")).toBe(false);
   });
 });

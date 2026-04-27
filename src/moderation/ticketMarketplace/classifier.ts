@@ -50,6 +50,53 @@ const TICKET_TERMS = [
   "bilety",
 ] as const;
 
+const AMBIGUOUS_ACCESS_TERMS = new Set(["pass", "passes", "place", "places"]);
+
+const ACCESS_CONTEXT_TERMS = new Set([
+  "friday",
+  "fri",
+  "saturday",
+  "sat",
+  "sunday",
+  "sun",
+  "weekend",
+  "day",
+  "night",
+  "event",
+  "festival",
+  "fete",
+  "fête",
+  "sixtion",
+  "sixton",
+  "samedi",
+  "dimanche",
+  "sabado",
+  "sábado",
+  "domingo",
+  "samstag",
+  "sonntag",
+]);
+
+const NON_TICKET_ACCESS_CONTEXT_TERMS = new Set([
+  "bus",
+  "gym",
+  "lime",
+  "metro",
+  "parking",
+  "rail",
+  "subway",
+  "train",
+  "travel",
+  "tube",
+]);
+
+const NON_TRANSACTION_TICKET_CONTEXT_TERMS = new Set([
+  "advice",
+  "help",
+  "info",
+  "information",
+]);
+
 const WEAK_BUY_TERMS = [
   "buy",
   "need",
@@ -124,8 +171,17 @@ const STRONG_BUY_PATTERNS: Array<{ label: string; regex: RegExp }> = [
       "iu",
     ),
   },
-  { label: "ISO", regex: /\biso\b/iu },
-  { label: "in search of", regex: /\bin\s+search\s+of\b/iu },
+  {
+    label: "ISO ticket",
+    regex: new RegExp(String.raw`\biso\s+(?:a\s+|an\s+|\d+\s+)?(?:[\p{L}\p{N}]+\s+){0,3}${ticketTermPattern}\b`, "iu"),
+  },
+  {
+    label: "in search of ticket",
+    regex: new RegExp(
+      String.raw`\bin\s+search\s+of\s+(?:a\s+|an\s+|\d+\s+)?(?:[\p{L}\p{N}]+\s+){0,3}${ticketTermPattern}\b`,
+      "iu",
+    ),
+  },
   { label: "quelqu'un vend", regex: /\b(?:quelqu'un|qqn)\s+vend\b/iu },
   { label: "qui vend", regex: /\bqui\s+vend\b/iu },
   {
@@ -149,6 +205,13 @@ const BUYER_INTENT_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   { label: "je cherche", regex: /\bje\s+cherche\b/iu },
   { label: "je veux acheter", regex: /\bje\s+veux\s+acheter\b/iu },
 ];
+
+const TICKET_DEPENDENT_STRONG_BUY_SIGNALS = new Set([
+  "anyone selling ticket",
+  "ISO ticket",
+  "in search of ticket",
+  "looking for ticket",
+]);
 
 const NEGATED_BUYER_INTENT_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   { label: "looking to buy", regex: /\b(?:not|never|dont|don't|do\s+not)\s+looking\s+to\s+buy\b/iu },
@@ -251,6 +314,27 @@ const hasNearbyMatch = (
 
 const genericWeakBuyTerms = new Set(["want", "need", "after"]);
 
+const hasConcreteAccessContext = (tokens: readonly string[], match: TokenMatch): boolean => {
+  const nextContext = tokens.slice(match.index + 1, match.index + 3);
+  if (nextContext.some((token) => NON_TRANSACTION_TICKET_CONTEXT_TERMS.has(token))) {
+    return false;
+  }
+
+  if (!AMBIGUOUS_ACCESS_TERMS.has(match.token)) {
+    return true;
+  }
+
+  const windowStart = Math.max(0, match.index - 3);
+  const windowEnd = Math.min(tokens.length, match.index + 4);
+  const context = tokens.slice(windowStart, windowEnd);
+
+  if (context.some((token) => NON_TICKET_ACCESS_CONTEXT_TERMS.has(token))) {
+    return false;
+  }
+
+  return context.some((token) => ACCESS_CONTEXT_TERMS.has(token));
+};
+
 const getContextualWeakBuyMatches = (
   weakBuyMatches: readonly TokenMatch[],
   ticketMatches: readonly TokenMatch[],
@@ -264,16 +348,16 @@ const getContextualWeakBuyMatches = (
   );
 
 const hasGotTicketsSellingIntent = (
-  normalisedText: string,
+  tokens: readonly string[],
+  ticketMatches: readonly TokenMatch[],
   hasAvailabilityCue: boolean,
   pricePresentBeforeIntent: boolean,
 ): boolean => {
-  const regex = /\bgot\s+\d+\s+(?:ticket|tickets|tix|pass|passes|billet|billets|place|places)\b/iu;
-  if (!regex.test(normalisedText)) {
+  if (!hasAvailabilityCue && !pricePresentBeforeIntent) {
     return false;
   }
 
-  return hasAvailabilityCue || pricePresentBeforeIntent;
+  return ticketMatches.some((match) => tokens[match.index - 2] === "got" && /^\d+$/u.test(tokens[match.index - 1] ?? ""));
 };
 
 const unique = (values: readonly string[]): string[] => Array.from(new Set(values));
@@ -302,9 +386,10 @@ export const classify = (text: string): TicketMarketplaceClassification => {
 
   const tokens = tokenise(normalisedText);
   const ticketMatches = findTermMatches(tokens, TICKET_TERMS);
+  const concreteTicketMatches = ticketMatches.filter((match) => hasConcreteAccessContext(tokens, match));
   const weakBuyMatches = findTermMatches(tokens, WEAK_BUY_TERMS).filter((match) => !isNegatedMatch(tokens, match));
   const weakSellMatches = findTermMatches(tokens, WEAK_SELL_TERMS).filter((match) => !isNegatedMatch(tokens, match));
-  const contextualWeakBuyMatches = getContextualWeakBuyMatches(weakBuyMatches, ticketMatches);
+  const contextualWeakBuyMatches = getContextualWeakBuyMatches(weakBuyMatches, concreteTicketMatches);
   const availabilityMatches = findTermMatches(tokens, AVAILABILITY_CUES);
   const pricePresentBeforeIntent = hasExplicitPrice(normalisedText);
   const hasAvailabilityCue = availabilityMatches.length > 0;
@@ -314,7 +399,9 @@ export const classify = (text: string): TicketMarketplaceClassification => {
 
   const buySignals: string[] = [];
   const sellSignals: string[] = [];
-  const strongBuySignals = findPatternMatches(normalisedText, STRONG_BUY_PATTERNS);
+  const strongBuySignals = findPatternMatches(normalisedText, STRONG_BUY_PATTERNS).filter(
+    (signal) => !TICKET_DEPENDENT_STRONG_BUY_SIGNALS.has(signal) || concreteTicketMatches.length > 0,
+  );
   const negatedBuyerIntentSignals = new Set(findPatternMatches(normalisedText, NEGATED_BUYER_INTENT_PATTERNS));
   const buyerIntentSignals = findPatternMatches(normalisedText, BUYER_INTENT_PATTERNS).filter(
     (signal) => !negatedBuyerIntentSignals.has(signal),
@@ -323,26 +410,31 @@ export const classify = (text: string): TicketMarketplaceClassification => {
 
   if (contextualWeakBuyMatches.length > 0) {
     buySignals.push(...contextualWeakBuyMatches.map((match) => match.token));
-    buySignals.push(...ticketMatches.map((match) => match.token));
+    buySignals.push(...concreteTicketMatches.map((match) => match.token));
   }
 
   const strongSell =
     hasAnyPhrase(normalisedText, STRONG_SELL_PHRASES, sellSignals) ||
     hasAnyRegex(normalisedText, STRONG_SELL_REGEXES, sellSignals);
-  const priceTicketSelling = pricePresentBeforeIntent && ticketMatches.length > 0;
+  const priceTicketSelling = pricePresentBeforeIntent && concreteTicketMatches.length > 0;
 
   if (
     buyerIntentSignals.length > 0 &&
-    (ticketMatches.length > 0 || strongBuySignals.length > 0 || hasDirectSellVerb || strongSell || pricePresentBeforeIntent)
+    (concreteTicketMatches.length > 0 ||
+      strongBuySignals.length > 0 ||
+      hasDirectSellVerb ||
+      strongSell ||
+      pricePresentBeforeIntent)
   ) {
     buySignals.push(...buyerIntentSignals);
   }
-  const cantGoSelling = CANT_GO_REGEX.test(normalisedText) && ticketMatches.length > 0;
+  const cantGoSelling = CANT_GO_REGEX.test(normalisedText) && concreteTicketMatches.length > 0;
   const weakSell =
-    hasNearbyMatch(weakSellMatches, ticketMatches, 6) &&
+    hasNearbyMatch(weakSellMatches, concreteTicketMatches, 6) &&
     (hasAvailabilityCue || pricePresentBeforeIntent || hasDirectSellVerb);
   const gotTicketsSelling = hasGotTicketsSellingIntent(
-    normalisedText,
+    tokens,
+    concreteTicketMatches,
     hasAvailabilityCue,
     pricePresentBeforeIntent,
   );
@@ -350,12 +442,12 @@ export const classify = (text: string): TicketMarketplaceClassification => {
   if (strongSell || cantGoSelling || weakSell || gotTicketsSelling || priceTicketSelling) {
     if (cantGoSelling) {
       sellSignals.push("can't go");
-      sellSignals.push(...ticketMatches.map((match) => match.token));
+      sellSignals.push(...concreteTicketMatches.map((match) => match.token));
     }
 
     if (weakSell) {
       sellSignals.push(...weakSellMatches.map((match) => match.token));
-      sellSignals.push(...ticketMatches.map((match) => match.token));
+      sellSignals.push(...concreteTicketMatches.map((match) => match.token));
       sellSignals.push(...availabilityMatches.map((match) => match.token));
     }
 
@@ -365,7 +457,7 @@ export const classify = (text: string): TicketMarketplaceClassification => {
 
     if (priceTicketSelling) {
       sellSignals.push("price");
-      sellSignals.push(...ticketMatches.map((match) => match.token));
+      sellSignals.push(...concreteTicketMatches.map((match) => match.token));
     }
   }
 
@@ -386,7 +478,7 @@ export const classify = (text: string): TicketMarketplaceClassification => {
       buyerIntentSignals.length > 0 ||
       rawEndsWithQuestionMark ||
       hasBuyerStartContext(normalisedText) ||
-      hasPleaseTicketContext(normalisedText, ticketMatches));
+      hasPleaseTicketContext(normalisedText, concreteTicketMatches));
 
   if (hasBuySignals && (!hasSellSignals || buyDominates)) {
     const matchedSignals = {
