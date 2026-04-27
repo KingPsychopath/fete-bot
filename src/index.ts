@@ -256,6 +256,60 @@ const isForwardedMessage = (message: WAMessage["message"]): boolean => {
   return Boolean(contextInfo?.isForwarded || (contextInfo?.forwardingScore ?? 0) >= 5);
 };
 
+const maybeSendAdminSummonReply = async (
+  sock: WASocket,
+  msg: WAMessage,
+  groupJid: string,
+  senderJid: string,
+  text: string,
+  selfJids: ReadonlySet<string>,
+): Promise<boolean> => {
+  if (text.trim().startsWith("!") || !hasAdminSummon(text, getMentionedJids(msg.message), selfJids)) {
+    return false;
+  }
+
+  const adminMentionNow = Date.now();
+
+  if (adminMentionCooldown.isCoolingDown(groupJid, adminMentionNow)) {
+    log("Suppressed admin mention reply during cooldown", {
+      groupJid,
+      senderJid,
+      cooldownMinutes: config.adminMentionCooldownMinutes,
+    });
+    return true;
+  }
+
+  const replyText = pickAdminMentionReply();
+  adminMentionCooldown.record(groupJid, adminMentionNow);
+
+  if (config.dryRun) {
+    warn("Dry run: would respond to admin mention", {
+      groupJid,
+      senderJid,
+      cooldownMinutes: config.adminMentionCooldownMinutes,
+      wouldSendText: replyText,
+    });
+    return true;
+  }
+
+  try {
+    await sock.sendMessage(groupJid, { text: replyText }, { quoted: msg });
+    log("Responded to admin mention", {
+      groupJid,
+      senderJid,
+      cooldownMinutes: config.adminMentionCooldownMinutes,
+    });
+  } catch (adminMentionError) {
+    error("Failed to respond to admin mention", {
+      groupJid,
+      senderJid,
+      error: adminMentionError,
+    });
+  }
+
+  return true;
+};
+
 const MENTIONABLE_JID_REGEX = /@(s\.whatsapp\.net|lid)$/i;
 
 const getMentionableToken = (senderJid: string, phoneJid?: string | null): string | null => {
@@ -1378,15 +1432,19 @@ Push name: ${getPushName(msg) ?? "unknown"}`,
       }
     }
 
-    if (
-      isProtectedGroupMember(
-        sender.userId,
-        sender.knownAliases,
-        groupJid,
-        config,
-        discoveredGroupMetadata,
-      )
-    ) {
+    const senderIsProtected = isProtectedGroupMember(
+      sender.userId,
+      sender.knownAliases,
+      groupJid,
+      config,
+      discoveredGroupMetadata,
+    );
+
+    if (senderIsProtected) {
+      if (text) {
+        await maybeSendAdminSummonReply(sock, msg, groupJid, canonicalSenderAlias, text, selfJids);
+      }
+
       return;
     }
 
@@ -1535,44 +1593,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
     }
 
     const isCommandText = text.trim().startsWith("!");
-    if (!isCommandText && hasAdminSummon(text, getMentionedJids(msg.message), selfJids)) {
-      const adminMentionNow = Date.now();
-
-      if (adminMentionCooldown.isCoolingDown(groupJid, adminMentionNow)) {
-        log("Suppressed admin mention reply during cooldown", {
-          groupJid,
-          senderJid: canonicalSenderAlias,
-          cooldownMinutes: config.adminMentionCooldownMinutes,
-        });
-      } else {
-        const replyText = pickAdminMentionReply();
-        adminMentionCooldown.record(groupJid, adminMentionNow);
-
-        if (config.dryRun) {
-          warn("Dry run: would respond to admin mention", {
-            groupJid,
-            senderJid: canonicalSenderAlias,
-            cooldownMinutes: config.adminMentionCooldownMinutes,
-            wouldSendText: replyText,
-          });
-        } else {
-          try {
-            await sock.sendMessage(groupJid, { text: replyText }, { quoted: msg });
-            log("Responded to admin mention", {
-              groupJid,
-              senderJid: canonicalSenderAlias,
-              cooldownMinutes: config.adminMentionCooldownMinutes,
-            });
-          } catch (adminMentionError) {
-            error("Failed to respond to admin mention", {
-              groupJid,
-              senderJid: canonicalSenderAlias,
-              error: adminMentionError,
-            });
-          }
-        }
-      }
-    }
+    await maybeSendAdminSummonReply(sock, msg, groupJid, canonicalSenderAlias, text, selfJids);
 
     if (!isCommandText) {
       const groupInviteLinkRequest = classifyGroupInviteLinkRequest(text);
