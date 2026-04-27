@@ -36,6 +36,7 @@ const config = {
   ticketSpotlightMaxLength: 400,
   ticketSpotlightBlocklistJids: ["blocked@s.whatsapp.net"],
   ticketSpotlightClaimStaleMinutes: 5,
+  ticketSpotlightReactionEmoji: "⭐",
 } satisfies Config;
 
 const baseInput = {

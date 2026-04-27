@@ -42,6 +42,7 @@ const config = {
   ticketSpotlightMaxLength: 400,
   ticketSpotlightBlocklistJids: [],
   ticketSpotlightClaimStaleMinutes: 5,
+  ticketSpotlightReactionEmoji: "⭐",
 } satisfies Config;
 
 beforeEach(() => {

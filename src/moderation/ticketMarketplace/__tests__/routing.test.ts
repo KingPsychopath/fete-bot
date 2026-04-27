@@ -36,6 +36,7 @@ const config = {
   ticketSpotlightMaxLength: 400,
   ticketSpotlightBlocklistJids: [],
   ticketSpotlightClaimStaleMinutes: 5,
+  ticketSpotlightReactionEmoji: "⭐",
 } satisfies Config;
 
 describe("ticket marketplace routing decisions", () => {

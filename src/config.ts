@@ -116,6 +116,7 @@ const loadedConfig = {
   ticketSpotlightMaxLength: parsePositiveInteger(process.env.TICKET_SPOTLIGHT_MAX_LENGTH, 400),
   ticketSpotlightBlocklistJids: parseList(process.env.TICKET_SPOTLIGHT_BLOCKLIST_JIDS),
   ticketSpotlightClaimStaleMinutes: parsePositiveInteger(process.env.TICKET_SPOTLIGHT_CLAIM_STALE_MINUTES, 5),
+  ticketSpotlightReactionEmoji: normaliseEnvValue(process.env.TICKET_SPOTLIGHT_REACTION_EMOJI) || "⭐",
 } as const;
 
 export const config = Object.freeze(loadedConfig);

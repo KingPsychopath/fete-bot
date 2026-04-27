@@ -41,6 +41,7 @@ const config = {
   ticketSpotlightMaxLength: 40,
   ticketSpotlightBlocklistJids: [],
   ticketSpotlightClaimStaleMinutes: 5,
+  ticketSpotlightReactionEmoji: "⭐",
 } satisfies Config;
 
 describe("spotlight sender formatting", () => {

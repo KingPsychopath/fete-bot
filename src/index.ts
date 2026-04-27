@@ -637,14 +637,15 @@ const buildErrorLogMessage = (messageText: string, moderationError: unknown): st
     : `[ERROR] ${errorMessage}`;
 };
 
-const queueTicketSpotlightIfEligible = (
+const queueTicketSpotlightIfEligible = async (
+  sock: WASocket,
   msg: WAMessage,
   groupJid: string,
   senderUserId: string,
   senderJid: string,
   text: string,
   ticketDecision: ReturnType<typeof getTicketMarketplaceDecision>,
-): void => {
+): Promise<void> => {
   if (!config.ticketSpotlightEnabled || !config.ticketMarketplaceGroupJids.includes(groupJid)) {
     return;
   }
@@ -725,6 +726,30 @@ const queueTicketSpotlightIfEligible = (
       scheduledAt,
       classification: ticketDecision.intent,
     });
+
+    try {
+      await sock.sendMessage(groupJid, {
+        react: {
+          text: config.ticketSpotlightReactionEmoji,
+          key: msg.key,
+        },
+      });
+      log("spotlight.reacted", {
+        pendingId: queued.id,
+        groupJid,
+        senderJid,
+        sourceMsgId: messageId,
+        reactionEmoji: config.ticketSpotlightReactionEmoji,
+      });
+    } catch (reactionError) {
+      warn("spotlight.reaction_failed", {
+        pendingId: queued.id,
+        groupJid,
+        senderJid,
+        sourceMsgId: messageId,
+        error: reactionError,
+      });
+    }
   }
 };
 
@@ -1170,7 +1195,8 @@ They have been banned and removed after repeatedly trying to post while muted.`,
         }
       }
 
-      queueTicketSpotlightIfEligible(
+      await queueTicketSpotlightIfEligible(
+        sock,
         msg,
         groupJid,
         sender.userId,
