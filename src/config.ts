@@ -163,7 +163,14 @@ const loadedConfig = {
   groupCallGuardGroupJids: parseList(process.env.GROUP_CALL_GUARD_GROUP_JIDS),
   groupCallGuardWarningText:
     normaliseEnvValue(process.env.GROUP_CALL_GUARD_WARNING_TEXT) ||
-    "Hey {mention} - calls aren't allowed in this group, so I ended that call. Don't do that again. 🙏🏾",
+    "Hey {mention} - calls aren't allowed in this group. Don't do that again. 🙏🏾",
+  groupCallGuardRemoveOn: parsePositiveInteger(process.env.GROUP_CALL_GUARD_REMOVE_ON, 2),
+  groupCallGuardWindowHours: parsePositiveInteger(process.env.GROUP_CALL_GUARD_WINDOW_HOURS, 24),
+  groupCallGuardWarningCooldownSeconds: parsePositiveInteger(process.env.GROUP_CALL_GUARD_WARNING_COOLDOWN_SECONDS, 30),
+  groupCallGuardRecentActivityTtlMinutes: parsePositiveInteger(
+    process.env.GROUP_CALL_GUARD_RECENT_ACTIVITY_TTL_MINUTES,
+    10,
+  ),
   ticketMarketplaceManagement: parseBoolean(process.env.TICKET_MARKETPLACE_MANAGEMENT, true),
   ticketMarketplaceGroupJids: parseList(process.env.TICKET_MARKETPLACE_GROUP_JIDS || "120363418331899807@g.us"),
   ticketMarketplaceGroupName: normaliseEnvValue(process.env.TICKET_MARKETPLACE_GROUP_NAME) || "FDLM Ticket Marketplace",

@@ -7,6 +7,13 @@ export type AliasType = "phone" | "lid";
 export type AuditResult = "success" | "error" | "pending";
 export type ActorRole = "owner" | "moderator";
 export type ReviewQueueStatus = "pending" | "resolved";
+export type CallGuardAuditAction =
+  | "reject"
+  | "warn"
+  | "remove_attempt"
+  | "remove_ok"
+  | "remove_fail"
+  | "infer_skip";
 
 export type LogEntry = {
   timestamp: string;
@@ -91,6 +98,17 @@ export interface ReviewQueueEntry {
   status: ReviewQueueStatus;
 }
 
+export interface CallGuardAuditEntry {
+  callId: string | null;
+  userId: string;
+  rawCallerJid: string;
+  groupJid: string | null;
+  inferred: boolean;
+  action: CallGuardAuditAction;
+  detail: string | null;
+  createdAt: number;
+}
+
 export type SpotlightIntent = "buying" | "selling";
 export type SpotlightPendingStatus = "pending" | "sent" | "cancelled";
 
@@ -126,7 +144,7 @@ type CountRow = {
   count: number;
 };
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 const RESET_DB_FLAG = "RESET_DB";
 export const GLOBAL_MODERATION_GROUP_JID = "__all_groups__";
 
@@ -233,6 +251,31 @@ const ANNOUNCEMENT_SCHEMA_SQL = `
   CREATE INDEX idx_announcement_cycle_items_status ON announcement_cycle_items(cycle_id, status);
 `;
 
+const CALL_GUARD_SCHEMA_SQL = `
+  CREATE TABLE call_violations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    group_jid TEXT NOT NULL,
+    call_id TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX idx_call_violations_user_group_time
+    ON call_violations(user_id, group_jid, created_at);
+
+  CREATE TABLE call_guard_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    call_id TEXT,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    raw_caller_jid TEXT NOT NULL,
+    group_jid TEXT,
+    inferred INTEGER NOT NULL CHECK(inferred IN (0,1)) DEFAULT 0,
+    action TEXT NOT NULL CHECK(action IN ('reject','warn','remove_attempt','remove_ok','remove_fail','infer_skip')),
+    detail TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX idx_call_guard_audit_time ON call_guard_audit(created_at);
+`;
+
 const recreateSchema = (database: Database.Database): void => {
   database.exec("PRAGMA foreign_keys = OFF");
 
@@ -241,6 +284,8 @@ const recreateSchema = (database: Database.Database): void => {
     "announcement_cycles",
     "announcement_state",
     "announcement_queue_items",
+    "call_guard_audit",
+    "call_violations",
     "spotlight_history",
     "spotlight_pending",
     "identity_merges",
@@ -376,6 +421,7 @@ const recreateSchema = (database: Database.Database): void => {
 
     ${SPOTLIGHT_SCHEMA_SQL}
     ${ANNOUNCEMENT_SCHEMA_SQL}
+    ${CALL_GUARD_SCHEMA_SQL}
   `);
 
   database.pragma(`user_version = ${SCHEMA_VERSION}`);
@@ -420,6 +466,30 @@ export const migrateSchemaV3ToV4 = (
     if (options.throwAfterSchemaForTest) {
       throw new Error("Intentional migration failure");
     }
+    database.pragma("user_version = 4");
+    database.exec("COMMIT");
+  } catch (migrationError) {
+    if (database.inTransaction) {
+      database.exec("ROLLBACK");
+    }
+    throw migrationError;
+  }
+};
+
+export const migrateSchemaV4ToV5 = (
+  database: Database.Database,
+  options: { throwAfterSchemaForTest?: boolean } = {},
+): void => {
+  if (database.inTransaction) {
+    throw new Error("Cannot migrate schema while another transaction is active");
+  }
+
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    database.exec(CALL_GUARD_SCHEMA_SQL);
+    if (options.throwAfterSchemaForTest) {
+      throw new Error("Intentional migration failure");
+    }
     database.pragma(`user_version = ${SCHEMA_VERSION}`);
     database.exec("COMMIT");
   } catch (migrationError) {
@@ -442,9 +512,12 @@ export const ensureSchema = (database: Database.Database): void => {
     migrateSchemaV2ToV3(database);
   }
 
-  const migratedVersion = Number(database.pragma("user_version", { simple: true }) ?? 0);
-  if (migratedVersion === 3) {
+  if (Number(database.pragma("user_version", { simple: true }) ?? 0) === 3) {
     migrateSchemaV3ToV4(database);
+  }
+
+  if (Number(database.pragma("user_version", { simple: true }) ?? 0) === 4) {
+    migrateSchemaV4ToV5(database);
     database.pragma("journal_mode = WAL");
     database.exec("PRAGMA foreign_keys = ON");
     return;
@@ -672,6 +745,107 @@ export const logAction = (entry: LogEntry): void => {
     .run(entry);
 };
 
+export const logCallGuardAudit = (entry: CallGuardAuditEntry): void => {
+  const writableUserId = assertUserWritable(entry.userId);
+  getDb()
+    .prepare<{
+      callId: string | null;
+      userId: string;
+      rawCallerJid: string;
+      groupJid: string | null;
+      inferred: number;
+      action: CallGuardAuditAction;
+      detail: string | null;
+      createdAt: number;
+    }>(`
+      INSERT INTO call_guard_audit (
+        call_id,
+        user_id,
+        raw_caller_jid,
+        group_jid,
+        inferred,
+        action,
+        detail,
+        created_at
+      ) VALUES (
+        @callId,
+        @userId,
+        @rawCallerJid,
+        @groupJid,
+        @inferred,
+        @action,
+        @detail,
+        @createdAt
+      )
+    `)
+    .run({
+      ...entry,
+      userId: writableUserId,
+      inferred: entry.inferred ? 1 : 0,
+    });
+};
+
+export const addCallViolationAndCountActive = (
+  userId: string,
+  groupJid: string,
+  callId: string | null,
+  nowMs: number,
+  windowMs: number,
+): number => {
+  const writableUserId = assertUserWritable(userId);
+  return withImmediateTransaction(() => {
+    getDb()
+      .prepare<[string, string, string | null, number]>(`
+        INSERT INTO call_violations (
+          user_id,
+          group_jid,
+          call_id,
+          created_at
+        ) VALUES (?, ?, ?, ?)
+      `)
+      .run(writableUserId, groupJid, callId, nowMs);
+
+    const result = getDb()
+      .prepare<[string, string, number], CountRow>(`
+        SELECT COUNT(*) AS count
+        FROM call_violations
+        WHERE user_id = ? AND group_jid = ? AND created_at > ?
+      `)
+      .get(writableUserId, groupJid, nowMs - windowMs);
+
+    return result?.count ?? 0;
+  });
+};
+
+export const getActiveCallViolations = (
+  userId: string,
+  groupJid: string,
+  nowMs: number,
+  windowMs: number,
+): number => {
+  const terminalUserId = resolveTerminalUserId(userId);
+  const result = getDb()
+    .prepare<[string, string, number], CountRow>(`
+      SELECT COUNT(*) AS count
+      FROM call_violations
+      WHERE user_id = ? AND group_jid = ? AND created_at > ?
+    `)
+    .get(terminalUserId, groupJid, nowMs - windowMs);
+
+  return result?.count ?? 0;
+};
+
+export const clearCallViolations = (userId: string, groupJid: string): number => {
+  const terminalUserId = resolveTerminalUserId(userId);
+  return getDb()
+    .prepare<[string, string]>("DELETE FROM call_violations WHERE user_id = ? AND group_jid = ?")
+    .run(terminalUserId, groupJid).changes;
+};
+
+export const purgeExpiredCallViolations = (windowMs: number, nowMs = Date.now()): void => {
+  getDb().prepare<[number]>("DELETE FROM call_violations WHERE created_at <= ?").run(nowMs - windowMs);
+};
+
 export const purgeExpiredStrikes = (): void => {
   getDb().prepare<[string]>("DELETE FROM strikes WHERE expires_at < ?").run(new Date().toISOString());
 };
@@ -710,9 +884,11 @@ export const addStrike = (userId: string, groupJid: string, reason: string, stri
   return getActiveStrikes(writableUserId, groupJid);
 };
 
-export const resetStrikes = (userId: string, groupJid: string): void => {
+export const resetStrikes = (userId: string, groupJid: string): number => {
   const terminalUserId = resolveTerminalUserId(userId);
-  getDb().prepare<[string, string]>("DELETE FROM strikes WHERE user_id = ? AND group_jid = ?").run(terminalUserId, groupJid);
+  return getDb()
+    .prepare<[string, string]>("DELETE FROM strikes WHERE user_id = ? AND group_jid = ?")
+    .run(terminalUserId, groupJid).changes;
 };
 
 export const resetAllStrikes = (groupJid?: string): void => {
@@ -918,9 +1094,11 @@ export const addMute = (
     );
 };
 
-export const removeMute = (userId: string, groupJid: string): void => {
+export const removeMute = (userId: string, groupJid: string): number => {
   const terminalUserId = resolveTerminalUserId(userId);
-  getDb().prepare<[string, string]>("DELETE FROM mutes WHERE user_id = ? AND group_jid = ?").run(terminalUserId, groupJid);
+  return getDb()
+    .prepare<[string, string]>("DELETE FROM mutes WHERE user_id = ? AND group_jid = ?")
+    .run(terminalUserId, groupJid).changes;
 };
 
 export const removeAllMutes = (groupJid?: string): void => {
@@ -1121,9 +1299,11 @@ export const upsertReviewQueueEntry = (
     .run(writableUserId, groupJid, pushName, reason, messageText, flaggedAt, status);
 };
 
-export const clearReviewQueueEntry = (userId: string, groupJid: string): void => {
+export const clearReviewQueueEntry = (userId: string, groupJid: string): number => {
   const terminalUserId = resolveTerminalUserId(userId);
-  getDb().prepare<[string, string]>("DELETE FROM review_queue WHERE user_id = ? AND group_jid = ?").run(terminalUserId, groupJid);
+  return getDb()
+    .prepare<[string, string]>("DELETE FROM review_queue WHERE user_id = ? AND group_jid = ?")
+    .run(terminalUserId, groupJid).changes;
 };
 
 export const listReviewQueueEntries = (): ReviewQueueEntry[] =>

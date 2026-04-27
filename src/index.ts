@@ -19,6 +19,7 @@ import { startAnnouncementScheduler, stopAnnouncementScheduler } from "./announc
 import { config, NEVER_SPOTLIGHT_GROUP_JIDS } from "./config.js";
 import { handleAuthorisedCommand, handleGroupCommand } from "./commands.js";
 import {
+  addCallViolationAndCountActive,
   addBan,
   addStrike,
   addMute,
@@ -28,10 +29,13 @@ import {
   initDb,
   isBanned,
   isMuted,
+  logCallGuardAudit,
   logAction,
+  purgeExpiredCallViolations,
   purgeExpiredMutes,
   purgeExpiredStrikes,
   upsertReviewQueueEntry,
+  type CallGuardAuditAction,
 } from "./db.js";
 import { runStartupHealthCheck } from "./healthCheck.js";
 import { loadLidMappings, recordLidMapping } from "./lidMap.js";
@@ -83,11 +87,14 @@ const discoveredGroups = new Map<string, string>();
 const discoveredGroupMetadata = new Map<string, GroupMetadata>();
 const mutedMessageCounts = new Map<string, number>();
 const handledCallOfferIds = new Set<string>();
+const callGuardRecentActivityByUserId = new Map<string, Map<string, number>>();
+const callGuardWarningLastSentByKey = new Map<string, number>();
 const ticketMarketplaceReplyCooldown = new TicketMarketplaceReplyCooldown(
   config.ticketMarketplaceReplyCooldownMinutes * 60 * 1000,
 );
 let strikePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let mutePurgeTimer: ReturnType<typeof setInterval> | null = null;
+let callViolationPurgeTimer: ReturnType<typeof setInterval> | null = null;
 let globalBanEnforcementTimer: ReturnType<typeof setInterval> | null = null;
 let activeSocket: WASocket | null = null;
 let shuttingDown = false;
@@ -363,6 +370,10 @@ const getGroupCallWarningText = (callerJid: string): string => {
   return config.groupCallGuardWarningText.replace(/\{mention\}/gu, mentionLabel);
 };
 
+const getCallGuardWindowMs = (): number => config.groupCallGuardWindowHours * 60 * 60 * 1000;
+const getCallGuardWarningCooldownMs = (): number => config.groupCallGuardWarningCooldownSeconds * 1000;
+const getCallGuardRecentActivityTtlMs = (): number => config.groupCallGuardRecentActivityTtlMinutes * 60 * 1000;
+
 const appendStrikeWarning = (warningText: string, strikeCount: number): string => {
   if (strikeCount === 2) {
     return `${warningText}\n\n⚠️ This is your second warning — one more and you'll be removed from the group.`;
@@ -450,6 +461,42 @@ const shouldRejectUnknownGroupCall = (call: WACallEvent): boolean =>
   config.allowedGroupJids.length === 0 &&
   config.groupCallGuardGroupJids.length === 0;
 
+const getCallGuardWarningCooldownKey = (userId: string, groupJid: string): string => `${groupJid}:${userId}`;
+
+const shouldSendCallGuardWarning = (userId: string, groupJid: string, nowMs: number): boolean => {
+  const key = getCallGuardWarningCooldownKey(userId, groupJid);
+  const lastSentAt = callGuardWarningLastSentByKey.get(key) ?? 0;
+  if (nowMs - lastSentAt < getCallGuardWarningCooldownMs()) {
+    return false;
+  }
+
+  callGuardWarningLastSentByKey.set(key, nowMs);
+  return true;
+};
+
+const recordCallGuardRecentActivity = (userId: string, groupJid: string, nowMs = Date.now()): void => {
+  const groupActivity = callGuardRecentActivityByUserId.get(userId) ?? new Map<string, number>();
+  groupActivity.set(groupJid, nowMs);
+  callGuardRecentActivityByUserId.set(userId, groupActivity);
+};
+
+const getCallGuardRecentGroupCandidates = (userId: string, nowMs = Date.now()): string[] => {
+  const groupActivity = callGuardRecentActivityByUserId.get(userId);
+  if (!groupActivity) {
+    return [];
+  }
+
+  const cutoff = nowMs - getCallGuardRecentActivityTtlMs();
+  return Array.from(groupActivity.entries())
+    .filter(([groupJid, lastActiveAt]) => lastActiveAt > cutoff && isGroupCallGuarded(groupJid))
+    .map(([groupJid]) => groupJid);
+};
+
+const getInferredCallGuardGroupJid = (userId: string, nowMs = Date.now()): string | null => {
+  const candidates = getCallGuardRecentGroupCandidates(userId, nowMs);
+  return candidates.length === 1 ? candidates[0] ?? null : null;
+};
+
 const getCallGroupJid = (call: WACallEvent): string | null => {
   for (const candidate of [call.groupJid, call.chatId]) {
     if (candidate?.endsWith("@g.us")) {
@@ -458,6 +505,72 @@ const getCallGroupJid = (call: WACallEvent): string | null => {
   }
 
   return null;
+};
+
+const resolveCallCaller = async (sock: WASocket, call: WACallEvent): Promise<ResolvedUser | null> => {
+  const callerJid = normalizeJid(call.from);
+  return resolveUser({
+    participantJid: callerJid,
+    phoneJid: callerJid.endsWith("@s.whatsapp.net") ? callerJid : null,
+    lidJid: callerJid.endsWith("@lid") ? callerJid : null,
+    selfJids: getSelfJids(sock),
+  });
+};
+
+const auditCallGuard = (
+  call: WACallEvent,
+  caller: ResolvedUser,
+  action: CallGuardAuditAction,
+  options: {
+    groupJid?: string | null;
+    inferred?: boolean;
+    detail?: string | null;
+    nowMs?: number;
+  } = {},
+): void => {
+  logCallGuardAudit({
+    callId: call.id,
+    userId: caller.userId,
+    rawCallerJid: call.from,
+    groupJid: options.groupJid ?? null,
+    inferred: options.inferred ?? false,
+    action,
+    detail: options.detail ?? null,
+    createdAt: options.nowMs ?? Date.now(),
+  });
+};
+
+const rejectCallForGuard = async (sock: WASocket, call: WACallEvent): Promise<void> => {
+  try {
+    await sock.rejectCall(call.id, call.from);
+  } catch (rejectError) {
+    warn("Failed to reject group call", {
+      callId: call.id,
+      callerJid: call.from,
+      error: rejectError,
+    });
+  }
+};
+
+const sendCallGuardWarning = async (
+  sock: WASocket,
+  groupJid: string,
+  warningText: string,
+  mentionTargetJid: string,
+  call: WACallEvent,
+): Promise<boolean> => {
+  try {
+    await sendModerationMessage(sock, groupJid, warningText, mentionTargetJid);
+    return true;
+  } catch (warningError) {
+    warn("Failed to send group call guard warning", {
+      callId: call.id,
+      groupJid,
+      callerJid: call.from,
+      error: warningError,
+    });
+    return false;
+  }
 };
 
 const getEffectiveTicketSpotlightTargetJids = (): string[] => {
@@ -495,6 +608,15 @@ const handleCall = async (sock: WASocket, call: WACallEvent): Promise<void> => {
   }
 
   const groupJid = getCallGroupJid(call);
+  const caller = await resolveCallCaller(sock, call);
+  if (!caller) {
+    warn("Unable to resolve group call caller", {
+      callId: call.id,
+      callerJid: call.from,
+      groupJid,
+    });
+  }
+
   if (!groupJid && shouldRejectUnknownGroupCall(call)) {
     handledCallOfferIds.add(call.id);
 
@@ -508,23 +630,46 @@ const handleCall = async (sock: WASocket, call: WACallEvent): Promise<void> => {
       return;
     }
 
-    try {
-      await sock.rejectCall(call.id, call.from);
-      warn("Rejected group call without group JID", {
-        callId: call.id,
-        chatId: call.chatId,
-        callerJid: call.from,
-        isVideo: call.isVideo,
-      });
-    } catch (callGuardError) {
-      handledCallOfferIds.delete(call.id);
-      error("Failed to reject group call without group JID", {
-        callId: call.id,
-        chatId: call.chatId,
-        callerJid: call.from,
-        isVideo: call.isVideo,
-        error: callGuardError,
-      });
+    await rejectCallForGuard(sock, call);
+    if (caller) {
+      auditCallGuard(call, caller, "reject", { nowMs: Date.now() });
+    }
+    warn("Rejected group call without group JID", {
+      callId: call.id,
+      chatId: call.chatId,
+      callerJid: call.from,
+      isVideo: call.isVideo,
+    });
+
+    if (caller) {
+      const nowMs = Date.now();
+      const inferredGroupJid = getInferredCallGuardGroupJid(caller.userId, nowMs);
+      if (inferredGroupJid) {
+        if (shouldSendCallGuardWarning(caller.userId, inferredGroupJid, nowMs)) {
+          const warned = await sendCallGuardWarning(
+            sock,
+            inferredGroupJid,
+            getGroupCallWarningText(caller.participantJid ?? normalizeJid(call.from)),
+            getMentionTargetJid(caller.participantJid ?? normalizeJid(call.from)),
+            call,
+          );
+          if (warned) {
+            auditCallGuard(call, caller, "warn", {
+              groupJid: inferredGroupJid,
+              inferred: true,
+              detail: "recent_activity_inference",
+              nowMs,
+            });
+          }
+        }
+      } else {
+        const candidates = getCallGuardRecentGroupCandidates(caller.userId, nowMs);
+        auditCallGuard(call, caller, "infer_skip", {
+          inferred: true,
+          detail: candidates.length === 0 ? "no_recent_group_activity" : `ambiguous_recent_group_activity:${candidates.join(",")}`,
+          nowMs,
+        });
+      }
     }
     return;
   }
@@ -544,11 +689,12 @@ const handleCall = async (sock: WASocket, call: WACallEvent): Promise<void> => {
   }
 
   handledCallOfferIds.add(call.id);
-  const warningText = getGroupCallWarningText(call.from);
-  const mentionTargetJid = getMentionTargetJid(call.from);
+  const callerMentionJid = caller?.participantJid ?? normalizeJid(call.from);
+  const warningText = getGroupCallWarningText(callerMentionJid);
+  const mentionTargetJid = getMentionTargetJid(callerMentionJid);
 
   if (config.dryRun) {
-    warn("Dry run: would reject group call and send warning", {
+    warn("Dry run: would reject group call and enforce call guard", {
       callId: call.id,
       groupJid,
       callerJid: call.from,
@@ -558,24 +704,72 @@ const handleCall = async (sock: WASocket, call: WACallEvent): Promise<void> => {
     return;
   }
 
-  try {
-    await sock.rejectCall(call.id, call.from);
-    await sendModerationMessage(sock, groupJid, warningText, mentionTargetJid);
-    warn("Rejected group call and warned chat", {
-      callId: call.id,
+  await rejectCallForGuard(sock, call);
+  if (!caller) {
+    return;
+  }
+
+  const nowMs = Date.now();
+  auditCallGuard(call, caller, "reject", { groupJid, nowMs });
+  const activeViolations = addCallViolationAndCountActive(
+    caller.userId,
+    groupJid,
+    call.id,
+    nowMs,
+    getCallGuardWindowMs(),
+  );
+
+  if (shouldSendCallGuardWarning(caller.userId, groupJid, nowMs)) {
+    const warned = await sendCallGuardWarning(sock, groupJid, warningText, mentionTargetJid, call);
+    if (warned) {
+      auditCallGuard(call, caller, "warn", { groupJid, nowMs });
+    }
+  }
+
+  if (activeViolations >= config.groupCallGuardRemoveOn) {
+    auditCallGuard(call, caller, "remove_attempt", {
       groupJid,
-      callerJid: call.from,
-      isVideo: call.isVideo,
+      detail: `active_violations:${activeViolations}`,
+      nowMs,
     });
-  } catch (callGuardError) {
-    handledCallOfferIds.delete(call.id);
-    error("Failed to reject group call", {
-      callId: call.id,
-      groupJid,
-      callerJid: call.from,
-      isVideo: call.isVideo,
-      error: callGuardError,
-    });
+
+    const liveParticipantJid = findParticipantJidForUser(caller.userId, discoveredGroupMetadata.get(groupJid));
+    if (!liveParticipantJid) {
+      auditCallGuard(call, caller, "remove_fail", {
+        groupJid,
+        detail: "participant_not_found",
+        nowMs,
+      });
+      return;
+    }
+
+    try {
+      await sock.groupParticipantsUpdate(groupJid, [liveParticipantJid], "remove");
+      auditCallGuard(call, caller, "remove_ok", {
+        groupJid,
+        detail: `active_violations:${activeViolations}`,
+        nowMs,
+      });
+      warn("Removed caller for repeated group call attempts", {
+        callId: call.id,
+        callerJid: call.from,
+        groupJid,
+        activeViolations,
+      });
+    } catch (removeError) {
+      auditCallGuard(call, caller, "remove_fail", {
+        groupJid,
+        detail: removeError instanceof Error ? removeError.message : String(removeError),
+        nowMs,
+      });
+      error("Failed to remove caller for repeated group call attempts", {
+        callId: call.id,
+        callerJid: call.from,
+        groupJid,
+        activeViolations,
+        error: removeError,
+      });
+    }
   }
 };
 
@@ -997,6 +1191,8 @@ Push name: ${getPushName(msg) ?? "unknown"}`,
     if (!isManagedGroup(groupJid)) {
       return;
     }
+
+    recordCallGuardRecentActivity(sender.userId, groupJid);
 
     if (config.ticketMarketplaceGroupJids.includes(groupJid)) {
       recordTicketMarketplaceRuleReminderActivity(groupJid);
@@ -1644,6 +1840,7 @@ export const startBot = async (): Promise<void> => {
   await loadLidMappings();
   purgeExpiredStrikes();
   purgeExpiredMutes();
+  purgeExpiredCallViolations(getCallGuardWindowMs());
   if (!healthServerStarted && !healthServerErrored) {
     healthServer.listen(healthPort, () => {
       log(`Health endpoint listening on port ${healthPort}`);
@@ -1661,6 +1858,12 @@ export const startBot = async (): Promise<void> => {
       purgeExpiredMutes();
     }, 60 * 60 * 1000);
     mutePurgeTimer.unref();
+  }
+  if (!callViolationPurgeTimer) {
+    callViolationPurgeTimer = setInterval(() => {
+      purgeExpiredCallViolations(getCallGuardWindowMs());
+    }, 60 * 60 * 1000);
+    callViolationPurgeTimer.unref();
   }
   log(`${config.botName} ${VERSION} starting at ${STARTED_AT}`);
   logConfig();
@@ -1912,6 +2115,11 @@ const shutdown = async (signal: string): Promise<void> => {
     if (mutePurgeTimer) {
       clearInterval(mutePurgeTimer);
       mutePurgeTimer = null;
+    }
+
+    if (callViolationPurgeTimer) {
+      clearInterval(callViolationPurgeTimer);
+      callViolationPurgeTimer = null;
     }
 
     if (globalBanEnforcementTimer) {

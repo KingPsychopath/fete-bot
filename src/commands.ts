@@ -8,6 +8,7 @@ import {
   addModerator,
   addMute,
   addStrike,
+  clearCallViolations,
   clearReviewQueueEntry,
   getActiveMutes,
   getActiveStrikes,
@@ -243,10 +244,59 @@ const formatGroupList = (
   groups: ReadonlyMap<string, string> | ReadonlyMap<string, GroupMetadata>,
 ): string => groupJids.map((groupJid) => formatGroupName(groupJid, groups)).join(", ");
 
-const pardonUserInGroup = (userId: string, groupJid: string): void => {
-  resetStrikes(userId, groupJid);
-  clearReviewQueueEntry(userId, groupJid);
-  removeMute(userId, groupJid);
+type PardonClearCounts = {
+  strikes: number;
+  mutes: number;
+  reviewItems: number;
+  callViolations: number;
+};
+
+const emptyPardonClearCounts = (): PardonClearCounts => ({
+  strikes: 0,
+  mutes: 0,
+  reviewItems: 0,
+  callViolations: 0,
+});
+
+const addPardonClearCounts = (left: PardonClearCounts, right: PardonClearCounts): PardonClearCounts => ({
+  strikes: left.strikes + right.strikes,
+  mutes: left.mutes + right.mutes,
+  reviewItems: left.reviewItems + right.reviewItems,
+  callViolations: left.callViolations + right.callViolations,
+});
+
+const formatCountLabel = (count: number, singular: string, plural = `${singular}s`): string =>
+  `${count} ${count === 1 ? singular : plural}`;
+
+const formatPardonClearSummary = (
+  target: ResolvedUser,
+  scopeLabel: string,
+  counts: PardonClearCounts,
+): string => {
+  const cleared = [
+    counts.strikes > 0 ? formatCountLabel(counts.strikes, "strike") : null,
+    counts.mutes > 0 ? formatCountLabel(counts.mutes, "mute") : null,
+    counts.reviewItems > 0 ? formatCountLabel(counts.reviewItems, "review item") : null,
+    counts.callViolations > 0 ? formatCountLabel(counts.callViolations, "call violation") : null,
+  ].filter((value): value is string => Boolean(value));
+
+  return cleared.length > 0
+    ? `Pardoned ${formatUserSummary(target)} in ${scopeLabel}: ${cleared.join(", ")}.`
+    : `Pardoned ${formatUserSummary(target)} in ${scopeLabel}: no active moderation items.`;
+};
+
+const pardonUserInGroup = (userId: string, groupJid: string): PardonClearCounts => {
+  const strikes = resetStrikes(userId, groupJid);
+  const reviewItems = clearReviewQueueEntry(userId, groupJid);
+  const mutes = removeMute(userId, groupJid);
+  const callViolations = clearCallViolations(userId, groupJid);
+
+  return {
+    strikes,
+    mutes,
+    reviewItems,
+    callViolations,
+  };
 };
 
 const formatReason = (reason?: string | null): string => reason?.trim() || "none";
@@ -1218,9 +1268,9 @@ They can now send messages again.`,
   }
 
   if (command === "!pardon" || command === "!resetstrikes") {
-    pardonUserInGroup(target.userId, groupJid);
+    const clearCounts = pardonUserInGroup(target.userId, groupJid);
     await sock.sendMessage(groupJid, {
-      text: `✅ Strikes cleared and mute lifted for ${formatUserSummary(target)}`,
+      text: `✅ ${formatPardonClearSummary(target, formatGroupName(groupJid, groups), clearCounts)}`,
     });
     logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "success");
     return true;
@@ -1701,12 +1751,13 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
       return;
     }
 
-    for (const groupJid of groupJids) {
-      pardonUserInGroup(target.userId, groupJid);
-    }
+    const clearCounts = groupJids.reduce<PardonClearCounts>(
+      (total, groupJid) => addPardonClearCounts(total, pardonUserInGroup(target.userId, groupJid)),
+      emptyPardonClearCounts(),
+    );
 
     await sock.sendMessage(replyJid, {
-      text: `✅ Strikes cleared and mute lifted for ${formatUserSummary(target)} in ${formatGroupScope(groupJids, groups)}`,
+      text: `✅ ${formatPardonClearSummary(target, formatGroupScope(groupJids, groups), clearCounts)}`,
     });
     logAudit(actorContext, parsed.command, target.userId, target.participantJid, parsed.groupJid, text, "success");
     return;

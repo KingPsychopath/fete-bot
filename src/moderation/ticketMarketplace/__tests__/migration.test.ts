@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { migrateSchemaV2ToV3, migrateSchemaV3ToV4 } from "../../../db.js";
+import { migrateSchemaV2ToV3, migrateSchemaV3ToV4, migrateSchemaV4ToV5 } from "../../../db.js";
 
 let tempDir: string | null = null;
 
@@ -93,6 +93,29 @@ describe("v3 to v4 migration", () => {
       });
       expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'announcement_cycle_items'").get()).toEqual({
         name: "announcement_cycle_items",
+      });
+    } finally {
+      database.close();
+    }
+  });
+});
+
+describe("v4 to v5 migration", () => {
+  it("creates call guard tables without touching existing data", () => {
+    const database = createV2Database();
+    try {
+      migrateSchemaV2ToV3(database);
+      migrateSchemaV3ToV4(database);
+      migrateSchemaV4ToV5(database);
+
+      expect(Number(database.pragma("user_version", { simple: true }))).toBe(5);
+      expect(database.prepare("SELECT COUNT(*) AS count FROM users").get()).toEqual({ count: 1 });
+      expect(database.prepare("SELECT COUNT(*) AS count FROM strikes").get()).toEqual({ count: 1 });
+      expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'call_violations'").get()).toEqual({
+        name: "call_violations",
+      });
+      expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'call_guard_audit'").get()).toEqual({
+        name: "call_guard_audit",
       });
     } finally {
       database.close();

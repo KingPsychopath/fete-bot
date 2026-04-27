@@ -92,7 +92,7 @@ Notes:
 
 - `DRY_RUN=true` by default
 - `ALLOWED_GROUP_JIDS` is optional; when empty, the bot acts in all joined groups
-- `GROUP_CALL_GUARD_ENABLED=true` rejects incoming group calls in guarded chats and warns the caller in the group
+- `GROUP_CALL_GUARD_ENABLED=true` rejects incoming group calls where possible and enforces against repeat callers
 - `GROUP_CALL_GUARD_GROUP_JIDS` is optional; when empty, call guarding applies to all managed groups
 - `TICKET_MARKETPLACE_MANAGEMENT=true` by default
 - `TICKET_MARKETPLACE_GROUP_JIDS` is comma-separated and defaults to `120363418331899807@g.us`
@@ -156,9 +156,11 @@ Special rules:
 
 ### Group call guard
 
-- Incoming audio and video group calls are rejected when `GROUP_CALL_GUARD_ENABLED=true`
+- Incoming audio and video group calls are rejected where possible when `GROUP_CALL_GUARD_ENABLED=true`
 - `GROUP_CALL_GUARD_GROUP_JIDS` follows the same empty-list behavior as group JID config: empty applies to all managed groups; a comma-separated list applies only to those groups
 - The bot sends `GROUP_CALL_GUARD_WARNING_TEXT` in the group after rejecting the call; use `{mention}` where the caller mention should appear
+- Known-group call attempts are persisted, and the caller is removed on `GROUP_CALL_GUARD_REMOVE_ON` active violations within `GROUP_CALL_GUARD_WINDOW_HOURS`
+- If Baileys reports a group call without a group JID, the bot rejects it when globally scoped and only warns a chat when recent activity points to exactly one managed group
 - `DRY_RUN=true` logs what would happen without rejecting the call or sending the warning
 
 ### Ticket marketplace routing
@@ -522,7 +524,11 @@ Notes:
 - `PORT=3000`
 - `GROUP_CALL_GUARD_ENABLED=true|false`
 - `GROUP_CALL_GUARD_GROUP_JIDS=120363...@g.us,120363...@g.us`
-- `GROUP_CALL_GUARD_WARNING_TEXT=Hey {mention} - calls aren't allowed in this group, so I ended that call. Don't do that again. 🙏🏾`
+- `GROUP_CALL_GUARD_WARNING_TEXT=Hey {mention} - calls aren't allowed in this group. Don't do that again. 🙏🏾`
+- `GROUP_CALL_GUARD_REMOVE_ON=2`
+- `GROUP_CALL_GUARD_WINDOW_HOURS=24`
+- `GROUP_CALL_GUARD_WARNING_COOLDOWN_SECONDS=30`
+- `GROUP_CALL_GUARD_RECENT_ACTIVITY_TTL_MINUTES=10`
 - `ANNOUNCEMENTS_ENABLED=false`
 - `ANNOUNCEMENTS_TARGET_GROUP_JID=120363...@g.us`
 - `ANNOUNCEMENTS_START_DATE=2026-04-30`
@@ -583,7 +589,7 @@ Notes:
 
 - The bot must be an admin in each moderated group to delete messages or remove members
 - `DRY_RUN=true` still logs what would happen, but does not delete or send moderation replies
-- With `DRY_RUN=false`, group call guard rejects calls and sends its warning immediately
+- With `DRY_RUN=false`, group call guard rejects calls where possible, warns callers, and removes repeat callers when the group is known
 - Ticket marketplace routing replies to buying/selling intent without adding strikes; `!ticketdelete on` enables deletion after the reply
 - Ticket spotlight reposts are enabled by default and use SQLite claims to avoid duplicate sends across overlapping bot processes
 - Ticket-platform links get a specific redirect message to `fete.outofofficecollective.co.uk`
