@@ -103,6 +103,8 @@ const WEAK_BUY_TERMS = [
   "want",
   "after",
   "looking for",
+  "searching for",
+  "seeking",
   "cherche",
   "recherche",
   "besoin",
@@ -155,7 +157,7 @@ const STRONG_BUY_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   {
     label: "anyone selling ticket",
     regex: new RegExp(
-      String.raw`\b(?:if\s+)?(?:anyone|anybody|any1|someone|somebody)\s+(?:is\s+)?selling\s+(?:[\p{L}\p{N}]+\s+){0,4}${ticketTermPattern}\b`,
+      String.raw`\b(?:if\s+)?(?:anyone|anybody|any1|someone|somebody)\s+(?:is\s+)?selling\s+(?:[\p{L}\p{N}]+\s+){0,8}${ticketTermPattern}\b`,
       "iu",
     ),
   },
@@ -170,13 +172,21 @@ const STRONG_BUY_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   {
     label: "anyone got spare",
     regex: new RegExp(
-      String.raw`\b(?:does\s+)?(?:anyone|anybody|any1|someone|somebody)\s+(?:got|has|have)\s+(?:a\s+|an\s+|\d+\s+)?(?:spare|extra|(?:[\p{L}\p{N}]+\s+){0,3}${ticketTermPattern})\b`,
+      String.raw`\b(?:does\s+)?(?:anyone|anybody|any1|someone|somebody|any)\s+(?:got|has|have)?\s*(?:a\s+|an\s+|\d+\s+)?(?:spares?|extras?|(?:[\p{L}\p{N}]+\s+){0,3}${ticketTermPattern})\b`,
       "iu",
     ),
   },
   {
+    label: "spare ticket going",
+    regex: new RegExp(String.raw`\bany\s+spare\s+(?:[\p{L}\p{N}]+\s+){0,3}${ticketTermPattern}\s+going\b`, "iu"),
+  },
+  {
     label: "ISO ticket",
     regex: new RegExp(String.raw`\biso\s+(?:a\s+|an\s+|\d+\s+)?(?:[\p{L}\p{N}]+\s+){0,3}${ticketTermPattern}\b`, "iu"),
+  },
+  {
+    label: "WTB ticket",
+    regex: new RegExp(String.raw`\bwtb\s+(?:a\s+|an\s+|\d+\s+)?(?:[\p{L}\p{N}]+\s+){0,4}${ticketTermPattern}\b`, "iu"),
   },
   {
     label: "in search of ticket",
@@ -190,6 +200,10 @@ const STRONG_BUY_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   {
     label: "looking for ticket",
     regex: new RegExp(String.raw`\blooking\s+for\s+(?:a\s+|\d+\s+)?${ticketTermPattern}\b`, "iu"),
+  },
+  {
+    label: "ticket wanted",
+    regex: new RegExp(String.raw`\b${ticketTermPattern}\s+wanted\b`, "iu"),
   },
 ];
 
@@ -226,8 +240,10 @@ const BUYER_INTENT_PATTERNS: Array<{ label: string; regex: RegExp }> = [
 const TICKET_DEPENDENT_STRONG_BUY_SIGNALS = new Set([
   "anyone selling ticket",
   "ISO ticket",
+  "WTB ticket",
   "in search of ticket",
   "looking for ticket",
+  "ticket wanted",
 ]);
 
 const NEGATED_BUYER_INTENT_PATTERNS: Array<{ label: string; regex: RegExp }> = [
@@ -240,6 +256,13 @@ const NEGATED_BUYER_INTENT_PATTERNS: Array<{ label: string; regex: RegExp }> = [
 ];
 
 const NON_MARKETPLACE_PATTERNS: Array<{ label: string; regex: RegExp }> = [
+  {
+    label: "scammer tried to sell me",
+    regex: new RegExp(
+      String.raw`\b(?:scammer|scammers)\s+(?:is\s+|are\s+|was\s+|were\s+|just\s+)?(?:trying|tryin|tryna|tried)\s+(?:to\s+)?sell\s+me\b`,
+      "iu",
+    ),
+  },
   {
     label: "third party tried to sell me",
     regex: new RegExp(
