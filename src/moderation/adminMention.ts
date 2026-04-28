@@ -20,6 +20,7 @@ export const ADMIN_MENTION_REPLIES = [
   "Who's calling me from an unknown number",
   "Please hold while I pretend to be professional",
   "Who do I have to side-eye today?",
+  "Before you run to conclusions, did you run to the gym today?",
 ] as const;
 
 const ADMIN_MENTION_REGEX = /(^|[^\p{L}\p{N}_])@admins?\b/iu;
