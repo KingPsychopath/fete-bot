@@ -1,7 +1,7 @@
 import { getDomain } from "tldts";
 import { describe, expect, it } from "vitest";
 
-import { containsDisallowedUrl, isAllowed } from "./linkChecker.js";
+import { containsDisallowedUrl, extractUrls, isAllowed } from "./linkChecker.js";
 
 describe("linkChecker accommodation links", () => {
   it("allows distinctive accommodation brands across TLDs", () => {
@@ -72,5 +72,69 @@ describe("linkChecker accommodation links", () => {
     expect(isAllowed("https://x.com/@milkandhenny")).toBe(true);
     expect(isAllowed("https://twitter.com/milkandhenny")).toBe(true);
     expect(isAllowed("https://twitter.com/@milkandhenny")).toBe(true);
+  });
+
+  it("does not treat dotted social handles as bare URLs", () => {
+    expect(extractUrls("itss.davinaa ty sis")).toEqual([]);
+    expect(extractUrls("@/itss.davinaa love")).toEqual([]);
+    expect(containsDisallowedUrl("itss.davinaa ty sis")).toEqual({ found: false });
+    expect(containsDisallowedUrl("@/itss.davinaa love")).toEqual({ found: false });
+  });
+
+  it("still treats real bare domains as URLs", () => {
+    expect(containsDisallowedUrl("google.com")).toEqual({
+      found: true,
+      url: "google.com",
+      reason: "bare profile handle or URL",
+    });
+    expect(containsDisallowedUrl("ra.co/events/1")).toEqual({
+      found: true,
+      url: "ra.co/events/1",
+      reason: "ticket platform",
+    });
+    expect(containsDisallowedUrl("example.co.uk/thing")).toEqual({
+      found: true,
+      url: "example.co.uk/thing",
+      reason: "not in allowlist",
+    });
+  });
+
+  it("blocks explicit links even when the suffix is not a known public suffix", () => {
+    expect(containsDisallowedUrl("https://itss.davinaa")).toEqual({
+      found: true,
+      url: "https://itss.davinaa",
+      reason: "not in allowlist",
+    });
+    expect(containsDisallowedUrl("www.itss.davinaa")).toEqual({
+      found: true,
+      url: "www.itss.davinaa",
+      reason: "not in allowlist",
+    });
+  });
+
+  it("documents profile and redirect edge cases", () => {
+    expect(containsDisallowedUrl("@milkandhenny.com")).toEqual({ found: false });
+    expect(containsDisallowedUrl("@/milkandhenny.com")).toEqual({ found: false });
+    expect(containsDisallowedUrl("milkandhenny.com")).toEqual({
+      found: true,
+      url: "milkandhenny.com",
+      reason: "bare profile handle or URL",
+    });
+    expect(containsDisallowedUrl("https://instagram.com/milkandhenny")).toEqual({ found: false });
+    expect(containsDisallowedUrl("https://instagram.com/reel/abc123")).toEqual({
+      found: true,
+      url: "https://instagram.com/reel/abc123",
+      reason: "not in allowlist",
+    });
+    expect(containsDisallowedUrl("https://l.instagram.com/?u=https%3A%2F%2Fexample.com")).toEqual({
+      found: true,
+      url: "https://l.instagram.com/?u=https%3A%2F%2Fexample.com",
+      reason: "not in allowlist",
+    });
+    expect(containsDisallowedUrl("https://vm.tiktok.com/example")).toEqual({
+      found: true,
+      url: "https://vm.tiktok.com/example",
+      reason: "url shortener",
+    });
   });
 });

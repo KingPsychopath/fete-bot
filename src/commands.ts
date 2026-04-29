@@ -635,6 +635,10 @@ const previewWarningText = (reason: DisallowedUrlReason): string => {
     return `Hey @name - shortened links aren't allowed. Please share the full URL instead 🙏`;
   }
 
+  if (reason === "bare profile handle or URL") {
+    return "Hey @name - this group only allows links to social profiles, music, or accommodation. If that was a social profile, please write it as @username, @/username, or share the full Instagram/TikTok/X profile URL. Bare dotted text can look like a website, so this one was removed without a strike. Future repeats may count as link violations 🙏";
+  }
+
   if (reason === "whatsapp invite link") {
     return `Hey @name - WhatsApp group invite links aren't allowed in here 🙏`;
   }

@@ -1,7 +1,7 @@
 // NOTE: This allowlist is intentionally hardcoded — it is business logic, not configuration.
 // To change what is allowed, edit this file and redeploy. Do not move to env vars.
 
-import { getDomain, getDomainWithoutSuffix } from "tldts";
+import { getDomain, getDomainWithoutSuffix, parse as parseDomain } from "tldts";
 
 export const ALLOWED_DOMAINS = [
   "spotify.com",
@@ -73,6 +73,7 @@ export const SHORTENER_DOMAINS = [
 
 export type DisallowedUrlReason =
   | "not in allowlist"
+  | "bare profile handle or URL"
   | "ticket platform"
   | "url shortener"
   | "tiktok video (profile links only)"
@@ -147,8 +148,28 @@ const isTicketPlatformDomain = (domain: string): boolean =>
   ]);
 
 export const extractUrls = (text: string): string[] => {
-  const matches = Array.from(text.matchAll(URL_REGEX), (match) => match[1]);
-  return matches.map(stripTrailingPunctuation);
+  const urls: string[] = [];
+
+  for (const match of text.matchAll(URL_REGEX)) {
+    const rawUrl = match[1];
+    if (!rawUrl) {
+      continue;
+    }
+
+    const startIndex = match.index ?? 0;
+    const url = stripTrailingPunctuation(rawUrl);
+    const hasExplicitUrlPrefix = /^(?:https?:\/\/|www\.)/i.test(url);
+    const isHandleStyleText = text.slice(Math.max(0, startIndex - 2), startIndex) === "@/";
+    const parsedDomain = parseDomain(url);
+
+    if (!hasExplicitUrlPrefix && (isHandleStyleText || !parsedDomain.isIcann)) {
+      continue;
+    }
+
+    urls.push(url);
+  }
+
+  return urls;
 };
 
 export const normaliseDomain = (url: string): string => {
@@ -159,6 +180,17 @@ export const normaliseDomain = (url: string): string => {
 export const isShortener = (url: string): boolean => {
   const domain = normaliseDomain(url);
   return domain.length > 0 && matchesDomain(domain, SHORTENER_DOMAINS);
+};
+
+const isExplicitUrl = (url: string): boolean => /^(?:https?:\/\/|www\.)/i.test(url);
+
+const isBareDomainOnly = (url: string): boolean => {
+  if (isExplicitUrl(url) || /[/?#]/u.test(url)) {
+    return false;
+  }
+
+  const parsedDomain = parseDomain(url);
+  return Boolean(parsedDomain.isIcann && parsedDomain.domain && parsedDomain.hostname === parsedDomain.domain);
 };
 
 export const isTikTokProfileUrl = (url: string): boolean => {
@@ -312,6 +344,10 @@ const getDisallowedReason = (url: string): DisallowedUrlReason => {
 
   if (domain === "vm.tiktok.com" || domain === "tiktok.com") {
     return "tiktok video (profile links only)";
+  }
+
+  if (isBareDomainOnly(url)) {
+    return "bare profile handle or URL";
   }
 
   return "not in allowlist";

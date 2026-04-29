@@ -1144,6 +1144,23 @@ export const getDeletedMessageLogs = (
   }));
 };
 
+export const getDeletedMessageLogCount = (
+  userId: string,
+  groupJid: string,
+  reason: string,
+): number => {
+  const terminalUserId = resolveTerminalUserId(userId);
+  const result = getDb()
+    .prepare<[string, string, string], CountRow>(`
+      SELECT COUNT(*) AS count
+      FROM logs
+      WHERE user_id = ? AND group_jid = ? AND reason = ? AND action = 'DELETED'
+    `)
+    .get(terminalUserId, groupJid, reason);
+
+  return result?.count ?? 0;
+};
+
 export const logCallGuardAudit = (entry: CallGuardAuditEntry): void => {
   const writableUserId = assertUserWritable(entry.userId);
   getDb()

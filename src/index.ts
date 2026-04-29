@@ -25,6 +25,7 @@ import {
   addMute,
   closeDb,
   clearReviewQueueEntry,
+  getDeletedMessageLogCount,
   getGlobalBans,
   initDb,
   isBanned,
@@ -462,6 +463,10 @@ const getWarningText = (
 
   if (reason === "url shortener") {
     return `Hey ${mentionLabel} - shortened links aren't allowed. Please share the full URL instead 🙏`;
+  }
+
+  if (reason === "bare profile handle or URL") {
+    return `Hey ${mentionLabel} - this group only allows links to social profiles, music, or accommodation. If that was a social profile, please write it as @username, @/username, or share the full Instagram/TikTok/X profile URL. Bare dotted text can look like a website, so this one was removed without a strike. Future repeats may count as link violations 🙏`;
   }
 
   return `Hey ${mentionLabel} — please keep links to social profiles, music, or accommodation only. For events, post at fete.outofofficecollective.co.uk 🙏`;
@@ -1946,16 +1951,24 @@ They have been banned and removed after repeatedly trying to post while muted.`,
 
       try {
         await sock.sendMessage(groupJid, { delete: msg.key as WAMessageKey });
-        const strikeCount = addStrike(
-          sender.userId,
-          groupJid,
-          moderationResult.reason ?? "unknown",
-          randomUUID(),
-        );
+        const reason = moderationResult.reason ?? "unknown";
+        const shouldSkipFirstAmbiguousBareUrlStrike =
+          reason === "bare profile handle or URL" &&
+          getDeletedMessageLogCount(sender.userId, groupJid, reason) === 0;
+        const strikeCount = shouldSkipFirstAmbiguousBareUrlStrike
+          ? 0
+          : addStrike(
+              sender.userId,
+              groupJid,
+              reason,
+              randomUUID(),
+            );
         await sendModerationMessage(
           sock,
           groupJid,
-          appendStrikeWarning(warningText, strikeCount),
+          shouldSkipFirstAmbiguousBareUrlStrike
+            ? warningText
+            : appendStrikeWarning(warningText, strikeCount),
           mentionTargetJid,
         );
 
@@ -1964,7 +1977,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
             sender.userId,
             groupJid,
             pushName,
-            moderationResult.reason ?? "unknown",
+            reason,
             text,
           );
           if (config.muteOnStrike3) {
@@ -1983,7 +1996,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
             canonicalSenderAlias,
             groupJid,
             pushName,
-            moderationResult.reason ?? "unknown",
+            reason,
             phoneJid,
           );
         }
