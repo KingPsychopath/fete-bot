@@ -1,4 +1,4 @@
-import type { GroupMetadata, WASocket } from "@whiskeysockets/baileys";
+import type { GroupMetadata, WAMessageKey, WASocket } from "@whiskeysockets/baileys";
 import { randomUUID } from "node:crypto";
 
 import { handleAnnouncementCommand } from "./announcements/commands.js";
@@ -1180,7 +1180,7 @@ export async function handleGroupCommand(
   text: string,
   quotedParticipant: string | null,
   quotedText: string | null,
-  quotedMessageId: string | null,
+  quotedMessageKey: WAMessageKey | null,
   config: Config,
   groups: Map<string, string>,
   groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
@@ -1246,8 +1246,10 @@ export async function handleGroupCommand(
     }
   }
 
+  const commandReplyJid = actorContext.participantJid ?? groupJid;
+
   if (command === "!spotlight" && !quotedParticipant) {
-    await sock.sendMessage(groupJid, { text: "Reply to someone's message with !spotlight to spotlight it." });
+    await sock.sendMessage(commandReplyJid, { text: "Reply to someone's message with !spotlight to spotlight it." });
     logAudit(actorContext, command, null, null, groupJid, text, "error");
     return true;
   }
@@ -1267,40 +1269,41 @@ export async function handleGroupCommand(
 
   if (command === "!spotlight") {
     if (!config.ticketSpotlightEnabled) {
-      await sock.sendMessage(groupJid, { text: "Ticket spotlighting is disabled." });
+      await sock.sendMessage(commandReplyJid, { text: "Ticket spotlighting is disabled." });
       logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "error");
       return true;
     }
 
     const body = quotedText?.trim();
     if (!body) {
-      await sock.sendMessage(groupJid, { text: "Reply to a text message with !spotlight to spotlight it." });
+      await sock.sendMessage(commandReplyJid, { text: "Reply to a text message with !spotlight to spotlight it." });
       logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "error");
       return true;
     }
 
-    if (!quotedMessageId) {
-      await sock.sendMessage(groupJid, { text: "Couldn't read the quoted message ID, so I can't spotlight this one." });
+    if (!quotedMessageKey?.id) {
+      await sock.sendMessage(commandReplyJid, { text: "Couldn't read the quoted message ID, so I can't spotlight this one." });
       logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "error");
       return true;
     }
+    const quotedMessageId = quotedMessageKey.id;
 
     const targetGroupJids = getEffectiveSpotlightTargetJids(config, groups);
     if (targetGroupJids.length === 0) {
-      await sock.sendMessage(groupJid, { text: "No spotlight target groups are configured." });
+      await sock.sendMessage(commandReplyJid, { text: "No spotlight target groups are configured." });
       logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "error");
       return true;
     }
 
     const parsedSpotlightArgs = parseManualSpotlightArgs(rest);
     if (parsedSpotlightArgs.invalid) {
-      await sock.sendMessage(groupJid, { text: "Usage: reply with !spotlight {buying|selling?} {delayMinutes?}" });
+      await sock.sendMessage(commandReplyJid, { text: "Usage: reply with !spotlight {buying|selling?} {delayMinutes?}" });
       logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "error");
       return true;
     }
 
     if (hasPendingSpotlightForSender(target.userId)) {
-      await sock.sendMessage(groupJid, {
+      await sock.sendMessage(commandReplyJid, {
         text: `There's already a pending spotlight for ${formatUserSummary(target)}.`,
       });
       logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "error");
@@ -1320,7 +1323,7 @@ export async function handleGroupCommand(
 
     if (!queued) {
       const existing = getSpotlightByIdentifier(quotedMessageId);
-      await sock.sendMessage(groupJid, {
+      await sock.sendMessage(commandReplyJid, {
         text: existing
           ? `That message is already in spotlight history as ${existing.status}.`
           : "Couldn't queue that spotlight.",
@@ -1329,10 +1332,24 @@ export async function handleGroupCommand(
       return true;
     }
 
-    await sock.sendMessage(groupJid, {
+    let reacted = false;
+    try {
+      await sock.sendMessage(groupJid, {
+        react: {
+          text: config.ticketSpotlightReactionEmoji,
+          key: quotedMessageKey,
+        },
+      });
+      reacted = true;
+    } catch {
+      reacted = false;
+    }
+
+    await sock.sendMessage(commandReplyJid, {
       text: `Queued ${queued.classifiedIntent} spotlight for ${formatUserSummary(target)}.
 Expected release: ${formatDate(queued.scheduledAt)}
 Targets: ${formatGroupList(targetGroupJids, groups)}
+Reaction: ${reacted ? "sent" : "failed"}
 Text: "${formatPreview(queued.body)}"`,
     });
     logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "success");
