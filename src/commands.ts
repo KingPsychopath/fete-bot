@@ -2,6 +2,7 @@ import type { GroupMetadata, WASocket } from "@whiskeysockets/baileys";
 import { randomUUID } from "node:crypto";
 
 import { handleAnnouncementCommand } from "./announcements/commands.js";
+import { formatAuditGroupLabel } from "./auditFormat.js";
 import { NEVER_SPOTLIGHT_GROUP_JIDS, type Config } from "./config.js";
 import {
   addBan,
@@ -1527,7 +1528,7 @@ Forwarded messages seen today: ${getForwardedMessagesSeenToday()}`,
               `${index + 1}. ${entry.timestamp} ${entry.command} [${entry.result}]
    Actor: ${entry.actorUserId ? formatUserById(entry.actorUserId) : entry.actorJid ?? "n/a"} (${entry.actorRole})
    Target: ${entry.targetUserId ? formatUserById(entry.targetUserId) : entry.targetJid ?? "n/a"}
-   Group: ${entry.groupJid ?? "n/a"}
+   Group: ${formatAuditGroupLabel(entry)}
    Input: ${entry.rawInput ?? ""}`,
           )
         : ["No audit entries found."];

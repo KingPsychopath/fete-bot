@@ -33,6 +33,7 @@ import {
   resolveTargetFromIdentifier,
   type UserSummary,
 } from "./identity.js";
+import { formatAuditGroupLabel } from "./auditFormat.js";
 import { containsDisallowedUrl } from "./linkChecker.js";
 import { formatJidForDisplay, parseDuration } from "./utils.js";
 
@@ -515,7 +516,7 @@ const showAudit = (limitInput?: string): void => {
         entry.actorUserId ? formatUserSummary(describeUser(entry.actorUserId)) : entry.actorJid ?? "n/a"
       } (${entry.actorRole}) | target: ${
         entry.targetUserId ? formatUserSummary(describeUser(entry.targetUserId)) : entry.targetJid ?? "n/a"
-      } | group: ${entry.groupJid ?? "n/a"}`,
+      } | group: ${formatAuditGroupLabel(entry)}`,
     );
   }
 };
