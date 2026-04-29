@@ -226,6 +226,10 @@ const getQuotedText = (message: WAMessage["message"]): string | null => {
   return text.trim() ? text : null;
 };
 
+const getQuotedMessageId = (message: WAMessage["message"]): string | null => {
+  return getMessageContextInfo(message)?.stanzaId ?? null;
+};
+
 const hasQuotedMessage = (message: WAMessage["message"]): boolean => {
   const contextInfo = getMessageContextInfo(message);
   return Boolean(contextInfo?.quotedMessage || contextInfo?.stanzaId);
@@ -1433,6 +1437,8 @@ Push name: ${getPushName(msg) ?? "unknown"}`,
         groupJid,
         text,
         getQuotedParticipant(msg.message),
+        getQuotedText(msg.message),
+        getQuotedMessageId(msg.message),
         config,
         discoveredGroups,
         discoveredGroupMetadata,

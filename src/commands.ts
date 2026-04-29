@@ -34,6 +34,7 @@ import {
   type ActorReference,
   type AuditResult,
   type ReviewQueueEntry,
+  type SpotlightIntent,
 } from "./db.js";
 import {
   describeUser,
@@ -50,8 +51,10 @@ import {
 import { containsDisallowedUrl, type DisallowedUrlReason } from "./linkChecker.js";
 import {
   getSpotlightByIdentifier,
+  hasPendingSpotlightForSender,
   listPendingSpotlights,
   listRecentSpotlightOutcomes,
+  queueSpotlight,
   requeueFailedSpotlights,
   requeueSpotlight,
 } from "./moderation/ticketMarketplace/spotlight/store.js";
@@ -96,6 +99,7 @@ const HELP_MESSAGE = `*Fete Bot — Admin Help*
 *Info commands*
   !status
   !reviews
+  !spotlight    {buying|selling?} {delayMinutes?} — reply only
   !spotlights   {limit?}
   !spotlight-history {limit?}
   !spotlight-requeue {messageId|rowId} {minutes?}
@@ -349,6 +353,64 @@ const formatDurationLabel = (input?: string): string => {
   } as const;
 
   return `${value} ${labels[match[2] as keyof typeof labels]}`;
+};
+
+const getEffectiveSpotlightTargetJids = (
+  config: Config,
+  groups: ReadonlyMap<string, string> | ReadonlyMap<string, GroupMetadata>,
+): string[] => {
+  const managedGroupJids = getManagedGroupJids(config, groups);
+  return (config.ticketSpotlightTargetJids.length > 0
+    ? config.ticketSpotlightTargetJids
+    : managedGroupJids
+  ).filter(
+    (groupJid) =>
+      !config.ticketMarketplaceGroupJids.includes(groupJid) &&
+      !NEVER_SPOTLIGHT_GROUP_JIDS.includes(groupJid as (typeof NEVER_SPOTLIGHT_GROUP_JIDS)[number]),
+  );
+};
+
+const parseManualSpotlightArgs = (
+  rest: string,
+): { intent: SpotlightIntent | null; delayMinutes: number; invalid: boolean } => {
+  const tokens = rest.trim().split(/\s+/).filter(Boolean);
+  let intent: SpotlightIntent | null = null;
+  let delayToken: string | undefined;
+
+  const firstToken = tokens[0]?.toLowerCase();
+  if (firstToken && ["buy", "buyer", "buying", "wanted", "want"].includes(firstToken)) {
+    intent = "buying";
+    delayToken = tokens[1];
+  } else if (firstToken && ["sell", "seller", "selling", "available"].includes(firstToken)) {
+    intent = "selling";
+    delayToken = tokens[1];
+  } else {
+    delayToken = tokens[0];
+  }
+
+  if (!delayToken) {
+    return { intent, delayMinutes: 0, invalid: false };
+  }
+
+  const delayMinutes = Number(delayToken);
+  if (!Number.isInteger(delayMinutes) || delayMinutes < 0) {
+    return { intent, delayMinutes: 0, invalid: true };
+  }
+
+  return { intent, delayMinutes: Math.min(delayMinutes, 24 * 60), invalid: false };
+};
+
+const inferSpotlightIntent = (text: string, fallback: SpotlightIntent | null): SpotlightIntent => {
+  if (fallback) {
+    return fallback;
+  }
+
+  const normalised = text.toLowerCase();
+  if (/\b(looking\s+for|searching\s+for|seeking|need|wanted|want|buy|buying)\b/u.test(normalised)) {
+    return "buying";
+  }
+
+  return "selling";
 };
 
 const formatUserSummary = (summary: UserSummary, fallbackPushName?: string | null): string => {
@@ -1117,6 +1179,8 @@ export async function handleGroupCommand(
   groupJid: string,
   text: string,
   quotedParticipant: string | null,
+  quotedText: string | null,
+  quotedMessageId: string | null,
   config: Config,
   groups: Map<string, string>,
   groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
@@ -1182,6 +1246,12 @@ export async function handleGroupCommand(
     }
   }
 
+  if (command === "!spotlight" && !quotedParticipant) {
+    await sock.sendMessage(groupJid, { text: "Reply to someone's message with !spotlight to spotlight it." });
+    logAudit(actorContext, command, null, null, groupJid, text, "error");
+    return true;
+  }
+
   if (!quotedParticipant) {
     return false;
   }
@@ -1194,6 +1264,80 @@ export async function handleGroupCommand(
   }
 
   const rest = text.trim().split(/\s+/).slice(1).join(" ").trim();
+
+  if (command === "!spotlight") {
+    if (!config.ticketSpotlightEnabled) {
+      await sock.sendMessage(groupJid, { text: "Ticket spotlighting is disabled." });
+      logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "error");
+      return true;
+    }
+
+    const body = quotedText?.trim();
+    if (!body) {
+      await sock.sendMessage(groupJid, { text: "Reply to a text message with !spotlight to spotlight it." });
+      logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "error");
+      return true;
+    }
+
+    if (!quotedMessageId) {
+      await sock.sendMessage(groupJid, { text: "Couldn't read the quoted message ID, so I can't spotlight this one." });
+      logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "error");
+      return true;
+    }
+
+    const targetGroupJids = getEffectiveSpotlightTargetJids(config, groups);
+    if (targetGroupJids.length === 0) {
+      await sock.sendMessage(groupJid, { text: "No spotlight target groups are configured." });
+      logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "error");
+      return true;
+    }
+
+    const parsedSpotlightArgs = parseManualSpotlightArgs(rest);
+    if (parsedSpotlightArgs.invalid) {
+      await sock.sendMessage(groupJid, { text: "Usage: reply with !spotlight {buying|selling?} {delayMinutes?}" });
+      logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "error");
+      return true;
+    }
+
+    if (hasPendingSpotlightForSender(target.userId)) {
+      await sock.sendMessage(groupJid, {
+        text: `There's already a pending spotlight for ${formatUserSummary(target)}.`,
+      });
+      logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "error");
+      return true;
+    }
+
+    const scheduledAt = new Date(Date.now() + parsedSpotlightArgs.delayMinutes * 60_000).toISOString();
+    const queued = queueSpotlight({
+      sourceGroupJid: groupJid,
+      sourceMsgId: quotedMessageId,
+      senderUserId: target.userId,
+      senderJid: target.participantJid ?? quotedParticipant,
+      body,
+      classifiedIntent: inferSpotlightIntent(body, parsedSpotlightArgs.intent),
+      scheduledAt,
+    });
+
+    if (!queued) {
+      const existing = getSpotlightByIdentifier(quotedMessageId);
+      await sock.sendMessage(groupJid, {
+        text: existing
+          ? `That message is already in spotlight history as ${existing.status}.`
+          : "Couldn't queue that spotlight.",
+      });
+      logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "error");
+      return true;
+    }
+
+    await sock.sendMessage(groupJid, {
+      text: `Queued ${queued.classifiedIntent} spotlight for ${formatUserSummary(target)}.
+Expected release: ${formatDate(queued.scheduledAt)}
+Targets: ${formatGroupList(targetGroupJids, groups)}
+Text: "${formatPreview(queued.body)}"`,
+    });
+    logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "success");
+    return true;
+  }
 
   if (isDestructiveCommand(command) && !checkDestructiveCommandRateLimit(actorContext.userId)) {
     await sock.sendMessage(groupJid, {
