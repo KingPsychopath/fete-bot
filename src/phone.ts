@@ -35,7 +35,13 @@ export type PhoneParseResult =
 
 const MOBILE_COMPATIBLE_TYPES = new Set<NumberType | undefined>(["MOBILE", "FIXED_LINE_OR_MOBILE", undefined]);
 
-const stripFormatting = (value: string): string => value.replace(/[\s().-]/g, "");
+const normalisePhoneInputText = (value: string): string =>
+  value
+    .normalize("NFKC")
+    .replace(/\p{Cf}/gu, "")
+    .replace(/[\uFE62\uFF0B\u2795]/gu, "+");
+
+const stripFormatting = (value: string): string => normalisePhoneInputText(value).replace(/[\s().-]/g, "");
 
 export const jidFromE164 = (e164: string): string => `${e164.slice(1)}@s.whatsapp.net`;
 
