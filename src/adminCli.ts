@@ -12,6 +12,7 @@ import {
   getAuditEntries,
   getBanGroupJids,
   getBans,
+  getDeletedMessageLogs,
   initDb,
   isModeratorUser,
   listModerators,
@@ -80,6 +81,10 @@ Mutes:
 
 Audit:
   pnpm admin:cli audit [limit]
+
+Deleted messages:
+  pnpm admin:cli deleted [limit] [reason...]
+  pnpm admin:cli deleted 25 not-in-allowlist
 
 Database:
   pnpm admin:cli db flush --yes`;
@@ -521,6 +526,47 @@ const showAudit = (limitInput?: string): void => {
   }
 };
 
+const normaliseDeletedReason = (input: string): string | undefined => {
+  const trimmed = input.trim();
+  if (!trimmed || trimmed === "all") {
+    return undefined;
+  }
+
+  if (trimmed === "not-in-allowlist" || trimmed === "social" || trimmed === "profile") {
+    return "not in allowlist";
+  }
+
+  return trimmed;
+};
+
+const showDeletedMessages = (limitInput?: string, reasonParts: string[] = []): void => {
+  const limit = Number(limitInput ?? "20");
+  const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 20;
+  const reason = normaliseDeletedReason(reasonParts.join(" "));
+  const entries = getDeletedMessageLogs(safeLimit, reason);
+
+  if (entries.length === 0) {
+    console.log(reason ? `No deleted messages found for reason: ${reason}` : "No deleted messages found");
+    return;
+  }
+
+  for (const entry of entries) {
+    const sender = entry.pushName ?? entry.participantJid ?? entry.userId ?? "unknown";
+    console.log(`id: ${entry.id}`);
+    console.log(`time: ${entry.timestamp}`);
+    console.log(`group: ${entry.groupJid}`);
+    console.log(`sender: ${sender}`);
+    if (entry.userId && entry.userId !== sender) {
+      console.log(`user: ${entry.userId}`);
+    }
+    console.log(`reason: ${entry.reason ?? "unknown"}`);
+    console.log(`url: ${entry.urlFound ?? "none"}`);
+    console.log("message:");
+    console.log(entry.messageText?.trim() || "(no message text recorded)");
+    console.log("---");
+  }
+};
+
 const showWhois = (input: string | undefined): void => {
   const user = resolveExistingUser(input);
   const summary = describeUser(user.userId);
@@ -713,6 +759,11 @@ const main = async (): Promise<void> => {
 
     if (command === "audit") {
       showAudit(subcommand);
+      return;
+    }
+
+    if (command === "deleted") {
+      showDeletedMessages(subcommand, rest);
       return;
     }
 

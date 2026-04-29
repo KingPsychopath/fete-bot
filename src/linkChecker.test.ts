@@ -64,4 +64,13 @@ describe("linkChecker accommodation links", () => {
     expect(isAllowed("https://music.youtube.com/watch?v=123")).toBe(true);
     expect(isAllowed("https://youtu.be/abc123")).toBe(false);
   });
+
+  it("allows common social profile URL shapes with and without www or @", () => {
+    expect(isAllowed("https://www.instagram.com/milkandhenny/")).toBe(true);
+    expect(isAllowed("https://www.tiktok.com/@milkandhenny")).toBe(true);
+    expect(isAllowed("https://x.com/milkandhenny")).toBe(true);
+    expect(isAllowed("https://x.com/@milkandhenny")).toBe(true);
+    expect(isAllowed("https://twitter.com/milkandhenny")).toBe(true);
+    expect(isAllowed("https://twitter.com/@milkandhenny")).toBe(true);
+  });
 });

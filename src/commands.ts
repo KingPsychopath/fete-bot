@@ -17,6 +17,7 @@ import {
   getAuditEntries,
   getBanGroupJids,
   getBans,
+  getDeletedMessageLogs,
   getForwardedMessagesSeenToday,
   getStrikesIssuedToday,
   getTotalActiveBans,
@@ -33,6 +34,7 @@ import {
   resetStrikes,
   type ActorReference,
   type AuditResult,
+  type DeletedMessageLogEntry,
   type ReviewQueueEntry,
   type SpotlightIntent,
 } from "./db.js";
@@ -104,6 +106,7 @@ const HELP_MESSAGE = `*Fete Bot — Admin Help*
   !spotlight-history {limit?}
   !spotlight-requeue {messageId|rowId} {minutes?}
   !announce     help|list|show|raw|preview|next|check|add|edit|publish|on|off|move|remove|schedule|pause|resume|test|test-group|send-now
+  !deleted      {limit?} {reason?} — DM only
   !bans         {groupJid?}
   !mutes        {groupJid?}
   !audit        {limit?}
@@ -328,6 +331,83 @@ const formatPreview = (text: string, maxLength = 140): string => {
   const lastSpace = slice.lastIndexOf(" ");
   const wordSafe = lastSpace >= Math.floor(maxLength * 0.6) ? slice.slice(0, lastSpace) : slice;
   return `${wordSafe.trimEnd()}…`;
+};
+
+const normaliseDeletedReason = (input: string): string | undefined => {
+  const trimmed = input.trim().toLowerCase();
+  if (!trimmed || trimmed === "all") {
+    return undefined;
+  }
+
+  if (["not-in-allowlist", "not_in_allowlist", "social", "profile", "profiles"].includes(trimmed)) {
+    return "not in allowlist";
+  }
+
+  return input.trim();
+};
+
+const parseDeletedCommandArgs = (text: string): { limit: number; reason?: string } => {
+  const [, limitToken, ...reasonParts] = text.trim().split(/\s+/);
+  const parsedLimit = Number(limitToken ?? "20");
+  const limit = Number.isInteger(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 50) : 20;
+  return {
+    limit,
+    reason: normaliseDeletedReason(reasonParts.join(" ")),
+  };
+};
+
+const formatDeletedMessageLogEntry = (
+  entry: DeletedMessageLogEntry,
+  index: number,
+  groups: ReadonlyMap<string, string> | ReadonlyMap<string, GroupMetadata>,
+): string => {
+  const sender = entry.pushName ?? entry.participantJid ?? entry.userId ?? "unknown";
+  const messageText = entry.messageText?.trim() || "(no message text recorded)";
+  return `${index + 1}. ${entry.timestamp}
+Group: ${formatGroupName(entry.groupJid, groups)} (${entry.groupJid})
+Sender: ${sender}
+User: ${entry.userId ?? "unknown"}
+Reason: ${entry.reason ?? "unknown"}
+URL: ${entry.urlFound ?? "none"}
+Message:
+${messageText}`;
+};
+
+const buildDeletedMessagesText = (
+  groups: ReadonlyMap<string, string> | ReadonlyMap<string, GroupMetadata>,
+  limit: number,
+  reason?: string,
+): string => {
+  const entries = getDeletedMessageLogs(limit, reason);
+  if (entries.length === 0) {
+    return reason ? `No deleted messages found for reason: ${reason}` : "No deleted messages found.";
+  }
+
+  return [
+    `Last ${entries.length} deleted message(s)${reason ? ` for reason: ${reason}` : ""}:`,
+    ...entries.map((entry, index) => formatDeletedMessageLogEntry(entry, index, groups)),
+  ].join("\n\n---\n\n");
+};
+
+const splitMessageText = (text: string, maxLength = 3500): string[] => {
+  if (text.length <= maxLength) {
+    return [text];
+  }
+
+  const chunks: string[] = [];
+  let remaining = text;
+  while (remaining.length > maxLength) {
+    const slice = remaining.slice(0, maxLength);
+    const splitIndex = Math.max(slice.lastIndexOf("\n\n---\n\n"), slice.lastIndexOf("\n"));
+    const chunkEnd = splitIndex > Math.floor(maxLength * 0.5) ? splitIndex : maxLength;
+    chunks.push(remaining.slice(0, chunkEnd).trimEnd());
+    remaining = remaining.slice(chunkEnd).trimStart();
+  }
+  if (remaining.length > 0) {
+    chunks.push(remaining);
+  }
+
+  return chunks;
 };
 
 const formatDurationLabel = (input?: string): string => {
@@ -1676,6 +1756,16 @@ Forwarded messages seen today: ${getForwardedMessagesSeenToday()}`,
       text: buildSpotlightRequeueText(identifier, safeDelayMinutes),
     });
     logAudit(actorContext, "!spotlight-requeue", null, null, null, text, "success");
+    return;
+  }
+
+  if (command === "!deleted") {
+    const { limit, reason } = parseDeletedCommandArgs(text);
+    const deletedText = buildDeletedMessagesText(groups, limit, reason);
+    for (const chunk of splitMessageText(deletedText)) {
+      await sock.sendMessage(replyJid, { text: chunk });
+    }
+    logAudit(actorContext, "!deleted", null, null, null, text, "success");
     return;
   }
 

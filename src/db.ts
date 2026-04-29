@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import Database from "better-sqlite3";
 
 import { DATABASE_PATH, ensureStorageDirs } from "./storagePaths.js";
@@ -25,6 +27,18 @@ export type LogEntry = {
   url_found?: string | null;
   action: LogAction;
   reason?: string | null;
+};
+
+export type DeletedMessageLogEntry = {
+  id: number;
+  timestamp: string;
+  groupJid: string;
+  userId: string | null;
+  participantJid: string | null;
+  pushName: string | null;
+  messageText: string | null;
+  urlFound: string | null;
+  reason: string | null;
 };
 
 export type StrikeGroupRow = {
@@ -142,6 +156,72 @@ export type ActorReference = {
 
 type CountRow = {
   count: number;
+};
+
+type LegacyLogRow = {
+  timestamp: string;
+  group_jid: string;
+  user_jid: string;
+  push_name: string | null;
+  message_text: string | null;
+  url_found: string | null;
+  action: LogAction;
+  reason: string | null;
+};
+
+type LegacyStrikeRow = {
+  id: number;
+  user_jid: string;
+  group_jid: string;
+  reason: string;
+  timestamp: string;
+  expires_at: string;
+};
+
+type LegacyBanRow = {
+  user_jid: string;
+  lid_jid: string | null;
+  group_jid: string;
+  banned_by: string;
+  reason: string | null;
+  timestamp: string;
+};
+
+type LegacyMuteRow = {
+  user_jid: string;
+  lid_jid: string | null;
+  group_jid: string;
+  muted_by: string;
+  reason: string | null;
+  muted_at: string;
+  expires_at: string | null;
+};
+
+type LegacyModeratorRow = {
+  jid: string;
+  added_by: string;
+  note: string | null;
+  added_at: string;
+};
+
+type LegacyAuditRow = {
+  timestamp: string;
+  actor_jid: string;
+  actor_role: ActorRole;
+  command: string;
+  target_jid: string | null;
+  group_jid: string | null;
+  raw_input: string | null;
+  result: AuditResult;
+};
+
+type LegacyReviewQueueRow = {
+  user_jid: string;
+  group_jid: string;
+  push_name: string | null;
+  reason: string;
+  message_text: string | null;
+  flagged_at: string;
 };
 
 const SCHEMA_VERSION = 5;
@@ -428,6 +508,234 @@ const recreateSchema = (database: Database.Database): void => {
   database.exec("PRAGMA foreign_keys = ON");
 };
 
+const tableExists = (database: Database.Database, tableName: string): boolean => {
+  const row = database
+    .prepare<[string], { name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(tableName);
+  return Boolean(row);
+};
+
+const getExistingTableColumns = (database: Database.Database, tableName: string): Set<string> =>
+  new Set(
+    (database.pragma(`table_info(${tableName})`) as Array<{ name: string }>).map((row) => row.name),
+  );
+
+const isLegacyV0Schema = (database: Database.Database): boolean => {
+  if (!tableExists(database, "logs")) {
+    return false;
+  }
+
+  const columns = getExistingTableColumns(database, "logs");
+  return columns.has("user_jid") && !columns.has("user_id");
+};
+
+const isJidLike = (value: string | null | undefined): value is string =>
+  Boolean(value?.includes("@"));
+
+const aliasTypeForJid = (jid: string): AliasType => jid.endsWith("@lid") ? "lid" : "phone";
+
+export const migrateLegacySchemaV0ToCurrent = (database: Database.Database): void => {
+  if (database.inTransaction) {
+    throw new Error("Cannot migrate schema while another transaction is active");
+  }
+
+  const logs = tableExists(database, "logs")
+    ? database.prepare<[], LegacyLogRow>("SELECT timestamp, group_jid, user_jid, push_name, message_text, url_found, action, reason FROM logs").all()
+    : [];
+  const strikes = tableExists(database, "strikes")
+    ? database.prepare<[], LegacyStrikeRow>("SELECT id, user_jid, group_jid, reason, timestamp, expires_at FROM strikes").all()
+    : [];
+  const bans = tableExists(database, "bans")
+    ? database.prepare<[], LegacyBanRow>("SELECT user_jid, lid_jid, group_jid, banned_by, reason, timestamp FROM bans").all()
+    : [];
+  const mutes = tableExists(database, "mutes")
+    ? database.prepare<[], LegacyMuteRow>("SELECT user_jid, lid_jid, group_jid, muted_by, reason, muted_at, expires_at FROM mutes").all()
+    : [];
+  const moderators = tableExists(database, "moderators")
+    ? database.prepare<[], LegacyModeratorRow>("SELECT jid, added_by, note, added_at FROM moderators").all()
+    : [];
+  const auditEntries = tableExists(database, "audit_log")
+    ? database.prepare<[], LegacyAuditRow>("SELECT timestamp, actor_jid, actor_role, command, target_jid, group_jid, raw_input, result FROM audit_log").all()
+    : [];
+  const reviewQueueEntries = tableExists(database, "review_queue")
+    ? database.prepare<[], LegacyReviewQueueRow>("SELECT user_jid, group_jid, push_name, reason, message_text, flagged_at FROM review_queue").all()
+    : [];
+
+  const displayNamesByJid = new Map<string, string>();
+  const registerDisplayName = (jid: string, displayName: string | null): void => {
+    const trimmedName = displayName?.trim();
+    if (trimmedName && !displayNamesByJid.has(jid)) {
+      displayNamesByJid.set(jid, trimmedName);
+    }
+  };
+
+  for (const logEntry of logs) {
+    registerDisplayName(logEntry.user_jid, logEntry.push_name);
+  }
+  for (const entry of reviewQueueEntries) {
+    registerDisplayName(entry.user_jid, entry.push_name);
+  }
+
+  const aliasToUserId = new Map<string, string>();
+  const ensureLegacyUser = (jid: string | null | undefined): string | null => {
+    if (!isJidLike(jid)) {
+      return null;
+    }
+
+    const existing = aliasToUserId.get(jid);
+    if (existing) {
+      return existing;
+    }
+
+    const userId = randomUUID();
+    aliasToUserId.set(jid, userId);
+    return userId;
+  };
+
+  for (const logEntry of logs) {
+    ensureLegacyUser(logEntry.user_jid);
+  }
+  for (const strike of strikes) {
+    ensureLegacyUser(strike.user_jid);
+  }
+  for (const ban of bans) {
+    const userId = ensureLegacyUser(ban.user_jid);
+    if (userId && isJidLike(ban.lid_jid)) {
+      aliasToUserId.set(ban.lid_jid, userId);
+    }
+    ensureLegacyUser(ban.banned_by);
+  }
+  for (const mute of mutes) {
+    const userId = ensureLegacyUser(mute.user_jid);
+    if (userId && isJidLike(mute.lid_jid)) {
+      aliasToUserId.set(mute.lid_jid, userId);
+    }
+    ensureLegacyUser(mute.muted_by);
+  }
+  for (const moderator of moderators) {
+    ensureLegacyUser(moderator.jid);
+    ensureLegacyUser(moderator.added_by);
+  }
+  for (const auditEntry of auditEntries) {
+    ensureLegacyUser(auditEntry.actor_jid);
+    ensureLegacyUser(auditEntry.target_jid);
+  }
+  for (const entry of reviewQueueEntries) {
+    ensureLegacyUser(entry.user_jid);
+  }
+
+  recreateSchema(database);
+
+  const now = Date.now();
+  const insertedUsers = new Set<string>();
+  const insertUser = database.prepare<[string, number, string | null]>(
+    "INSERT INTO users (id, created_at, display_name) VALUES (?, ?, ?)",
+  );
+  const insertAlias = database.prepare<[string, AliasType, string, number, number]>(`
+    INSERT OR IGNORE INTO user_aliases (alias, alias_type, user_id, first_seen_at, last_seen_at)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+
+  for (const [alias, userId] of aliasToUserId) {
+    if (!insertedUsers.has(userId)) {
+      insertUser.run(userId, now, displayNamesByJid.get(alias) ?? null);
+      insertedUsers.add(userId);
+    }
+    insertAlias.run(alias, aliasTypeForJid(alias), userId, now, now);
+  }
+
+  const insertLog = database.prepare<[string, string, string, null, string | null, string | null, string | null, LogAction, string | null]>(`
+    INSERT INTO logs (timestamp, group_jid, user_id, participant_jid, push_name, message_text, url_found, action, reason)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const logEntry of logs) {
+    const userId = aliasToUserId.get(logEntry.user_jid);
+    if (userId) {
+      insertLog.run(
+        logEntry.timestamp,
+        logEntry.group_jid,
+        userId,
+        null,
+        logEntry.push_name,
+        logEntry.message_text,
+        logEntry.url_found,
+        logEntry.action,
+        logEntry.reason,
+      );
+    }
+  }
+
+  const insertStrike = database.prepare<[string, string, string, string, string, string]>(
+    "INSERT OR IGNORE INTO strikes (id, user_id, group_jid, reason, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+  );
+  for (const strike of strikes) {
+    const userId = aliasToUserId.get(strike.user_jid);
+    if (userId) {
+      insertStrike.run(`legacy-${strike.id}`, userId, strike.group_jid, strike.reason, strike.timestamp, strike.expires_at);
+    }
+  }
+
+  const insertBan = database.prepare<[string, string, string | null, string, string | null, string]>(
+    "INSERT OR REPLACE INTO bans (user_id, group_jid, banned_by_user_id, banned_by_label, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+  );
+  for (const ban of bans) {
+    const userId = aliasToUserId.get(ban.user_jid);
+    if (userId) {
+      insertBan.run(userId, ban.group_jid, aliasToUserId.get(ban.banned_by) ?? null, ban.banned_by, ban.reason, ban.timestamp);
+    }
+  }
+
+  const insertMute = database.prepare<[string, string, string | null, string, string | null, string, string | null]>(
+    "INSERT OR REPLACE INTO mutes (user_id, group_jid, muted_by_user_id, muted_by_label, reason, muted_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  );
+  for (const mute of mutes) {
+    const userId = aliasToUserId.get(mute.user_jid);
+    if (userId) {
+      insertMute.run(userId, mute.group_jid, aliasToUserId.get(mute.muted_by) ?? null, mute.muted_by, mute.reason, mute.muted_at, mute.expires_at);
+    }
+  }
+
+  const insertModerator = database.prepare<[string, string | null, string, string | null, string]>(
+    "INSERT OR REPLACE INTO moderators (user_id, added_by_user_id, added_by_label, note, added_at) VALUES (?, ?, ?, ?, ?)",
+  );
+  for (const moderator of moderators) {
+    const userId = aliasToUserId.get(moderator.jid);
+    if (userId) {
+      insertModerator.run(userId, aliasToUserId.get(moderator.added_by) ?? null, moderator.added_by, moderator.note, moderator.added_at);
+    }
+  }
+
+  const insertAudit = database.prepare<[string, string | null, string, ActorRole, string, string | null, string | null, string | null, string | null, AuditResult]>(`
+    INSERT INTO audit_log (timestamp, actor_user_id, actor_jid, actor_role, command, target_user_id, target_jid, group_jid, raw_input, result)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const auditEntry of auditEntries) {
+    insertAudit.run(
+      auditEntry.timestamp,
+      aliasToUserId.get(auditEntry.actor_jid) ?? null,
+      auditEntry.actor_jid,
+      auditEntry.actor_role,
+      auditEntry.command,
+      auditEntry.target_jid ? aliasToUserId.get(auditEntry.target_jid) ?? null : null,
+      auditEntry.target_jid,
+      auditEntry.group_jid,
+      auditEntry.raw_input,
+      auditEntry.result,
+    );
+  }
+
+  const insertReviewQueueEntry = database.prepare<[string, string, string | null, string, string | null, string, ReviewQueueStatus]>(`
+    INSERT OR REPLACE INTO review_queue (user_id, group_jid, push_name, reason, message_text, flagged_at, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const entry of reviewQueueEntries) {
+    const userId = aliasToUserId.get(entry.user_jid);
+    if (userId) {
+      insertReviewQueueEntry.run(userId, entry.group_jid, entry.push_name, entry.reason, entry.message_text, entry.flagged_at, "pending");
+    }
+  }
+};
+
 export const migrateSchemaV2ToV3 = (
   database: Database.Database,
   options: { throwAfterSchemaForTest?: boolean } = {},
@@ -503,6 +811,13 @@ export const migrateSchemaV4ToV5 = (
 export const ensureSchema = (database: Database.Database): void => {
   const version = Number(database.pragma("user_version", { simple: true }) ?? 0);
   if (version >= SCHEMA_VERSION) {
+    database.pragma("journal_mode = WAL");
+    database.exec("PRAGMA foreign_keys = ON");
+    return;
+  }
+
+  if (version === 0 && isLegacyV0Schema(database)) {
+    migrateLegacySchemaV0ToCurrent(database);
     database.pragma("journal_mode = WAL");
     database.exec("PRAGMA foreign_keys = ON");
     return;
@@ -743,6 +1058,90 @@ export const logAction = (entry: LogEntry): void => {
       )
     `)
     .run(entry);
+};
+
+export const getDeletedMessageLogs = (
+  limit: number,
+  reason?: string,
+): DeletedMessageLogEntry[] => {
+  const safeLimit = Math.min(Math.max(Math.trunc(limit), 1), 500);
+  const reasonClause = reason ? "AND reason = ?" : "";
+  const statement = getDb()
+    .prepare<
+      [string, number],
+      {
+        id: number;
+        timestamp: string;
+        group_jid: string;
+        user_id: string | null;
+        participant_jid: string | null;
+        push_name: string | null;
+        message_text: string | null;
+        url_found: string | null;
+        reason: string | null;
+      }
+    >(`
+      SELECT
+        id,
+        timestamp,
+        group_jid,
+        user_id,
+        participant_jid,
+        push_name,
+        message_text,
+        url_found,
+        reason
+      FROM logs
+      WHERE action = 'DELETED'
+      ${reasonClause}
+      ORDER BY timestamp DESC
+      LIMIT ?
+    `);
+  const rows = reason
+    ? statement.all(reason, safeLimit)
+    : getDb()
+        .prepare<
+          [number],
+          {
+            id: number;
+            timestamp: string;
+            group_jid: string;
+            user_id: string | null;
+            participant_jid: string | null;
+            push_name: string | null;
+            message_text: string | null;
+            url_found: string | null;
+            reason: string | null;
+          }
+        >(`
+          SELECT
+            id,
+            timestamp,
+            group_jid,
+            user_id,
+            participant_jid,
+            push_name,
+            message_text,
+            url_found,
+            reason
+          FROM logs
+          WHERE action = 'DELETED'
+          ORDER BY timestamp DESC
+          LIMIT ?
+        `)
+        .all(safeLimit);
+
+  return rows.map((row) => ({
+    id: row.id,
+    timestamp: row.timestamp,
+    groupJid: row.group_jid,
+    userId: row.user_id,
+    participantJid: row.participant_jid,
+    pushName: row.push_name,
+    messageText: row.message_text,
+    urlFound: row.url_found,
+    reason: row.reason,
+  }));
 };
 
 export const logCallGuardAudit = (entry: CallGuardAuditEntry): void => {
