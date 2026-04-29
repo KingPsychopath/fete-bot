@@ -63,6 +63,8 @@ const config = {
   announcementsIntervalDays: 3,
   announcementsTimezone: "Europe/London",
   announcementsGroupMentions: [],
+  logAllowedMessages: true,
+  logMessageText: false,
 } satisfies Config;
 
 beforeEach(() => {

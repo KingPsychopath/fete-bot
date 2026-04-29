@@ -14,7 +14,7 @@ import {
   type UserRecord,
 } from "./db.js";
 import { expandKnownAliases } from "./lidMap.js";
-import { error, log, warn } from "./logger.js";
+import { debug, error, log, warn } from "./logger.js";
 import { parseHumanPhoneInput, type PhoneParseFailureReason } from "./phone.js";
 import { parseToJid } from "./utils.js";
 
@@ -1143,7 +1143,7 @@ export const findParticipantJidForUser = (
   groupMetadata: GroupMetadata | null | undefined,
 ): string | null => {
   if (!groupMetadata) {
-    warn("identity.participant.jid_missing", {
+    debug("identity.participant.jid_missing", {
       userId,
       reason: "missing_group_metadata",
     });
@@ -1163,7 +1163,7 @@ export const findParticipantJidForUser = (
     }
   }
 
-  warn("identity.participant.jid_missing", {
+  debug("identity.participant.jid_missing", {
     userId,
     groupJid: groupMetadata.id,
   });

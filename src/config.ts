@@ -221,6 +221,8 @@ const loadedConfig = {
   announcementsIntervalDays: parsePositiveInteger(process.env.ANNOUNCEMENTS_INTERVAL_DAYS, 3),
   announcementsTimezone: normaliseEnvValue(process.env.ANNOUNCEMENTS_TIMEZONE) || "Europe/London",
   announcementsGroupMentions: parseAnnouncementGroupMentions(process.env.ANNOUNCEMENTS_GROUP_MENTIONS_JSON),
+  logAllowedMessages: parseBoolean(process.env.LOG_ALLOWED_MESSAGES, true),
+  logMessageText: parseBoolean(process.env.LOG_MESSAGE_TEXT, false),
 } as const;
 
 export const config = Object.freeze(loadedConfig);

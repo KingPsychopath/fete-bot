@@ -417,6 +417,32 @@ Use:
 - `!audit`
 - `!audit 50`
 
+### Live logs
+
+Runtime logs are emitted as single-line JSON with stable fields:
+
+- `time`
+- `level`
+- `event`
+- `message`
+- contextual fields such as `groupJid`, `senderJid`, `userId`, `command`, `reason`, and `action`
+- error fields: `errorName`, `errorMessage`, `errorStack`
+
+Useful filters:
+
+```sh
+rg '"event":"message.allowed"' railway.log
+rg '"event":"deleted.disallowed.link"' railway.log
+rg '"groupJid":"120363XXXXXXXXXX@g.us"' railway.log
+rg '"level":"error"' railway.log
+```
+
+Controls:
+
+- `LOG_LEVEL=debug|info|warn|error|silent`
+- `LOG_ALLOWED_MESSAGES=true|false` controls routine `message.seen` / `message.allowed` logs
+- `LOG_MESSAGE_TEXT=true|false` controls whether normal process logs include full message text; SQLite moderation/audit tables still keep the text they already recorded
+
 ## Versioning and Status
 
 On startup the bot logs:
@@ -553,7 +579,7 @@ Migration note:
 4. Or send any message in a group and look for:
 
 ```text
-Seen message from group JID: 120363XXXXXXXXXX@g.us
+{"level":"info","time":"...","event":"message.seen","groupJid":"120363XXXXXXXXXX@g.us",...}
 ```
 
 5. Optionally add the chosen JIDs to `ALLOWED_GROUP_JIDS` if you want to restrict moderation to specific groups

@@ -65,6 +65,8 @@ const config = {
   announcementsIntervalDays: 3,
   announcementsTimezone: "Europe/London",
   announcementsGroupMentions: [{ label: "FDLM General", jid: "general@g.us" }],
+  logAllowedMessages: true,
+  logMessageText: false,
 } satisfies Config;
 
 const actor = { userId: null, label: "test" };

@@ -235,6 +235,8 @@ const getMentionedJids = (message: WAMessage["message"]): string[] => getMessage
 
 const getPushName = (msg: WAMessage): string | null => msg.pushName ?? null;
 
+const maybeLogTextField = (text: string): { text?: string } => config.logMessageText ? { text } : {};
+
 const getPhoneJid = (phoneNumber: string | null): string | null =>
   phoneNumber ? parseToJid(phoneNumber) : null;
 
@@ -1398,7 +1400,17 @@ Push name: ${getPushName(msg) ?? "unknown"}`,
       return;
     }
 
-    log(`Seen message from group JID: ${groupJid} — ${getPushName(msg) ?? "Unknown"}`);
+    if (config.logAllowedMessages) {
+      log("message.seen", {
+        groupJid,
+        senderJid: canonicalSenderAlias,
+        lidJid,
+        pushName: getPushName(msg),
+        hasText: text.length > 0,
+        textLength: text.length,
+        ...maybeLogTextField(text),
+      });
+    }
 
     if (!isManagedGroup(groupJid)) {
       return;
@@ -1455,7 +1467,8 @@ Push name: ${getPushName(msg) ?? "unknown"}`,
         phoneJid,
         lidJid,
         pushName: getPushName(msg),
-        text,
+        command: text.trim().split(/\s+/)[0] ?? "",
+        ...maybeLogTextField(text),
       });
     }
 
@@ -1811,13 +1824,16 @@ They have been banned and removed after repeatedly trying to post while muted.`,
       );
     }
 
-    log("Allowed group message", {
-      groupJid,
-      senderJid: canonicalSenderAlias,
-      lidJid,
-      pushName: getPushName(msg),
-      text,
-    });
+    if (config.logAllowedMessages) {
+      log("message.allowed", {
+        groupJid,
+        senderJid: canonicalSenderAlias,
+        lidJid,
+        pushName: getPushName(msg),
+        textLength: text.length,
+        ...maybeLogTextField(text),
+      });
+    }
 
     const moderationResult = containsDisallowedUrl(text);
     const baseLogEntry = {
