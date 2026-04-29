@@ -21,6 +21,8 @@ const config = {
   groupCallGuardWarningCooldownSeconds: 30,
   groupCallGuardRecentActivityTtlMinutes: 10,
   adminMentionCooldownMinutes: 10,
+  adminMentionOveruseThreshold: 3,
+  adminMentionOveruseWindowMinutes: 3,
   ticketMarketplaceManagement: true,
   ticketMarketplaceGroupJids: ["market@g.us"],
   ticketMarketplaceGroupName: "FDLM Ticket Marketplace",

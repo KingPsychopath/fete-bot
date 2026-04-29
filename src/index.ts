@@ -40,7 +40,12 @@ import {
 import { runStartupHealthCheck } from "./healthCheck.js";
 import { loadLidMappings, recordLidMapping } from "./lidMap.js";
 import { containsDisallowedUrl } from "./linkChecker.js";
-import { AdminMentionCooldown, hasAdminSummon, pickAdminMentionReply } from "./moderation/adminMention.js";
+import {
+  ADMIN_MENTION_OVERUSE_REPLIES,
+  AdminMentionCooldown,
+  hasAdminSummon,
+  pickAdminMentionReply,
+} from "./moderation/adminMention.js";
 import { buildGroupInviteLinkReply, classifyGroupInviteLinkRequest } from "./moderation/groupInviteLink.js";
 import { isTicketMarketplaceRefutation } from "./moderation/ticketMarketplace/classifier.js";
 import { getTicketMarketplaceDecision } from "./moderation/ticketMarketplace/index.js";
@@ -93,7 +98,11 @@ const callGuardWarningLastSentByKey = new Map<string, number>();
 const ticketMarketplaceReplyCooldown = new TicketMarketplaceReplyCooldown(
   config.ticketMarketplaceReplyCooldownMinutes * 60 * 1000,
 );
-const adminMentionCooldown = new AdminMentionCooldown(config.adminMentionCooldownMinutes * 60 * 1000);
+const adminMentionCooldown = new AdminMentionCooldown(
+  config.adminMentionCooldownMinutes * 60 * 1000,
+  config.adminMentionOveruseWindowMinutes * 60 * 1000,
+  config.adminMentionOveruseThreshold,
+);
 let strikePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let mutePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let callViolationPurgeTimer: ReturnType<typeof setInterval> | null = null;
@@ -288,6 +297,42 @@ const maybeSendAdminSummonReply = async (
   }
 
   const adminMentionNow = Date.now();
+  const shouldSendOveruseReply = adminMentionCooldown.recordSummon(groupJid, adminMentionNow);
+
+  if (shouldSendOveruseReply) {
+    const replyText = pickAdminMentionReply(undefined, ADMIN_MENTION_OVERUSE_REPLIES);
+
+    if (config.dryRun) {
+      warn("Dry run: would respond to repeated admin mentions", {
+        groupJid,
+        senderJid,
+        cooldownMinutes: config.adminMentionCooldownMinutes,
+        overuseThreshold: config.adminMentionOveruseThreshold,
+        overuseWindowMinutes: config.adminMentionOveruseWindowMinutes,
+        wouldSendText: replyText,
+      });
+      return true;
+    }
+
+    try {
+      await sock.sendMessage(groupJid, { text: replyText }, { quoted: msg });
+      log("Responded to repeated admin mentions", {
+        groupJid,
+        senderJid,
+        cooldownMinutes: config.adminMentionCooldownMinutes,
+        overuseThreshold: config.adminMentionOveruseThreshold,
+        overuseWindowMinutes: config.adminMentionOveruseWindowMinutes,
+      });
+    } catch (adminMentionError) {
+      error("Failed to respond to repeated admin mentions", {
+        groupJid,
+        senderJid,
+        error: adminMentionError,
+      });
+    }
+
+    return true;
+  }
 
   if (adminMentionCooldown.isCoolingDown(groupJid, adminMentionNow)) {
     log("Suppressed admin mention reply during cooldown", {
@@ -299,7 +344,7 @@ const maybeSendAdminSummonReply = async (
   }
 
   const replyText = pickAdminMentionReply();
-  adminMentionCooldown.record(groupJid, adminMentionNow);
+  adminMentionCooldown.recordCooldown(groupJid, adminMentionNow);
 
   if (config.dryRun) {
     warn("Dry run: would respond to admin mention", {
