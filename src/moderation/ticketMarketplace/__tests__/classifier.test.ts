@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { classify, isTicketMarketplaceRefutation } from "../classifier.js";
+import { classify, isSpotlightSoldNotice, isTicketMarketplaceRefutation } from "../classifier.js";
 import {
   CONFUSIONS,
   KNOWN_FALSE_NEGATIVES,
@@ -138,5 +138,49 @@ describe("classifier - warning refutations", () => {
     "not selling unless I get face value",
   ])("%s -> not a refutation", (text) => {
     expect(isTicketMarketplaceRefutation(text)).toBe(false);
+  });
+});
+
+describe("classifier - spotlight sold notices", () => {
+  it.each([
+    "Sold",
+    "sold!",
+    "SOLD 🎟️",
+    "sold thanks",
+    "sold thank you",
+    "sold cheers",
+    "sold now",
+    "all sold",
+    "now sold",
+    "gone",
+    "gone now",
+    "taken",
+    "ticket sold",
+    "tickets sold",
+    "no longer available",
+    "not available anymore",
+  ])("%s -> sold notice", (text) => {
+    expect(isSpotlightSoldNotice(text)).toBe(true);
+  });
+
+  it.each([
+    "is the event sold out?",
+    "sold out?",
+    "sold my jacket, still need a ticket",
+    "I sold my jacket, now need cash for ticket",
+    "this event is sold out",
+    "sold out on the website",
+    "has anyone sold a ticket yet?",
+    "did you sell it?",
+    "selling my ticket until sold",
+    "not sold",
+    "not gone",
+    "found one thanks",
+    "sorted thanks",
+    "is this still available?",
+    "available",
+    "Selling ticket",
+  ])("%s -> not a sold notice", (text) => {
+    expect(isSpotlightSoldNotice(text)).toBe(false);
   });
 });

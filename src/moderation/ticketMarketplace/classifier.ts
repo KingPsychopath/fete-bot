@@ -412,6 +412,17 @@ export const isTicketMarketplaceRefutation = (text: string): boolean => {
   return findPatternMatches(normalisedText, REFUTATION_PATTERNS).length > 0;
 };
 
+export const isSpotlightSoldNotice = (text: string): boolean => {
+  const normalisedText = normaliseText(text);
+
+  return (
+    /^(?:(?:all|now)\s+)?(?:(?:ticket|tickets|tix)\s+)?(?:sold|gone|taken)(?:\s+(?:now|thanks?|thank\s+you|cheers|ticket|tickets|tix))*$/iu.test(
+      normalisedText,
+    ) ||
+    /^(?:no\s+longer|not)\s+available(?:\s+anymore)?$/iu.test(normalisedText)
+  );
+};
+
 const hasNearbyMatch = (
   leftMatches: readonly TokenMatch[],
   rightMatches: readonly TokenMatch[],

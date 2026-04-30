@@ -153,6 +153,24 @@ export const hasPendingSpotlightForSender = (senderUserId: string): boolean => {
   return (row?.count ?? 0) > 0;
 };
 
+export const hasPendingSpotlightForSenderInGroup = (
+  sourceGroupJid: string,
+  senderUserId: string,
+  classifiedIntent?: SpotlightIntent,
+): boolean => {
+  const intentFilter = classifiedIntent ? "AND classified_intent = ?" : "";
+  const row = getDb()
+    .prepare<[string, string, SpotlightIntent?], { count: number }>(`
+      SELECT COUNT(*) AS count
+      FROM spotlight_pending
+      WHERE source_group_jid = ? AND sender_user_id = ? AND status = 'pending'
+      ${intentFilter}
+    `)
+    .get(sourceGroupJid, senderUserId, classifiedIntent);
+
+  return (row?.count ?? 0) > 0;
+};
+
 export const claimDueSpotlights = (
   nowIso: string,
   staleBeforeIso: string,
@@ -330,6 +348,26 @@ export const cancelSpotlightsForSource = (
       WHERE source_group_jid = ? AND source_msg_id = ? AND status = 'pending'
     `)
     .run(reason, nowIso, sourceGroupJid, sourceMsgId);
+
+  return result.changes;
+};
+
+export const cancelPendingSpotlightsForSenderInGroup = (
+  sourceGroupJid: string,
+  senderUserId: string,
+  reason: string,
+  nowIso = new Date().toISOString(),
+  classifiedIntent?: SpotlightIntent,
+): number => {
+  const intentFilter = classifiedIntent ? "AND classified_intent = ?" : "";
+  const result = getDb()
+    .prepare<[string, string, string, string, SpotlightIntent?]>(`
+      UPDATE spotlight_pending
+      SET status = 'cancelled', cancel_reason = ?, updated_at = ?
+      WHERE source_group_jid = ? AND sender_user_id = ? AND status = 'pending'
+      ${intentFilter}
+    `)
+    .run(reason, nowIso, sourceGroupJid, senderUserId, classifiedIntent);
 
   return result.changes;
 };

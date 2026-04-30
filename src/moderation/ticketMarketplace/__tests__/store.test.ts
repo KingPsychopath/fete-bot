@@ -134,4 +134,73 @@ describe("spotlight store", () => {
     expect(store.getTargetGroupSpotlightCountSince("target@g.us", "2026-04-23T10:05:00.000Z")).toBe(1);
     expect(store.cancelSpotlightsForSource("market@g.us", "msg-1", "source_deleted")).toBe(1);
   });
+
+  it("cancels only pending seller spotlights for a sender in the same source group", async () => {
+    const { db, store } = await setupDb();
+    db.getDb()
+      .prepare("INSERT INTO users (id, created_at, display_name, notes, merged_into) VALUES (?, ?, ?, ?, ?)")
+      .run("user-2", 1, "User Two", null, null);
+
+    const first = store.queueSpotlight({
+      sourceGroupJid: "market@g.us",
+      sourceMsgId: "msg-1",
+      senderUserId: "user-1",
+      senderJid: "sender@s.whatsapp.net",
+      body: "Selling 2 Sunday tickets £80 each",
+      classifiedIntent: "selling",
+      scheduledAt: "2026-04-24T10:00:00.000Z",
+    });
+    const otherGroup = store.queueSpotlight({
+      sourceGroupJid: "other-market@g.us",
+      sourceMsgId: "msg-2",
+      senderUserId: "user-1",
+      senderJid: "sender@s.whatsapp.net",
+      body: "Selling 1 Saturday ticket £60",
+      classifiedIntent: "selling",
+      scheduledAt: "2026-04-24T10:00:00.000Z",
+    });
+    const otherSender = store.queueSpotlight({
+      sourceGroupJid: "market@g.us",
+      sourceMsgId: "msg-3",
+      senderUserId: "user-2",
+      senderJid: "other@s.whatsapp.net",
+      body: "Selling 1 Friday ticket £50",
+      classifiedIntent: "selling",
+      scheduledAt: "2026-04-24T10:00:00.000Z",
+    });
+    const buyer = store.queueSpotlight({
+      sourceGroupJid: "market@g.us",
+      sourceMsgId: "msg-4",
+      senderUserId: "user-1",
+      senderJid: "sender@s.whatsapp.net",
+      body: "Looking for 1 Sunday ticket",
+      classifiedIntent: "buying",
+      scheduledAt: "2026-04-24T10:00:00.000Z",
+    });
+
+    expect(first).not.toBeNull();
+    expect(otherGroup).not.toBeNull();
+    expect(otherSender).not.toBeNull();
+    expect(buyer).not.toBeNull();
+    expect(store.hasPendingSpotlightForSenderInGroup("market@g.us", "user-1", "selling")).toBe(true);
+    expect(store.hasPendingSpotlightForSenderInGroup("market@g.us", "user-1", "buying")).toBe(true);
+
+    expect(
+      store.cancelPendingSpotlightsForSenderInGroup(
+        "market@g.us",
+        "user-1",
+        "sold",
+        "2026-04-24T09:30:00.000Z",
+        "selling",
+      ),
+    ).toBe(1);
+
+    expect(store.getPendingById(first!.id)?.status).toBe("cancelled");
+    expect(store.getPendingById(first!.id)?.cancelReason).toBe("sold");
+    expect(store.hasPendingSpotlightForSenderInGroup("market@g.us", "user-1", "selling")).toBe(false);
+    expect(store.getPendingById(buyer!.id)?.status).toBe("pending");
+    expect(store.hasPendingSpotlightForSenderInGroup("market@g.us", "user-1", "buying")).toBe(true);
+    expect(store.getPendingById(otherGroup!.id)?.status).toBe("pending");
+    expect(store.getPendingById(otherSender!.id)?.status).toBe("pending");
+  });
 });

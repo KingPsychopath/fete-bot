@@ -48,12 +48,18 @@ import {
   pickAdminMentionReply,
 } from "./moderation/adminMention.js";
 import { buildGroupInviteLinkReply, classifyGroupInviteLinkRequest } from "./moderation/groupInviteLink.js";
-import { isTicketMarketplaceRefutation } from "./moderation/ticketMarketplace/classifier.js";
+import { isSpotlightSoldNotice, isTicketMarketplaceRefutation } from "./moderation/ticketMarketplace/classifier.js";
 import { getTicketMarketplaceDecision } from "./moderation/ticketMarketplace/index.js";
 import { TicketMarketplaceReplyCooldown } from "./moderation/ticketMarketplace/replyCooldown.js";
 import { getSpotlightEligibility } from "./moderation/ticketMarketplace/spotlight/eligibility.js";
 import { startSpotlightScheduler, stopSpotlightScheduler } from "./moderation/ticketMarketplace/spotlight/scheduler.js";
-import { cancelSpotlightsForSource, hasPendingSpotlightForSender, queueSpotlight } from "./moderation/ticketMarketplace/spotlight/store.js";
+import {
+  cancelPendingSpotlightsForSenderInGroup,
+  cancelSpotlightsForSource,
+  hasPendingSpotlightForSender,
+  hasPendingSpotlightForSenderInGroup,
+  queueSpotlight,
+} from "./moderation/ticketMarketplace/spotlight/store.js";
 import {
   recordTicketMarketplaceRuleReminderActivity,
   startTicketMarketplaceRuleReminderScheduler,
@@ -1381,6 +1387,67 @@ const queueTicketSpotlightIfEligible = async (
   }
 };
 
+const cancelPendingSpotlightIfSold = async (
+  sock: WASocket,
+  msg: WAMessage,
+  groupJid: string,
+  senderUserId: string,
+  senderJid: string,
+  text: string,
+): Promise<boolean> => {
+  if (!config.ticketMarketplaceGroupJids.includes(groupJid) || !isSpotlightSoldNotice(text)) {
+    return false;
+  }
+
+  if (config.dryRun) {
+    if (hasPendingSpotlightForSenderInGroup(groupJid, senderUserId, "selling")) {
+      log("Dry run: would cancel pending spotlight after sold notice", {
+        groupJid,
+        senderJid,
+      });
+      return true;
+    }
+
+    return false;
+  }
+
+  const cancelledCount = cancelPendingSpotlightsForSenderInGroup(groupJid, senderUserId, "sold", undefined, "selling");
+  if (cancelledCount === 0) {
+    return false;
+  }
+
+  log("spotlight.cancelled.sold", {
+    groupJid,
+    senderJid,
+    sourceMsgId: msg.key.id ?? null,
+    cancelledCount,
+  });
+
+  try {
+    await sock.sendMessage(groupJid, {
+      react: {
+        text: config.ticketSpotlightReactionEmoji,
+        key: msg.key,
+      },
+    });
+    log("spotlight.sold_reacted", {
+      groupJid,
+      senderJid,
+      sourceMsgId: msg.key.id ?? null,
+      reactionEmoji: config.ticketSpotlightReactionEmoji,
+    });
+  } catch (reactionError) {
+    warn("spotlight.sold_reaction_failed", {
+      groupJid,
+      senderJid,
+      sourceMsgId: msg.key.id ?? null,
+      error: reactionError,
+    });
+  }
+
+  return true;
+};
+
 export const handleMessage = async (
   sock: WASocket,
   msg: WAMessage,
@@ -1752,6 +1819,18 @@ They have been banned and removed after repeatedly trying to post while muted.`,
           senderJid: canonicalSenderAlias,
           cooldownMinutes: config.ticketMarketplaceReplyCooldownMinutes,
         });
+      }
+
+      const soldSpotlightHandled = await cancelPendingSpotlightIfSold(
+        sock,
+        msg,
+        groupJid,
+        sender.userId,
+        canonicalSenderAlias,
+        text,
+      );
+      if (soldSpotlightHandled) {
+        return;
       }
 
       const ticketDecision = getTicketMarketplaceDecision(config, groupJid, text);
