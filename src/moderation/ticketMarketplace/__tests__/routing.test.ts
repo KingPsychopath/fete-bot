@@ -140,4 +140,13 @@ describe("ticket marketplace routing decisions", () => {
       ).action,
     ).toBe("allow");
   });
+
+  it("soft-flags medium-confidence marketplace matches for manual review", () => {
+    const mediumDecision = getTicketMarketplaceDecision(config, "general@g.us", "is anyone selling two tickets");
+
+    expect(mediumDecision.action).toBe("review");
+    expect(mediumDecision.reason).toBe("ticket_marketplace_review");
+    expect(mediumDecision.confidence).toBe("medium");
+    expect(mediumDecision.intent).toBe("buying");
+  });
 });

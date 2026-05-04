@@ -1849,7 +1849,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
       }
 
       if (ticketDecision.action !== "allow") {
-        const shouldDeleteTicketMarketplaceMessage = isTicketMarketplaceDeletionEnabled();
+        const shouldDeleteTicketMarketplaceMessage = isTicketMarketplaceDeletionEnabled() && ticketDecision.action !== "review";
         const mentionTargetJid = getMentionTargetJid(senderJid, phoneJid);
         const mentionLabel = formatMentionLabel(senderJid, getPushName(msg), phoneJid);
         const marketplaceName = config.ticketMarketplaceGroupName;
@@ -1857,7 +1857,9 @@ They have been banned and removed after repeatedly trying to post while muted.`,
           ? `Hey ${mentionLabel} - looking to buy tickets? Please post in ${marketplaceName}.`
           : ticketDecision.action === "redirect_selling"
             ? `Hey ${mentionLabel} - ticket sales belong in ${marketplaceName}. Please repost there.`
-            : `Hey ${mentionLabel} - ticket sale posts must include a price, or say face value / FV.`;
+            : ticketDecision.action === "require_price"
+              ? `Hey ${mentionLabel} - ticket sale posts must include a price, or say face value / FV.`
+              : `Hey ${mentionLabel} - this looks ambiguous and is under manual review. If this is a valid ticket post, repost it with clearer details in ${marketplaceName}.`;
         const logEntry = {
           timestamp: new Date().toISOString(),
           group_jid: groupJid,
@@ -1919,7 +1921,19 @@ They have been banned and removed after repeatedly trying to post while muted.`,
             ticketMarketplaceReplyCooldown.record(groupJid, sender.userId, cooldownNow);
           }
 
-          if (!replyCoolingDown || shouldDeleteTicketMarketplaceMessage) {
+          if (ticketDecision.action === "review") {
+            upsertReviewQueueEntry(
+              sender.userId,
+              groupJid,
+              getPushName(msg) || null,
+              ticketDecision.reason ?? "ticket_marketplace_review",
+              text,
+            );
+            logAction({
+              ...logEntry,
+              action: "WARN",
+            });
+          } else if (!replyCoolingDown || shouldDeleteTicketMarketplaceMessage) {
             logAction({
               ...logEntry,
               action: shouldDeleteTicketMarketplaceMessage ? "DELETED" : "WARN",

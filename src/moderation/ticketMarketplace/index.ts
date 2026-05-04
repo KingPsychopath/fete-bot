@@ -5,7 +5,8 @@ export type TicketMarketplaceAction =
   | "allow"
   | "redirect_buying"
   | "redirect_selling"
-  | "require_price";
+  | "require_price"
+  | "review";
 
 export type TicketMarketplaceDecision = TicketMarketplaceClassification & {
   action: TicketMarketplaceAction;
@@ -60,8 +61,15 @@ export const getTicketMarketplaceDecision = (
   }
 
   const isMarketplaceGroup = config.ticketMarketplaceGroupJids.includes(groupJid);
+  const shouldReview = !isSupport &&
+    classification.confidence === "medium" &&
+    (classification.intent === "selling" || classification.intent === "buying");
 
   if (!isMarketplaceGroup) {
+    if (shouldReview) {
+      return { ...classification, action: "review", reason: "ticket_marketplace_review" };
+    }
+
     if (
       isSupport &&
       (classification.confidence === "low" || classification.confidence === "medium") &&
@@ -78,6 +86,10 @@ export const getTicketMarketplaceDecision = (
   }
 
   if (classification.intent === "selling" && !classification.hasPrice) {
+    if (shouldReview) {
+      return { ...classification, action: "review", reason: "ticket_marketplace_review_missing_price" };
+    }
+
     if (
       isSupport &&
       (classification.confidence === "low" || classification.confidence === "medium")
