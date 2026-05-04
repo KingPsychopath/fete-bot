@@ -85,6 +85,22 @@ describe("ticket marketplace routing decisions", () => {
     expect(getTicketMarketplaceDecision(config, "market@g.us", "Selling 2 Sunday tickets").action).toBe("require_price");
   });
 
+  it("allows marketplace support questions and face-value clarification in FDLM group", () => {
+    const faceValueDecision = getTicketMarketplaceDecision(config, "market@g.us", "what does face value mean");
+    const resaleQuestionDecision = getTicketMarketplaceDecision(
+      config,
+      "market@g.us",
+      "is it easy to resell the tickets on the shotgun app? idk if my friend is coming aswell and i want to book another ticket",
+    );
+
+    expect(faceValueDecision.action).toBe("allow");
+    expect(faceValueDecision.reason).toBe("ticket_marketplace_support_exception");
+    expect(faceValueDecision.confidence).toBe("low");
+    expect(resaleQuestionDecision.action).toBe("allow");
+    expect(resaleQuestionDecision.reason).toBe("ticket_marketplace_support_exception");
+    expect(resaleQuestionDecision.confidence).toBe("low");
+  });
+
   it("allows complaint and price-discussion messages outside the marketplace", () => {
     expect(
       getTicketMarketplaceDecision(
@@ -104,6 +120,23 @@ describe("ticket marketplace routing decisions", () => {
         { ...config, ticketMarketplaceManagement: false },
         "general@g.us",
         "Anyone selling?",
+      ).action,
+    ).toBe("allow");
+  });
+
+  it("does not reroute low-confidence support questions outside the marketplace", () => {
+    expect(
+      getTicketMarketplaceDecision(
+        config,
+        "general@g.us",
+        "What does face value mean in this context?",
+      ).action,
+    ).toBe("allow");
+    expect(
+      getTicketMarketplaceDecision(
+        config,
+        "general@g.us",
+        "is there a way to resell ticket on shotgun app?",
       ).action,
     ).toBe("allow");
   });

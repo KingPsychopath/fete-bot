@@ -1,9 +1,11 @@
 import { hasExplicitPrice, hasValidPrice } from "./price.js";
 
 export type TicketMarketplaceIntent = "none" | "buying" | "selling";
+export type MarketplaceConfidence = "low" | "medium" | "high";
 
 export type TicketMarketplaceClassification = {
   intent: TicketMarketplaceIntent;
+  confidence: MarketplaceConfidence;
   matchedTokens: string[];
   matchedSignals: {
     buy: string[];
@@ -336,6 +338,66 @@ const phraseRegex = (phrase: string): RegExp =>
 
 const tokenise = (text: string): string[] => text.match(/[\p{L}\p{N}']+/gu) ?? [];
 
+const hasSupportQuestionLanguage = (text: string): boolean =>
+  /\b(?:what|how|why|where|when|which|does|do|is|are|can|could|should|meaning|mean|means|explain)\b/iu.test(text);
+
+const estimateConfidence = (params: {
+  intent: Exclude<TicketMarketplaceIntent, "none">;
+  hasConcreteTicketMatch: boolean;
+  hasPriceSignal: boolean;
+  hasQuestionMark: boolean;
+  hasSupportLanguage: boolean;
+  hasAvailabilityCue: boolean;
+  hasDirectSellVerb: boolean;
+  hasStrongSignals: {
+    strongBuy: boolean;
+    strongSell: boolean;
+  };
+  buySignalCount: number;
+  sellSignalCount: number;
+}): MarketplaceConfidence => {
+  const {
+    intent,
+    hasConcreteTicketMatch,
+    hasPriceSignal,
+    hasQuestionMark,
+    hasSupportLanguage,
+    hasAvailabilityCue,
+    hasDirectSellVerb,
+    hasStrongSignals,
+    buySignalCount,
+    sellSignalCount,
+  } = params;
+
+  let score = 0;
+
+  if (intent === "buying") {
+    if (hasStrongSignals.strongBuy) score += 3;
+    if (hasQuestionMark) score += 2;
+    if (buySignalCount > 1) score += 1;
+    if (hasConcreteTicketMatch) score += 1;
+    if (hasStrongSignals.strongSell) score -= 1;
+  }
+
+  if (intent === "selling") {
+    if (hasStrongSignals.strongSell) score += 4;
+    if (hasPriceSignal) score += 2;
+    if (hasAvailabilityCue) score += 1;
+    if (hasDirectSellVerb) score += 1;
+    if (sellSignalCount > 2) score += 1;
+    if (hasStrongSignals.strongBuy) score -= 1;
+    if (hasConcreteTicketMatch) score += 1;
+  }
+
+  if (hasSupportLanguage) {
+    score -= 1;
+  }
+
+  if (score <= 2) return "low";
+  if (score <= 4) return "medium";
+  return "high";
+};
+
 const findTermMatches = (tokens: readonly string[], terms: readonly string[]): TokenMatch[] => {
   const matches: TokenMatch[] = [];
 
@@ -501,7 +563,13 @@ export const classify = (text: string): TicketMarketplaceClassification => {
   const normalisedText = normaliseText(text);
 
   if (!normalisedText) {
-    return { intent: "none", matchedTokens: [], matchedSignals: emptySignals(), hasPrice: false };
+    return {
+      intent: "none",
+      confidence: "low",
+      matchedTokens: [],
+      matchedSignals: emptySignals(),
+      hasPrice: false,
+    };
   }
 
   const tokens = tokenise(normalisedText);
@@ -509,7 +577,13 @@ export const classify = (text: string): TicketMarketplaceClassification => {
   const concreteTicketMatches = ticketMatches.filter((match) => hasConcreteAccessContext(tokens, match));
   const nonMarketplaceSignals = findPatternMatches(normalisedText, NON_MARKETPLACE_PATTERNS);
   if (nonMarketplaceSignals.length > 0 && concreteTicketMatches.length > 0) {
-    return { intent: "none", matchedTokens: [], matchedSignals: emptySignals(), hasPrice: false };
+    return {
+      intent: "none",
+      confidence: "low",
+      matchedTokens: [],
+      matchedSignals: emptySignals(),
+      hasPrice: false,
+    };
   }
 
   const weakBuyMatches = findTermMatches(tokens, WEAK_BUY_TERMS).filter((match) => !isNegatedMatch(tokens, match));
@@ -613,6 +687,21 @@ export const classify = (text: string): TicketMarketplaceClassification => {
     };
     return {
       intent: "buying",
+      confidence: estimateConfidence({
+        intent: "buying",
+        hasConcreteTicketMatch: concreteTicketMatches.length > 0,
+        hasPriceSignal: hasValidPrice(normalisedText, "buying"),
+        hasQuestionMark: rawEndsWithQuestionMark,
+        hasSupportLanguage: hasSupportQuestionLanguage(normalisedText),
+        hasAvailabilityCue,
+        hasDirectSellVerb,
+        hasStrongSignals: {
+          strongBuy: strongBuySignals.length > 0,
+          strongSell,
+        },
+        buySignalCount: buySignals.length,
+        sellSignalCount: sellSignals.length,
+      }),
       matchedTokens: unique([...matchedSignals.buy, ...matchedSignals.sell]),
       matchedSignals,
       hasPrice: hasValidPrice(normalisedText, "buying"),
@@ -627,11 +716,37 @@ export const classify = (text: string): TicketMarketplaceClassification => {
     };
     return {
       intent: "selling",
+      confidence: estimateConfidence({
+        intent: "selling",
+        hasConcreteTicketMatch: concreteTicketMatches.length > 0,
+        hasPriceSignal: hasValidPrice(normalisedText, "selling"),
+        hasQuestionMark: rawEndsWithQuestionMark,
+        hasSupportLanguage: hasSupportQuestionLanguage(normalisedText),
+        hasAvailabilityCue,
+        hasDirectSellVerb,
+        hasStrongSignals: {
+          strongBuy: false,
+          strongSell:
+            strongSell ||
+            cantGoSelling ||
+            weakSell ||
+            gotTicketsSelling ||
+            priceTicketSelling,
+        },
+        buySignalCount: buySignals.length,
+        sellSignalCount: sellSignals.length,
+      }),
       matchedTokens: unique([...matchedSignals.sell, ...matchedSignals.buy]),
       matchedSignals,
       hasPrice: hasValidPrice(normalisedText, "selling"),
     };
   }
 
-  return { intent: "none", matchedTokens: [], matchedSignals: emptySignals(), hasPrice: false };
+  return {
+    intent: "none",
+    confidence: "low",
+    matchedTokens: [],
+    matchedSignals: emptySignals(),
+    hasPrice: false,
+  };
 };

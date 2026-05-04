@@ -98,12 +98,18 @@ describe("classifier - structural behavior", () => {
   it("always returns the full output shape", () => {
     const result = classify("Anyone selling?");
     expect(result).toHaveProperty("intent");
+    expect(result).toHaveProperty("confidence");
     expect(result).toHaveProperty("matchedTokens");
     expect(result).toHaveProperty("matchedSignals");
     expect(result).toHaveProperty("hasPrice");
     expect(Array.isArray(result.matchedSignals.buy)).toBe(true);
     expect(Array.isArray(result.matchedSignals.sell)).toBe(true);
     expect(["buy", "sell", "none"]).toContain(result.matchedSignals.dominance);
+  });
+
+  it("marks face-value clarification as low-confidence and none or support-friendly intent", () => {
+    expect(classify("what does face value mean").confidence).toBe("low");
+    expect(classify("what does face value mean").intent).toBe("selling");
   });
 
   it("is deterministic", () => {
