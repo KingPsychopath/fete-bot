@@ -193,14 +193,14 @@ const loadedConfig = {
   ticketSpotlightSellingEnabled: parseBoolean(process.env.TICKET_SPOTLIGHT_SELLING_ENABLED, true),
   ticketSpotlightBuyingEnabled: parseBoolean(process.env.TICKET_SPOTLIGHT_BUYING_ENABLED, false),
   ticketSpotlightTargetJids: parseList(process.env.TICKET_SPOTLIGHT_TARGET_JIDS || DEFAULT_TICKET_SPOTLIGHT_TARGET_JIDS),
-  ticketSpotlightDelayMinutes: parsePositiveInteger(process.env.TICKET_SPOTLIGHT_DELAY_MINUTES, 20),
+  ticketSpotlightDelayMinutes: parsePositiveInteger(process.env.TICKET_SPOTLIGHT_DELAY_MINUTES, 15),
   ticketSpotlightSellingDelayMinutes: parsePositiveInteger(
     process.env.TICKET_SPOTLIGHT_SELLING_DELAY_MINUTES,
-    parsePositiveInteger(process.env.TICKET_SPOTLIGHT_DELAY_MINUTES, 20),
+    parsePositiveInteger(process.env.TICKET_SPOTLIGHT_DELAY_MINUTES, 15),
   ),
   ticketSpotlightBuyingDelayMinutes: parsePositiveInteger(
     process.env.TICKET_SPOTLIGHT_BUYING_DELAY_MINUTES,
-    parsePositiveInteger(process.env.TICKET_SPOTLIGHT_DELAY_MINUTES, 30),
+    parsePositiveInteger(process.env.TICKET_SPOTLIGHT_DELAY_MINUTES, 15),
   ),
   ticketSpotlightUserCooldownHours: parsePositiveInteger(process.env.TICKET_SPOTLIGHT_USER_COOLDOWN_HOURS, 24),
   ticketSpotlightGroupCooldownMinutes: parsePositiveInteger(process.env.TICKET_SPOTLIGHT_GROUP_COOLDOWN_MINUTES, 60),
