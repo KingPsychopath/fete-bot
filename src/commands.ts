@@ -52,6 +52,7 @@ import {
 } from "./identity.js";
 import { containsDisallowedUrl, type DisallowedUrlReason } from "./linkChecker.js";
 import {
+  cancelSpotlight,
   getSpotlightByIdentifier,
   hasPendingSpotlightForSender,
   listPendingSpotlights,
@@ -105,6 +106,7 @@ const HELP_MESSAGE = `*Fete Bot — Admin Help*
   !spotlights   {limit?}
   !spotlight-history {limit?}
   !spotlight-requeue {messageId|rowId} {minutes?}
+  !spotlight-cancel {messageId|rowId} {reason?} — reply only or DM
   !announce     help|list|show|raw|preview|next|check|add|edit|publish|on|off|move|remove|schedule|pause|resume|test|test-group|send-now
   !deleted      {limit?} {reason?} — DM only
   !bans         {groupJid?}
@@ -1163,6 +1165,24 @@ Expected release: ${formatDate(scheduledAt)}
 ${preview}${requeued.length > 5 ? `\n...and ${requeued.length - 5} more` : ""}`;
 };
 
+const buildSpotlightCancelText = (
+  existing: ReturnType<typeof getSpotlightByIdentifier>,
+  canceled: boolean,
+  reason: string,
+): string => {
+  if (!existing) {
+    return "No spotlight found. Use !spotlight-history to copy the Message ID.";
+  }
+
+  if (!canceled) {
+    return `Spotlight ${existing.sourceMsgId} is already ${existing.status}${existing.cancelReason ? ` (${existing.cancelReason})` : ""}.`;
+  }
+
+  return `Cancelled spotlight ${existing.classifiedIntent.toUpperCase()} for message ${existing.sourceMsgId}.
+Reason: ${reason}
+Text: "${formatPreview(existing.body)}"`;
+};
+
 const formatQuietSwitchStatus = (): string => {
   const state = getQuietSwitchState();
   const status = state.enabled ? "ON - bot messages are blocked" : "OFF - bot messages are allowed";
@@ -1331,10 +1351,33 @@ export async function handleGroupCommand(
   }
 
   const commandReplyJid = actorContext.participantJid ?? groupJid;
+  const rest = text.trim().split(/\s+/).slice(1).join(" ").trim();
 
   if (command === "!spotlight" && !quotedParticipant) {
     await sock.sendMessage(commandReplyJid, { text: "Reply to someone's message with !spotlight to spotlight it." });
     logAudit(actorContext, command, null, null, groupJid, text, "error");
+    return true;
+  }
+
+  if (command === "!spotlight-cancel" && !quotedParticipant) {
+    await sock.sendMessage(commandReplyJid, {
+      text: "Reply to a spotlighted message with !spotlight-cancel, or run !spotlight-cancel {messageId|rowId} in DM.",
+    });
+    logAudit(actorContext, command, null, null, groupJid, text, "error");
+    return true;
+  }
+
+  if (command === "!spotlight-cancel" && quotedMessageKey?.id) {
+    const reason = rest || "manual_cancel_reply";
+    const result = cancelSpotlight(quotedMessageKey.id, reason);
+    await sock.sendMessage(commandReplyJid, {
+      text: buildSpotlightCancelText(
+        result ? result.existing : null,
+        result?.canceled ?? false,
+        reason,
+      ),
+    });
+    logAudit(actorContext, command, null, quotedParticipant, groupJid, text, result && result.canceled ? "success" : "error");
     return true;
   }
 
@@ -1348,8 +1391,6 @@ export async function handleGroupCommand(
     logAudit(actorContext, command, null, quotedParticipant, groupJid, text, "error");
     return true;
   }
-
-  const rest = text.trim().split(/\s+/).slice(1).join(" ").trim();
 
   if (command === "!spotlight") {
     if (!config.ticketSpotlightEnabled) {
@@ -1760,6 +1801,37 @@ Forwarded messages seen today: ${getForwardedMessagesSeenToday()}`,
       text: buildSpotlightRequeueText(identifier, safeDelayMinutes),
     });
     logAudit(actorContext, "!spotlight-requeue", null, null, null, text, "success");
+    return;
+  }
+
+  if (command === "!spotlight-cancel") {
+    const [, identifier, ...reasonParts] = text.trim().split(/\s+/);
+    if (!identifier) {
+      await sock.sendMessage(replyJid, { text: "Usage: !spotlight-cancel {messageId|rowId} {reason?}" });
+      logAudit(actorContext, "!spotlight-cancel", null, null, null, text, "error");
+      return;
+    }
+
+    const reason = reasonParts.join(" ").trim() || "manual_cancel";
+    const result = cancelSpotlight(identifier, reason);
+    if (!result) {
+      await sock.sendMessage(replyJid, { text: `No spotlight found for "${identifier}".` });
+      logAudit(actorContext, "!spotlight-cancel", null, null, null, text, "error");
+      return;
+    }
+
+    await sock.sendMessage(replyJid, {
+      text: buildSpotlightCancelText(result.existing, result.canceled, reason),
+    });
+    logAudit(
+      actorContext,
+      "!spotlight-cancel",
+      result.existing.senderUserId,
+      result.existing.senderJid,
+      null,
+      text,
+      result.canceled ? "success" : "error",
+    );
     return;
   }
 

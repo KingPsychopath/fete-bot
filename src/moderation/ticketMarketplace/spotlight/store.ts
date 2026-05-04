@@ -335,6 +335,39 @@ export const requeueFailedSpotlights = (
     return requeued;
   });
 
+export type CancelSpotlightResult = {
+  existing: SpotlightPendingRow;
+  canceled: boolean;
+  nowRow: SpotlightPendingRow | null;
+};
+
+export const cancelSpotlight = (
+  identifier: string,
+  reason: string,
+  nowIso = new Date().toISOString(),
+): CancelSpotlightResult | null => {
+  const existing = getSpotlightByIdentifier(identifier);
+  if (!existing) {
+    return null;
+  }
+
+  const result = getDb()
+    .prepare<[string, string, string]>(`
+      UPDATE spotlight_pending
+      SET status = 'cancelled',
+          cancel_reason = ?,
+          updated_at = ?
+      WHERE id = ? AND status = 'pending'
+    `)
+    .run(reason, nowIso, existing.id);
+
+  return {
+    existing,
+    canceled: result.changes > 0,
+    nowRow: result.changes > 0 ? getPendingById(existing.id) : null,
+  };
+};
+
 export const cancelSpotlightsForSource = (
   sourceGroupJid: string,
   sourceMsgId: string,
