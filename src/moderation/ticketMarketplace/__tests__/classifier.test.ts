@@ -26,6 +26,15 @@ describe("classifier - true negatives", () => {
   it.each(TRUE_NEGATIVES)("%s", (text) => {
     expect(classify(text).intent).toBe("none");
   });
+
+  it("allows accommodation coordination with pricing and payment timing", () => {
+    const result = classify(
+      "Hey everyone! I found a place in the 10th for six guests, looking for 4 more ppl and the price would be around £300 to £400 per person. The dates are from June 18th to June 23rd. Ideally, I’d love to get the payments in by next week or atleast before june, the sooner, the better, so we can secure the booking. Accoms are on the nicer side dm me if you would like pics. As for the sleeping arrangements, there will be double beds, so I’d suggest bringing a friend if you’re not comfortable sharing with someone you haven’t met yet.",
+    );
+
+    expect(result.intent).toBe("none");
+    expect(result.confidence).toBe("low");
+  });
 });
 
 describe("classifier - known false positives", () => {

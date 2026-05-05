@@ -307,6 +307,21 @@ const NON_MARKETPLACE_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   },
 ];
 
+const ACCOMMODATION_COORDINATION_PATTERNS: Array<{ label: string; regex: RegExp }> = [
+  {
+    label: "accommodation group booking",
+    regex: /\b(?:accoms?|accommodation|airbnb|hotel|hostel|villa|apartment|flat|house|place|booking)\b(?:\s+[\p{L}\p{N}'£€$]+){0,40}\s+\b(?:guests?|people|ppl|beds?|bedrooms?|double\s+beds?|sleeping\s+arrangements?|booking|secure\s+the\s+booking|per\s+person|pp|pics?)\b/iu,
+  },
+  {
+    label: "lodging sleeping arrangements",
+    regex: /\b(?:sleeping\s+arrangements?|double\s+beds?|bedrooms?|beds?)\b(?:\s+[\p{L}\p{N}'£€$]+){0,30}\s+\b(?:sharing|guests?|people|ppl|friend|friends|place|accoms?|accommodation)\b/iu,
+  },
+  {
+    label: "lodging dates and payment",
+    regex: /\b(?:dates?\s+are\s+from|from\s+[\p{L}\p{N}]+\s+\d{1,2}\s+(?:to|until|-)\s+[\p{L}\p{N}]+\s+\d{1,2}|june\s+\d{1,2}(?:st|nd|rd|th)?\s+(?:to|until|-)\s+june\s+\d{1,2})\b(?:\s+[\p{L}\p{N}'£€$]+){0,40}\s+\b(?:booking|secure|payments?|per\s+person|pp|guests?|accoms?|accommodation|place)\b/iu,
+  },
+];
+
 const REFUTATION_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   { label: "not selling", regex: /\b(?:i\s+(?:am\s+|'m\s+)?)?not\s+selling\b/iu },
   { label: "not a sale", regex: /\bnot\s+(?:a\s+)?(?:sale|ticket\s+sale|sales\s+post)\b/iu },
@@ -572,7 +587,32 @@ export const classify = (text: string): TicketMarketplaceClassification => {
     };
   }
 
+  if (/\b(?:what|how|why|does|do|is|are|can|could|should|meaning|mean|means|explain)\b(?:\s+[\p{L}\p{N}'£€$]+){0,8}\s+\b(?:face\s+value|fv)\b/iu.test(normalisedText)) {
+    return {
+      intent: "selling",
+      confidence: "low",
+      matchedTokens: ["face value"],
+      matchedSignals: {
+        buy: [],
+        sell: ["face value"],
+        dominance: "none",
+      },
+      hasPrice: false,
+    };
+  }
+
   const tokens = tokenise(normalisedText);
+  const accommodationSignals = findPatternMatches(normalisedText, ACCOMMODATION_COORDINATION_PATTERNS);
+  if (accommodationSignals.length > 0) {
+    return {
+      intent: "none",
+      confidence: "low",
+      matchedTokens: [],
+      matchedSignals: emptySignals(),
+      hasPrice: false,
+    };
+  }
+
   const ticketMatches = findTermMatches(tokens, TICKET_TERMS);
   const concreteTicketMatches = ticketMatches.filter((match) => hasConcreteAccessContext(tokens, match));
   const nonMarketplaceSignals = findPatternMatches(normalisedText, NON_MARKETPLACE_PATTERNS);
