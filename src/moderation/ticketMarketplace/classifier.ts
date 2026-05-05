@@ -322,6 +322,13 @@ const ACCOMMODATION_COORDINATION_PATTERNS: Array<{ label: string; regex: RegExp 
   },
 ];
 
+const SUPPORT_CLARIFICATION_PATTERNS: Array<{ label: string; regex: RegExp }> = [
+  {
+    label: "face value clarification",
+    regex: /\b(?:what|how|why|does|do|is|are|can|could|should|meaning|mean|means|explain)\b(?:\s+[\p{L}\p{N}'£€$]+){0,8}\s+\b(?:face\s+value|fv)\b/iu,
+  },
+];
+
 const REFUTATION_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   { label: "not selling", regex: /\b(?:i\s+(?:am\s+|'m\s+)?)?not\s+selling\b/iu },
   { label: "not a sale", regex: /\bnot\s+(?:a\s+)?(?:sale|ticket\s+sale|sales\s+post)\b/iu },
@@ -565,6 +572,26 @@ const emptySignals = (): TicketMarketplaceClassification["matchedSignals"] => ({
   dominance: "none",
 });
 
+const noTicketMarketplaceIntent = (): TicketMarketplaceClassification => ({
+  intent: "none",
+  confidence: "low",
+  matchedTokens: [],
+  matchedSignals: emptySignals(),
+  hasPrice: false,
+});
+
+const supportClarificationIntent = (matchedTokens: string[]): TicketMarketplaceClassification => ({
+  intent: "selling",
+  confidence: "low",
+  matchedTokens,
+  matchedSignals: {
+    buy: [],
+    sell: matchedTokens,
+    dominance: "none",
+  },
+  hasPrice: false,
+});
+
 const hasBuyerStartContext = (normalisedText: string): boolean =>
   /^(?:hey\s+)?(?:if|does|is|anyone|anybody|any1|someone|somebody|looking|iso|need|want|cherche|je\s+cherche)\b/iu.test(
     normalisedText,
@@ -578,52 +605,25 @@ export const classify = (text: string): TicketMarketplaceClassification => {
   const normalisedText = normaliseText(text);
 
   if (!normalisedText) {
-    return {
-      intent: "none",
-      confidence: "low",
-      matchedTokens: [],
-      matchedSignals: emptySignals(),
-      hasPrice: false,
-    };
+    return noTicketMarketplaceIntent();
   }
 
-  if (/\b(?:what|how|why|does|do|is|are|can|could|should|meaning|mean|means|explain)\b(?:\s+[\p{L}\p{N}'£€$]+){0,8}\s+\b(?:face\s+value|fv)\b/iu.test(normalisedText)) {
-    return {
-      intent: "selling",
-      confidence: "low",
-      matchedTokens: ["face value"],
-      matchedSignals: {
-        buy: [],
-        sell: ["face value"],
-        dominance: "none",
-      },
-      hasPrice: false,
-    };
+  const supportClarificationSignals = findPatternMatches(normalisedText, SUPPORT_CLARIFICATION_PATTERNS);
+  if (supportClarificationSignals.length > 0) {
+    return supportClarificationIntent(["face value"]);
   }
 
   const tokens = tokenise(normalisedText);
   const accommodationSignals = findPatternMatches(normalisedText, ACCOMMODATION_COORDINATION_PATTERNS);
   if (accommodationSignals.length > 0) {
-    return {
-      intent: "none",
-      confidence: "low",
-      matchedTokens: [],
-      matchedSignals: emptySignals(),
-      hasPrice: false,
-    };
+    return noTicketMarketplaceIntent();
   }
 
   const ticketMatches = findTermMatches(tokens, TICKET_TERMS);
   const concreteTicketMatches = ticketMatches.filter((match) => hasConcreteAccessContext(tokens, match));
   const nonMarketplaceSignals = findPatternMatches(normalisedText, NON_MARKETPLACE_PATTERNS);
   if (nonMarketplaceSignals.length > 0 && concreteTicketMatches.length > 0) {
-    return {
-      intent: "none",
-      confidence: "low",
-      matchedTokens: [],
-      matchedSignals: emptySignals(),
-      hasPrice: false,
-    };
+    return noTicketMarketplaceIntent();
   }
 
   const weakBuyMatches = findTermMatches(tokens, WEAK_BUY_TERMS).filter((match) => !isNegatedMatch(tokens, match));
@@ -783,10 +783,6 @@ export const classify = (text: string): TicketMarketplaceClassification => {
   }
 
   return {
-    intent: "none",
-    confidence: "low",
-    matchedTokens: [],
-    matchedSignals: emptySignals(),
-    hasPrice: false,
+    ...noTicketMarketplaceIntent(),
   };
 };

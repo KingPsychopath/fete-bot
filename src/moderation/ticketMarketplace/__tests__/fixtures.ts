@@ -122,6 +122,20 @@ export const TRUE_NEGATIVES = [
   "Not selling my ticket, just complaining about the prices",
 ] as const;
 
+export const FALSE_POSITIVE_REGRESSIONS = [
+  {
+    text: "Hey everyone! I found a place in the 10th for six guests, looking for 4 more ppl and the price would be around £300 to £400 per person. The dates are from June 18th to June 23rd. Ideally, I’d love to get the payments in by next week or atleast before june, the sooner, the better, so we can secure the booking. Accoms are on the nicer side dm me if you would like pics. As for the sleeping arrangements, there will be double beds, so I’d suggest bringing a friend if you’re not comfortable sharing with someone you haven’t met yet.",
+    expected: "none",
+    layer: "classifier",
+    reason: "Accommodation coordination can contain place, price, payment, and DM language without being ticket resale.",
+  },
+] as const satisfies ReadonlyArray<{
+  text: string;
+  expected: TicketMarketplaceIntent;
+  layer: "classifier" | "routing";
+  reason: string;
+}>;
+
 export const KNOWN_FALSE_POSITIVES = [] as const;
 
 export const KNOWN_FALSE_NEGATIVES = [] as const;

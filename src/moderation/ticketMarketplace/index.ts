@@ -16,6 +16,7 @@ export type TicketMarketplaceDecision = TicketMarketplaceClassification & {
 const SUPPORT_EXCEPTION_TEXT_PATTERNS = [
   /\bwhat\s+does\b/i,
   /\bwhat\s+is\b/i,
+  /\bis\s+it\s+(?:easy|possible|allowed|ok|okay)\b/i,
   /\bhow\s+(?:do|can|is|are|much|easy)\b/i,
   /\bcan\s+(?:someone|i)\b/i,
   /\bwhy\b/i,
@@ -41,7 +42,7 @@ const isSupportException = (text: string): boolean => {
 
   const hasSupportPattern = SUPPORT_EXCEPTION_TEXT_PATTERNS.some((pattern) => pattern.test(normalisedText));
   const hasDomainPattern = SUPPORT_EXCEPTION_DOMAIN_PATTERNS.some((pattern) => pattern.test(normalisedText));
-  const hasQuestionWord = /\b(?:what|how|why|where|when)\b/i.test(normalisedText);
+  const hasQuestionWord = /\b(?:what|how|why|where|when|is|are|can|could)\b/i.test(normalisedText);
 
   return (hasSupportPattern || hasDomainPattern) && hasQuestionWord;
 };
@@ -56,8 +57,16 @@ export const getTicketMarketplaceDecision = (
   const marketplaceEnabled =
     config.ticketMarketplaceManagement && config.ticketMarketplaceGroupJids.length > 0;
 
-  if (!marketplaceEnabled || classification.intent === "none") {
+  if (!marketplaceEnabled) {
     return { ...classification, action: "allow", reason: null };
+  }
+
+  if (classification.intent === "none") {
+    return {
+      ...classification,
+      action: "allow",
+      reason: isSupport ? "ticket_marketplace_support_exception" : null,
+    };
   }
 
   const isMarketplaceGroup = config.ticketMarketplaceGroupJids.includes(groupJid);
@@ -102,6 +111,13 @@ export const getTicketMarketplaceDecision = (
       action: "require_price",
       reason: "ticket_marketplace_missing_price",
     };
+  }
+
+  if (
+    isSupport &&
+    (classification.confidence === "low" || classification.confidence === "medium")
+  ) {
+    return { ...classification, action: "allow", reason: "ticket_marketplace_support_exception" };
   }
 
   return { ...classification, action: "allow", reason: "ticket_marketplace_allowed" };
