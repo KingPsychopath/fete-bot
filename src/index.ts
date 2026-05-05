@@ -2364,17 +2364,17 @@ export const startBot = async (): Promise<void> => {
   const socketInstanceId = ++socketInstanceCounter;
   migrateLegacyAuthDir();
   ensureStorageDirs();
-  initDb();
-  await loadLidMappings();
-  purgeExpiredStrikes();
-  purgeExpiredMutes();
-  purgeExpiredCallViolations(getCallGuardWindowMs());
   if (!healthServerStarted && !healthServerErrored) {
     healthServer.listen(healthPort, () => {
       log(`Health endpoint listening on port ${healthPort}`);
     });
     healthServerStarted = true;
   }
+  initDb();
+  await loadLidMappings();
+  purgeExpiredStrikes();
+  purgeExpiredMutes();
+  purgeExpiredCallViolations(getCallGuardWindowMs());
   if (!strikePurgeTimer) {
     strikePurgeTimer = setInterval(() => {
       purgeExpiredStrikes();
@@ -2693,7 +2693,8 @@ process.on("SIGINT", () => {
 });
 
 const isDirectExecution =
-  typeof process.argv[1] === "string" && process.argv[1].endsWith("/src/index.ts");
+  typeof process.argv[1] === "string" &&
+  (process.argv[1].endsWith("/src/index.ts") || process.argv[1].endsWith("/dist/index.js"));
 
 if (isDirectExecution) {
   void startBot().catch((startupError) => {

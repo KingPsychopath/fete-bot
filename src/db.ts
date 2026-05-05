@@ -823,6 +823,13 @@ export const ensureSchema = (database: Database.Database): void => {
     return;
   }
 
+  if (version === 0 && !tableExists(database, "logs")) {
+    recreateSchema(database);
+    database.pragma("journal_mode = WAL");
+    database.exec("PRAGMA foreign_keys = ON");
+    return;
+  }
+
   if (version === 2) {
     migrateSchemaV2ToV3(database);
   }
