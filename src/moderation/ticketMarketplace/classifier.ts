@@ -288,7 +288,7 @@ const NON_MARKETPLACE_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   },
   {
     label: "general resale question",
-    regex: /\b(?:(?:are|is)\s+(?:people|ppl|they|tickets)\s+(?:selling|charging|asking)|tickets?\s+(?:are|is)\s+selling)\b/iu,
+    regex: /\b(?:(?:are|is)\s+(?:everyone|people|ppl|they|tickets)\s+(?:selling|charging|asking)|(?:why|whys|why's)\s+(?:(?:am\s+i|i\s+am|i'm)|(?:is\s+)?(?:everyone|people|ppl|they|i|mate|friend|pal|boyfriend|girlfriend|he|she|we)|is\s+(?:my\s+)?(?:mate|friend|pal|boyfriend|girlfriend))\s+(?:selling|charging|asking)|tickets?\s+(?:are|is)\s+selling)\b/iu,
   },
   {
     label: "ticket price complaint",
