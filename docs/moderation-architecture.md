@@ -56,6 +56,16 @@ Routing fixes belong in `src/moderation/ticketMarketplace/__tests__/routing.test
 
 Action, queue, and scheduler fixes belong in their matching store, sender, scheduler, or integration-style test.
 
+## Debugging
+
+Use `!explain` when a moderation result is surprising.
+
+In a group, reply to a message with `!explain` to inspect the ticket marketplace classifier and routing decision in that group's context.
+
+In DM, use `!explain {text}` to inspect the default ticket marketplace context, or `!explain {groupJid} {text}` to force a specific group context.
+
+The output should include action, reason, intent, confidence, price status, matched tokens, buy signals, sell signals, and dominance. If a false positive or false negative is confirmed, add a regression fixture at the layer where the fix is made.
+
 ## Current Ticket Marketplace Contract
 
 The ticket marketplace classifier returns:

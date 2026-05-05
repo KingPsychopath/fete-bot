@@ -51,6 +51,7 @@ import {
   type UserSummary,
 } from "./identity.js";
 import { containsDisallowedUrl, type DisallowedUrlReason } from "./linkChecker.js";
+import { buildTicketMarketplaceExplainText } from "./moderation/ticketMarketplace/explain.js";
 import {
   cancelSpotlight,
   getSpotlightByIdentifier,
@@ -113,6 +114,7 @@ const HELP_MESSAGE = `*Fete Bot — Admin Help*
   !mutes        {groupJid?}
   !audit        {limit?}
   !test         {url}
+  !explain      {groupJid?} {text} — or reply to a message
   !help
 
 *Examples*
@@ -253,6 +255,32 @@ const formatGroupList = (
   groupJids: readonly string[],
   groups: ReadonlyMap<string, string> | ReadonlyMap<string, GroupMetadata>,
 ): string => groupJids.map((groupJid) => formatGroupName(groupJid, groups)).join(", ");
+
+const getDefaultExplainGroupJid = (
+  currentGroupJid: string | null,
+  config: Config,
+  groups: ReadonlyMap<string, string> | ReadonlyMap<string, GroupMetadata>,
+): string | null =>
+  currentGroupJid ??
+  config.ticketMarketplaceGroupJids[0] ??
+  getManagedGroupJids(config, groups)[0] ??
+  null;
+
+const parseExplainArgs = (
+  text: string,
+  quotedText: string | null,
+  currentGroupJid: string | null,
+  config: Config,
+  groups: ReadonlyMap<string, string> | ReadonlyMap<string, GroupMetadata>,
+): { groupJid: string; candidate: string } | null => {
+  const tokens = text.trim().split(/\s+/).filter(Boolean);
+  const restTokens = tokens.slice(1);
+  const explicitGroupJid = restTokens[0]?.endsWith("@g.us") ? restTokens[0] : null;
+  const groupJid = explicitGroupJid ?? getDefaultExplainGroupJid(currentGroupJid, config, groups);
+  const candidate = quotedText?.trim() || restTokens.slice(explicitGroupJid ? 1 : 0).join(" ").trim();
+
+  return groupJid && candidate ? { groupJid, candidate } : null;
+};
 
 type PardonClearCounts = {
   strikes: number;
@@ -1353,6 +1381,23 @@ export async function handleGroupCommand(
   const commandReplyJid = actorContext.participantJid ?? groupJid;
   const rest = text.trim().split(/\s+/).slice(1).join(" ").trim();
 
+  if (command === "!explain") {
+    const explainInput = parseExplainArgs(text, quotedText, groupJid, config, groups);
+    if (!explainInput) {
+      await sock.sendMessage(commandReplyJid, {
+        text: "Usage: reply with !explain, or use !explain {text}",
+      });
+      logAudit(actorContext, command, null, null, groupJid, text, "error");
+      return true;
+    }
+
+    await sock.sendMessage(commandReplyJid, {
+      text: buildTicketMarketplaceExplainText(config, explainInput.groupJid, explainInput.candidate),
+    });
+    logAudit(actorContext, command, null, null, explainInput.groupJid, text, "success");
+    return true;
+  }
+
   if (command === "!spotlight" && !quotedParticipant) {
     await sock.sendMessage(commandReplyJid, { text: "Reply to someone's message with !spotlight to spotlight it." });
     logAudit(actorContext, command, null, null, groupJid, text, "error");
@@ -1681,6 +1726,23 @@ ${buildIdentityDebugText(actor)}`,
   if (command === "!ticketdelete") {
     await handleTicketMarketplaceDeletionCommand(sock, replyJid, actorContext, text);
     logAudit(actorContext, "!ticketdelete", null, null, null, text, "success");
+    return;
+  }
+
+  if (command === "!explain") {
+    const explainInput = parseExplainArgs(text, quotedText, null, config, groups);
+    if (!explainInput) {
+      await sock.sendMessage(replyJid, {
+        text: "Usage: !explain {groupJid?} {text}, or reply to a message with !explain",
+      });
+      logAudit(actorContext, "!explain", null, null, null, text, "error");
+      return;
+    }
+
+    await sock.sendMessage(replyJid, {
+      text: buildTicketMarketplaceExplainText(config, explainInput.groupJid, explainInput.candidate),
+    });
+    logAudit(actorContext, "!explain", null, null, explainInput.groupJid, text, "success");
     return;
   }
 
