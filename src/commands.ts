@@ -51,6 +51,7 @@ import {
   type UserSummary,
 } from "./identity.js";
 import { containsDisallowedUrl, type DisallowedUrlReason } from "./linkChecker.js";
+import { getModerationReplyContext } from "./moderation/moderationReplyContext.js";
 import { buildTicketMarketplaceExplainText } from "./moderation/ticketMarketplace/explain.js";
 import {
   cancelSpotlight,
@@ -280,6 +281,16 @@ const parseExplainArgs = (
   const candidate = quotedText?.trim() || restTokens.slice(explicitGroupJid ? 1 : 0).join(" ").trim();
 
   return groupJid && candidate ? { groupJid, candidate } : null;
+};
+
+const buildExplainText = (
+  config: Config,
+  groupJid: string,
+  candidate: string,
+  sourceNote?: string,
+): string => {
+  const explanation = buildTicketMarketplaceExplainText(config, groupJid, candidate);
+  return sourceNote ? `${sourceNote}\n\n${explanation}` : explanation;
 };
 
 type PardonClearCounts = {
@@ -1382,7 +1393,10 @@ export async function handleGroupCommand(
   const rest = text.trim().split(/\s+/).slice(1).join(" ").trim();
 
   if (command === "!explain") {
-    const explainInput = parseExplainArgs(text, quotedText, groupJid, config, groups);
+    const linkedContext = getModerationReplyContext(groupJid, quotedMessageKey?.id);
+    const explainInput = linkedContext
+      ? { groupJid: linkedContext.sourceGroupJid, candidate: linkedContext.sourceText }
+      : parseExplainArgs(text, quotedText, groupJid, config, groups);
     if (!explainInput) {
       await sock.sendMessage(commandReplyJid, {
         text: "Usage: reply with !explain, or use !explain {text}",
@@ -1392,7 +1406,14 @@ export async function handleGroupCommand(
     }
 
     await sock.sendMessage(commandReplyJid, {
-      text: buildTicketMarketplaceExplainText(config, explainInput.groupJid, explainInput.candidate),
+      text: buildExplainText(
+        config,
+        explainInput.groupJid,
+        explainInput.candidate,
+        linkedContext
+          ? `Resolved from bot moderation reply${linkedContext.reason ? ` (${linkedContext.reason})` : ""}.`
+          : undefined,
+      ),
     });
     logAudit(actorContext, command, null, null, explainInput.groupJid, text, "success");
     return true;
@@ -1740,7 +1761,7 @@ ${buildIdentityDebugText(actor)}`,
     }
 
     await sock.sendMessage(replyJid, {
-      text: buildTicketMarketplaceExplainText(config, explainInput.groupJid, explainInput.candidate),
+      text: buildExplainText(config, explainInput.groupJid, explainInput.candidate),
     });
     logAudit(actorContext, "!explain", null, null, explainInput.groupJid, text, "success");
     return;

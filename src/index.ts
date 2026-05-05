@@ -48,6 +48,7 @@ import {
   pickAdminMentionReply,
 } from "./moderation/adminMention.js";
 import { buildGroupInviteLinkReply, classifyGroupInviteLinkRequest } from "./moderation/groupInviteLink.js";
+import { recordModerationReplyContext, type ModerationReplyContext } from "./moderation/moderationReplyContext.js";
 import { isSpotlightSoldNotice, isTicketMarketplaceRefutation } from "./moderation/ticketMarketplace/classifier.js";
 import { getTicketMarketplaceDecision } from "./moderation/ticketMarketplace/index.js";
 import { TicketMarketplaceReplyCooldown } from "./moderation/ticketMarketplace/replyCooldown.js";
@@ -421,10 +422,14 @@ const sendModerationMessage = async (
   text: string,
   mentionTargetJid: string,
   quotedMessage?: WAMessage,
+  context?: ModerationReplyContext,
 ): Promise<void> => {
   if (!mentionTargetJid || !MENTIONABLE_JID_REGEX.test(mentionTargetJid)) {
     const plainText = text.replace(/@\S+\s+-\s+/u, "").replace(/@\S+/u, "there");
-    await sock.sendMessage(groupJid, { text: plainText }, quotedMessage ? { quoted: quotedMessage } : undefined);
+    const sent = await sock.sendMessage(groupJid, { text: plainText }, quotedMessage ? { quoted: quotedMessage } : undefined);
+    if (context) {
+      recordModerationReplyContext(groupJid, sent?.key.id, context);
+    }
     return;
   }
 
@@ -435,10 +440,13 @@ const sendModerationMessage = async (
     jidUserPart: mentionTargetJid.split("@")[0] ?? null,
   });
 
-  await sock.sendMessage(groupJid, {
+  const sent = await sock.sendMessage(groupJid, {
     text,
     mentions: [mentionTargetJid],
   }, quotedMessage ? { quoted: quotedMessage } : undefined);
+  if (context) {
+    recordModerationReplyContext(groupJid, sent?.key.id, context);
+  }
 };
 
 const getMutedCounterKey = (userJid: string, groupJid: string): string => `${groupJid}::${userJid}`;
@@ -1917,7 +1925,12 @@ They have been banned and removed after repeatedly trying to post while muted.`,
           }
 
           if (!replyCoolingDown) {
-            await sendModerationMessage(sock, groupJid, replyText, mentionTargetJid, msg);
+            await sendModerationMessage(sock, groupJid, replyText, mentionTargetJid, msg, {
+              sourceGroupJid: groupJid,
+              sourceMsgId: msg.key.id ?? null,
+              sourceText: text,
+              reason: ticketDecision.reason,
+            });
             ticketMarketplaceReplyCooldown.record(groupJid, sender.userId, cooldownNow);
           }
 
@@ -2063,6 +2076,13 @@ They have been banned and removed after repeatedly trying to post while muted.`,
             ? warningText
             : appendStrikeWarning(warningText, strikeCount),
           mentionTargetJid,
+          msg,
+          {
+            sourceGroupJid: groupJid,
+            sourceMsgId: msg.key.id ?? null,
+            sourceText: text,
+            reason,
+          },
         );
 
         if (strikeCount >= 3) {
@@ -2083,7 +2103,12 @@ They have been banned and removed after repeatedly trying to post while muted.`,
             );
           }
           const flaggedText = `${formatMentionLabel(senderJid, pushName, phoneJid)} has been flagged for removal after repeated violations. An owner or moderator will review shortly.${config.muteOnStrike3 ? " They have been muted until review." : ""}`;
-          await sendModerationMessage(sock, groupJid, flaggedText, mentionTargetJid);
+          await sendModerationMessage(sock, groupJid, flaggedText, mentionTargetJid, undefined, {
+            sourceGroupJid: groupJid,
+            sourceMsgId: msg.key.id ?? null,
+            sourceText: text,
+            reason,
+          });
           await notifyOwnersOfStrikeThree(
             sock,
             canonicalSenderAlias,
@@ -2176,6 +2201,13 @@ They have been banned and removed after repeatedly trying to post while muted.`,
           groupJid,
           appendStrikeWarning(spamWarningText, strikeCount),
           mentionTargetJid,
+          msg,
+          {
+            sourceGroupJid: groupJid,
+            sourceMsgId: msg.key.id ?? null,
+            sourceText: text,
+            reason: spamResult.reason,
+          },
         );
 
         if (strikeCount >= 3) {
@@ -2196,7 +2228,12 @@ They have been banned and removed after repeatedly trying to post while muted.`,
             );
           }
           const flaggedText = `${formatMentionLabel(senderJid, getPushName(msg), phoneJid)} has been flagged for removal after repeated violations. An owner or moderator will review shortly.${config.muteOnStrike3 ? " They have been muted until review." : ""}`;
-          await sendModerationMessage(sock, groupJid, flaggedText, mentionTargetJid);
+          await sendModerationMessage(sock, groupJid, flaggedText, mentionTargetJid, undefined, {
+            sourceGroupJid: groupJid,
+            sourceMsgId: msg.key.id ?? null,
+            sourceText: text,
+            reason: spamResult.reason,
+          });
           await notifyOwnersOfStrikeThree(
             sock,
             canonicalSenderAlias,
@@ -2207,7 +2244,12 @@ They have been banned and removed after repeatedly trying to post while muted.`,
           );
         }
       } else {
-        await sendModerationMessage(sock, groupJid, spamWarningText, mentionTargetJid);
+        await sendModerationMessage(sock, groupJid, spamWarningText, mentionTargetJid, msg, {
+          sourceGroupJid: groupJid,
+          sourceMsgId: msg.key.id ?? null,
+          sourceText: text,
+          reason: spamResult.reason,
+        });
       }
 
       logAction({
