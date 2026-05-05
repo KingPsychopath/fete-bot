@@ -2453,7 +2453,7 @@ export const startBot = async (): Promise<void> => {
       const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(qr)}`;
       log(`QR image URL: ${qrImageUrl}`);
 
-      QRCode.toString(qr, { type: "terminal", small: false, margin: 2 }, (err, code) => {
+      QRCode.toString(qr, { type: "terminal", small: false, margin: 2 }, (err: Error | null | undefined, code: string) => {
         if (err) {
           warn("Failed to render terminal QR code.", err);
           return;
@@ -2461,7 +2461,7 @@ export const startBot = async (): Promise<void> => {
 
         const paddedCode = code
           .split("\n")
-          .map((line) => `.${line}`)
+          .map((line: string) => `.${line}`)
           .join("\n");
         process.stdout.write(`\n${paddedCode}\n`);
       });
