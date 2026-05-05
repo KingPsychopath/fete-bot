@@ -100,7 +100,7 @@ const spamDetector = new SpamDetector({
 const discoveredGroups = new Map<string, string>();
 const discoveredGroupMetadata = new Map<string, GroupMetadata>();
 const mutedMessageCounts = new Map<string, number>();
-const handledCallOfferIds = new Set<string>();
+const handledCallOfferIds = new Map<string, number>();
 const callGuardRecentActivityByKey = new Map<string, Map<string, number>>();
 const callGuardWarningLastSentByKey = new Map<string, number>();
 const ticketMarketplaceReplyCooldown = new TicketMarketplaceReplyCooldown(
@@ -111,10 +111,13 @@ const adminMentionCooldown = new AdminMentionCooldown(
   config.adminMentionOveruseWindowMinutes * 60 * 1000,
   config.adminMentionOveruseThreshold,
 );
+const HANDLED_CALL_TTL_MS = 10 * 60 * 1000;
+const HANDLED_CALL_MAX_ENTRIES = 5_000;
 let strikePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let mutePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let callViolationPurgeTimer: ReturnType<typeof setInterval> | null = null;
 let globalBanEnforcementTimer: ReturnType<typeof setInterval> | null = null;
+let handledCallSweepTimer: ReturnType<typeof setInterval> | null = null;
 let activeSocket: WASocket | null = null;
 let shuttingDown = false;
 let reconnecting = false;
@@ -161,6 +164,51 @@ healthServer.on("error", (serverError) => {
 
 const isBoomLike = (value: unknown): value is { output?: { statusCode?: number } } =>
   typeof value === "object" && value !== null && "output" in value;
+
+const sweepHandledCallOfferIds = (nowMs = Date.now()): void => {
+  for (const [callId, handledAt] of handledCallOfferIds) {
+    if (nowMs - handledAt > HANDLED_CALL_TTL_MS) {
+      handledCallOfferIds.delete(callId);
+    }
+  }
+
+  const overflow = handledCallOfferIds.size - HANDLED_CALL_MAX_ENTRIES;
+  if (overflow <= 0) {
+    return;
+  }
+
+  let deleted = 0;
+  for (const callId of handledCallOfferIds.keys()) {
+    handledCallOfferIds.delete(callId);
+    deleted += 1;
+
+    if (deleted >= overflow) {
+      return;
+    }
+  }
+};
+
+const markHandledCallOfferId = (callId: string, nowMs = Date.now()): void => {
+  handledCallOfferIds.set(callId, nowMs);
+
+  if (handledCallOfferIds.size > HANDLED_CALL_MAX_ENTRIES) {
+    sweepHandledCallOfferIds(nowMs);
+  }
+};
+
+const hasHandledCallOfferId = (callId: string, nowMs = Date.now()): boolean => {
+  const handledAt = handledCallOfferIds.get(callId);
+  if (!handledAt) {
+    return false;
+  }
+
+  if (nowMs - handledAt > HANDLED_CALL_TTL_MS) {
+    handledCallOfferIds.delete(callId);
+    return false;
+  }
+
+  return true;
+};
 
 const installQuietSwitchSendGuard = (sock: WASocket): void => {
   const originalSendMessage = sock.sendMessage.bind(sock);
@@ -632,6 +680,15 @@ const shouldSendCallGuardWarning = (userId: string, groupJid: string, nowMs: num
   return true;
 };
 
+const sweepCallGuardWarningCooldowns = (nowMs = Date.now()): void => {
+  const cutoff = nowMs - getCallGuardWarningCooldownMs();
+  for (const [key, lastSentAt] of callGuardWarningLastSentByKey) {
+    if (lastSentAt <= cutoff) {
+      callGuardWarningLastSentByKey.delete(key);
+    }
+  }
+};
+
 const normaliseCallGuardActivityKey = (value: string | null | undefined): string | null => {
   if (!value) {
     return null;
@@ -668,11 +725,32 @@ const getCallGuardRecentGroupCandidates = (keys: readonly string[], nowMs = Date
     for (const [groupJid, lastActiveAt] of groupActivity.entries()) {
       if (lastActiveAt > cutoff && isGroupCallGuarded(groupJid)) {
         candidates.add(groupJid);
+      } else if (lastActiveAt <= cutoff) {
+        groupActivity.delete(groupJid);
       }
+    }
+
+    if (groupActivity.size === 0) {
+      callGuardRecentActivityByKey.delete(key);
     }
   }
 
   return Array.from(candidates);
+};
+
+const sweepCallGuardRecentActivity = (nowMs = Date.now()): void => {
+  const cutoff = nowMs - getCallGuardRecentActivityTtlMs();
+  for (const [key, groupActivity] of callGuardRecentActivityByKey) {
+    for (const [groupJid, lastActiveAt] of groupActivity) {
+      if (lastActiveAt <= cutoff) {
+        groupActivity.delete(groupJid);
+      }
+    }
+
+    if (groupActivity.size === 0) {
+      callGuardRecentActivityByKey.delete(key);
+    }
+  }
 };
 
 const recordCallGuardRecentActivityForUser = (
@@ -875,7 +953,7 @@ const handleCall = async (sock: WASocket, call: WACallEvent): Promise<void> => {
     return;
   }
 
-  if (handledCallOfferIds.has(call.id)) {
+  if (hasHandledCallOfferId(call.id)) {
     return;
   }
 
@@ -890,7 +968,7 @@ const handleCall = async (sock: WASocket, call: WACallEvent): Promise<void> => {
   }
 
   if (!groupJid && shouldRejectUnknownGroupCall(call)) {
-    handledCallOfferIds.add(call.id);
+    markHandledCallOfferId(call.id);
 
     if (config.dryRun) {
       warn("Dry run: would reject group call without group JID", {
@@ -983,7 +1061,7 @@ const handleCall = async (sock: WASocket, call: WACallEvent): Promise<void> => {
     return;
   }
 
-  handledCallOfferIds.add(call.id);
+  markHandledCallOfferId(call.id);
   const callerMentionJid = caller?.participantJid ?? normalizeJid(call.from);
   const mentionTargetJid = getMentionTargetJid(callerMentionJid);
 
@@ -2314,6 +2392,14 @@ export const startBot = async (): Promise<void> => {
       purgeExpiredCallViolations(getCallGuardWindowMs());
     }, 60 * 60 * 1000);
     callViolationPurgeTimer.unref();
+  }
+  if (!handledCallSweepTimer) {
+    handledCallSweepTimer = setInterval(() => {
+      sweepHandledCallOfferIds();
+      sweepCallGuardRecentActivity();
+      sweepCallGuardWarningCooldowns();
+    }, 5 * 60 * 1000);
+    handledCallSweepTimer.unref();
   }
   log(`${config.botName} ${VERSION} starting at ${STARTED_AT}`);
   logConfig();

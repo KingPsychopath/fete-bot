@@ -2,11 +2,12 @@
   "name": "fete-bot",
   "version": "1.0.0",
   "description": "",
+  "type": "module",
   "main": "index.js",
   "scripts": {
     "build": "tsc",
-    "dev": "tsx src/index.ts",
-    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
     "admin:cli": "tsx src/adminCli.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -32,12 +33,12 @@
     "libphonenumber-js": "^1.12.42",
     "pino": "^10.3.1",
     "qrcode": "^1.5.4",
-    "tldts": "^7.0.28",
-    "tsx": "^4.21.0"
+    "tldts": "^7.0.28"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.6.0",
+    "tsx": "^4.21.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.5"
   }
