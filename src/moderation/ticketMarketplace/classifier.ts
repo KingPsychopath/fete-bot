@@ -255,9 +255,14 @@ const NEGATED_BUYER_INTENT_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   { label: "happy to pay", regex: /\b(?:not|never|dont|don't|do\s+not)\s+happy\s+to\s+pay\b/iu },
   { label: "will pay", regex: /\b(?:not|never|dont|don't|do\s+not)\s+will\s+pay\b/iu },
   { label: "can pay", regex: /\b(?:not|never|dont|don't|do\s+not)\s+can\s+pay\b/iu },
+  { label: "buy tickets", regex: /\b(?:not|never|dont|don't|do\s+not)\s+buy(?:ing)?\s+(?:any\s+)?tickets?\b/iu },
 ];
 
 const NON_MARKETPLACE_PATTERNS: Array<{ label: string; regex: RegExp }> = [
+  {
+    label: "negated ticket buying",
+    regex: /\b(?:not|never|dont|don't|do\s+not)\s+buy(?:ing)?\s+(?:any\s+)?tickets?\b/iu,
+  },
   {
     label: "scammer tried to sell me",
     regex: new RegExp(
@@ -326,6 +331,16 @@ const SUPPORT_CLARIFICATION_PATTERNS: Array<{ label: string; regex: RegExp }> = 
   {
     label: "face value clarification",
     regex: /\b(?:what|how|why|does|do|is|are|can|could|should|meaning|mean|means|explain)\b(?:\s+[\p{L}\p{N}'£€$]+){0,8}\s+\b(?:face\s+value|fv)\b/iu,
+  },
+];
+
+const NON_MARKETPLACE_SUPPORT_PATTERNS: Array<{ label: string; regex: RegExp }> = [
+  {
+    label: "ticket meaning clarification",
+    regex: new RegExp(
+      String.raw`\b(?:does\s+anyone\s+know\s+)?(?:what|which|meaning|mean|means|explain)\b(?:\s+[\p{L}\p{N}'£€$]+){0,8}\s+\b${ticketTermPattern}\b(?:\s+[\p{L}\p{N}'£€$]+){0,8}\s+\b(?:mean|means|meaning)\b`,
+      "iu",
+    ),
   },
 ];
 
@@ -611,6 +626,11 @@ export const classify = (text: string): TicketMarketplaceClassification => {
   const supportClarificationSignals = findPatternMatches(normalisedText, SUPPORT_CLARIFICATION_PATTERNS);
   if (supportClarificationSignals.length > 0) {
     return supportClarificationIntent(["face value"]);
+  }
+
+  const nonMarketplaceSupportSignals = findPatternMatches(normalisedText, NON_MARKETPLACE_SUPPORT_PATTERNS);
+  if (nonMarketplaceSupportSignals.length > 0) {
+    return noTicketMarketplaceIntent();
   }
 
   const tokens = tokenise(normalisedText);
