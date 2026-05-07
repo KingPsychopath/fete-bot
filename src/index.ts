@@ -113,6 +113,8 @@ const adminMentionCooldown = new AdminMentionCooldown(
 );
 const HANDLED_CALL_TTL_MS = 10 * 60 * 1000;
 const HANDLED_CALL_MAX_ENTRIES = 5_000;
+const MESSAGE_HANDLER_CONCURRENCY = 4;
+const MESSAGE_HANDLER_MAX_QUEUE = 500;
 let strikePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let mutePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let callViolationPurgeTimer: ReturnType<typeof setInterval> | null = null;
@@ -124,6 +126,15 @@ let reconnecting = false;
 let reconnectAttempts = 0;
 let socketInstanceCounter = 0;
 let botSelfJids = new Set<string>();
+
+type QueuedMessage = {
+  socketInstanceId: number;
+  sock: WASocket;
+  message: WAMessage;
+};
+
+const messageQueue: QueuedMessage[] = [];
+let activeMessageHandlers = 0;
 
 const healthPort = Number(process.env.PORT ?? "3000");
 const healthServer = createServer((req, res) => {
@@ -164,6 +175,65 @@ healthServer.on("error", (serverError) => {
 
 const isBoomLike = (value: unknown): value is { output?: { statusCode?: number } } =>
   typeof value === "object" && value !== null && "output" in value;
+
+const cleanupSocket = (sock: WASocket): void => {
+  try {
+    sock.ev.removeAllListeners("creds.update");
+    sock.ev.removeAllListeners("lid-mapping.update");
+    sock.ev.removeAllListeners("connection.update");
+    sock.ev.removeAllListeners("group-participants.update");
+    sock.ev.removeAllListeners("messages.upsert");
+    sock.ev.removeAllListeners("call");
+    sock.ev.removeAllListeners("messages.delete");
+  } catch (cleanupError) {
+    warn("Failed to remove socket event listeners during cleanup", cleanupError);
+  }
+
+  try {
+    sock.end(undefined);
+  } catch (cleanupError) {
+    warn("Failed to end socket during cleanup", cleanupError);
+  }
+};
+
+const drainMessageQueue = (): void => {
+  while (activeMessageHandlers < MESSAGE_HANDLER_CONCURRENCY && messageQueue.length > 0) {
+    const item = messageQueue.shift();
+    if (!item) {
+      return;
+    }
+
+    if (item.socketInstanceId !== socketInstanceCounter || activeSocket !== item.sock) {
+      continue;
+    }
+
+    activeMessageHandlers += 1;
+    void handleMessage(item.sock, item.message)
+      .catch((messageError) => {
+        error("Message handler failed", messageError);
+      })
+      .finally(() => {
+        activeMessageHandlers -= 1;
+        drainMessageQueue();
+      });
+  }
+};
+
+const enqueueMessage = (socketInstanceId: number, sock: WASocket, message: WAMessage): void => {
+  if (socketInstanceId !== socketInstanceCounter || activeSocket !== sock) {
+    return;
+  }
+
+  if (messageQueue.length >= MESSAGE_HANDLER_MAX_QUEUE) {
+    messageQueue.shift();
+    warn("Dropped oldest queued message because handler queue is full", {
+      maxQueue: MESSAGE_HANDLER_MAX_QUEUE,
+    });
+  }
+
+  messageQueue.push({ socketInstanceId, sock, message });
+  drainMessageQueue();
+};
 
 const sweepHandledCallOfferIds = (nowMs = Date.now()): void => {
   for (const [callId, handledAt] of handledCallOfferIds) {
@@ -1287,8 +1357,13 @@ const listDiscoveredGroups = async (
 
     for (const [jid, metadata] of Object.entries(groups)) {
       discoveredGroups.set(jid, metadata.subject);
-      discoveredGroupMetadata.set(jid, metadata);
       log("Discovered group", { jid, subject: metadata.subject });
+
+      if (!isManagedGroup(jid)) {
+        continue;
+      }
+
+      discoveredGroupMetadata.set(jid, metadata);
       if (botSelfJids.size > 0) {
         await syncGroupParticipantIdentities(metadata);
       }
@@ -2494,6 +2569,7 @@ export const startBot = async (): Promise<void> => {
       if (activeSocket === sock) {
         activeSocket = null;
       }
+      messageQueue.splice(0, messageQueue.length);
       stopSpotlightScheduler();
       stopTicketMarketplaceRuleReminderScheduler();
       stopAnnouncementScheduler();
@@ -2513,6 +2589,7 @@ export const startBot = async (): Promise<void> => {
       }
 
       if (isLoggedOut) {
+        cleanupSocket(sock);
         error(`WhatsApp logged the bot out. Remove the auth folder (${authFolder}) and pair again.`, { statusCode });
         process.exit(1);
       }
@@ -2521,6 +2598,7 @@ export const startBot = async (): Promise<void> => {
       reconnectAttempts += 1;
 
       warn("Connection closed, reconnecting with backoff", { statusCode, delay, reconnectAttempts });
+      cleanupSocket(sock);
 
       if (!shuttingDown && !reconnecting) {
         reconnecting = true;
@@ -2605,7 +2683,7 @@ Use !unban ${participant.knownAliases[0] ?? participant.userId} ${update.id} to 
 
   sock.ev.on("messages.upsert", ({ messages }) => {
     for (const message of messages) {
-      void handleMessage(sock, message);
+      enqueueMessage(socketInstanceId, sock, message);
     }
   });
 
@@ -2672,7 +2750,10 @@ const shutdown = async (signal: string): Promise<void> => {
 
     const socketToClose = activeSocket;
     activeSocket = null;
-    socketToClose?.end(undefined);
+    messageQueue.splice(0, messageQueue.length);
+    if (socketToClose) {
+      cleanupSocket(socketToClose);
+    }
   } catch (shutdownError) {
     error("Error during shutdown", shutdownError);
   }

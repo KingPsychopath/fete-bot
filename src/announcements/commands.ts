@@ -106,13 +106,24 @@ Commands that can remove, reschedule, or send to the real announcements chat ask
 
 const getConfirmToken = (): string => `confirm ${Math.random().toString(36).slice(2, 8)}`;
 
+const prunePendingConfirmations = (now = Date.now()): void => {
+  for (const [actorUserId, pending] of pendingConfirmations) {
+    if (now > pending.expiresAt) {
+      pendingConfirmations.delete(actorUserId);
+    }
+  }
+};
+
 const consumeConfirmation = (actorUserId: string, text: string): PendingConfirmation | null => {
+  const now = Date.now();
+  prunePendingConfirmations(now);
+
   const pending = pendingConfirmations.get(actorUserId);
   if (!pending) {
     return null;
   }
 
-  if (Date.now() > pending.expiresAt) {
+  if (now > pending.expiresAt) {
     pendingConfirmations.delete(actorUserId);
     return null;
   }
@@ -132,10 +143,13 @@ const requestConfirmation = async (
   description: string,
   run: () => Promise<string>,
 ): Promise<void> => {
+  const now = Date.now();
+  prunePendingConfirmations(now);
+
   const token = getConfirmToken();
   pendingConfirmations.set(actorUserId, {
     token,
-    expiresAt: Date.now() + CONFIRMATION_TTL_MS,
+    expiresAt: now + CONFIRMATION_TTL_MS,
     description,
     run,
   });
