@@ -2417,6 +2417,9 @@ export const startBot = async (): Promise<void> => {
   const sock = makeWASocket({
     auth: state,
     version,
+    syncFullHistory: false,
+    shouldSyncHistoryMessage: () => false,
+    markOnlineOnConnect: false,
     printQRInTerminal: false,
     logger: pino({ level: "silent" }),
   });
