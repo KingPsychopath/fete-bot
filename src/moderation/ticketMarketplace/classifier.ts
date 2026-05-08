@@ -315,7 +315,7 @@ const NON_MARKETPLACE_PATTERNS: Array<{ label: string; regex: RegExp }> = [
 const ACCOMMODATION_COORDINATION_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   {
     label: "accommodation group booking",
-    regex: /\b(?:accoms?|accommodation|airbnb|hotel|hostel|villa|apartment|flat|house|place|booking)\b(?:\s+[\p{L}\p{N}'£€$]+){0,40}\s+\b(?:guests?|people|ppl|beds?|bedrooms?|double\s+beds?|sleeping\s+arrangements?|booking|secure\s+the\s+booking|per\s+person|pp|pics?)\b/iu,
+    regex: /\b(?:accoms?|accommodation|airbnb|hotel|hostel|villa|apartment|flat|house|place|booking|somewhere\s+to\s+stay|stay|staying)\b(?:\s+[\p{L}\p{N}'£€$]+){0,40}\s+\b(?:guests?|people|ppl|beds?|bedrooms?|double\s+beds?|sleeping\s+arrangements?|booking|secure\s+the\s+booking|per\s+person|pp|pics?)\b/iu,
   },
   {
     label: "lodging sleeping arrangements",

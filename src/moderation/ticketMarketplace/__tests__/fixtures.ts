@@ -134,6 +134,12 @@ export const FALSE_POSITIVE_REGRESSIONS = [
     layer: "classifier",
     reason: "Accommodation coordination can contain place, price, payment, and DM language without being ticket resale.",
   },
+  {
+    text: "Hey Everyone, if anyone is looking for somewhere to stay for fdlm please lmk. Staying near Châtelet for six guests, and the price would be around £300 to £400 per person. The dates are from June 18th to June 23rd.",
+    expected: "none",
+    layer: "classifier",
+    reason: "Short accommodation offers can contain lmk, guests, price per person, and dates without being ticket resale.",
+  },
 ] as const satisfies ReadonlyArray<{
   text: string;
   expected: TicketMarketplaceIntent;
