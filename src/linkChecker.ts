@@ -14,6 +14,7 @@ export const ALLOWED_DOMAINS = [
   "tiktok.com",
   "soundcloud.com",
   "mixcloud.com",
+  "pinterest.com",
 ] as const;
 
 const ACCOMMODATION_BRAND_NAMES = new Set([
@@ -28,6 +29,74 @@ const ACCOMMODATION_EXACT_DOMAINS = new Set([
   "trip.com",
   "trip.fr",
   "hotels.com",
+]);
+
+const SHOPPING_BRAND_NAMES = new Set([
+  "adidas",
+  "abercrombie",
+  "alo",
+  "amazon",
+  "arket",
+  "asos",
+  "bershka",
+  "boohoo",
+  "boohooman",
+  "brandymelville",
+  "byrotation",
+  "cider",
+  "cos",
+  "depop",
+  "ebay",
+  "farfetch",
+  "fashionnova",
+  "freepeople",
+  "garage",
+  "goat",
+  "gymshark",
+  "hm",
+  "hollisterco",
+  "houseofcb",
+  "lululemon",
+  "mango",
+  "meshki",
+  "missguided",
+  "motelrocks",
+  "nastygal",
+  "newlook",
+  "next",
+  "monki",
+  "nike",
+  "ohpolly",
+  "pinterest",
+  "primark",
+  "princesspolly",
+  "pullandbear",
+  "riverisland",
+  "revolve",
+  "selfridges",
+  "shein",
+  "skims",
+  "stockx",
+  "stradivarius",
+  "therealreal",
+  "tkmaxx",
+  "uniqlo",
+  "urbanoutfitters",
+  "vestiairecollective",
+  "vinted",
+  "weekday",
+  "zalando",
+  "zara",
+]);
+
+const SHOPPING_EXACT_DOMAINS = new Set([
+  "endclothing.com",
+  "garageclothing.com",
+  "aloyoga.com",
+  "marksandspencer.com",
+  "prettylittlething.com",
+  "shopcider.com",
+  "stories.com",
 ]);
 
 export const BLOCKED_DOMAINS = [
@@ -255,6 +324,20 @@ const isAccommodationDomain = (domain: string): boolean => {
   return Boolean(registeredName && ACCOMMODATION_BRAND_NAMES.has(registeredName));
 };
 
+const isShoppingDomain = (domain: string): boolean => {
+  const registeredDomain = getDomain(domain);
+  if (!registeredDomain) {
+    return false;
+  }
+
+  if (SHOPPING_EXACT_DOMAINS.has(registeredDomain)) {
+    return true;
+  }
+
+  const registeredName = getDomainWithoutSuffix(domain);
+  return Boolean(registeredName && SHOPPING_BRAND_NAMES.has(registeredName));
+};
+
 const isAllowedDomain = (domain: string, url: string): boolean => {
   if (domain === "music.apple.com" || domain === "music.youtube.com") {
     return true;
@@ -284,7 +367,15 @@ const isAllowedDomain = (domain: string, url: string): boolean => {
     return true;
   }
 
+  if (domain === "pinterest.com" || domain.endsWith(".pinterest.com")) {
+    return true;
+  }
+
   if (isAccommodationDomain(domain)) {
+    return true;
+  }
+
+  if (isShoppingDomain(domain)) {
     return true;
   }
 

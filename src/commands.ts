@@ -677,14 +677,14 @@ const previewWarningText = (reason: DisallowedUrlReason): string => {
   }
 
   if (reason === "bare profile handle or URL") {
-    return "Hey @name - this group only allows links to social profiles, music, or accommodation. If that was a social profile, please write it as @username, @/username, or share the full Instagram/TikTok/X profile URL. Bare dotted text can look like a website, so this one was removed without a strike. Future repeats may count as link violations 🙏";
+    return "Hey @name - this group only allows links to social profiles, music, accommodation, or shopping. If that was a social profile, please write it as @username, @/username, or share the full Instagram/TikTok/X profile URL. Bare dotted text can look like a website, so this one was removed without a strike. Future repeats may count as link violations 🙏";
   }
 
   if (reason === "whatsapp invite link") {
     return `Hey @name - WhatsApp group invite links aren't allowed in here 🙏`;
   }
 
-  return `Hey @name — please keep links to social profiles, music, or accommodation only. For events, post at fete.outofofficecollective.co.uk 🙏`;
+  return `Hey @name — please keep links to social profiles, music, accommodation, or shopping only. For events, post at fete.outofofficecollective.co.uk 🙏`;
 };
 
 const sendInvalidIdentifier = async (sock: WASocket, destinationJid: string): Promise<void> => {

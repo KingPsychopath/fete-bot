@@ -33,6 +33,66 @@ describe("linkChecker accommodation links", () => {
     expect(isAllowed("https://cheaphotels.net")).toBe(false);
   });
 
+  it("allows Pinterest and common clothing shopping links", () => {
+    expect(isAllowed("https://pinterest.com/pin/123")).toBe(true);
+    expect(isAllowed("https://www.pinterest.co.uk/pin/123")).toBe(true);
+    expect(isAllowed("https://vinted.co.uk/items/123")).toBe(true);
+    expect(isAllowed("https://depop.com/products/example")).toBe(true);
+    expect(isAllowed("https://www.ebay.co.uk/itm/123")).toBe(true);
+    expect(isAllowed("https://amazon.fr/dp/example")).toBe(true);
+    expect(isAllowed("https://asos.com/women/dresses")).toBe(true);
+    expect(isAllowed("https://www.zara.com/uk/en/example-p123.html")).toBe(true);
+    expect(isAllowed("https://www2.hm.com/en_gb/productpage.123.html")).toBe(true);
+    expect(isAllowed("https://endclothing.com/gb/example.html")).toBe(true);
+    expect(isAllowed("https://fashionnova.com/products/example")).toBe(true);
+    expect(isAllowed("https://boohoo.com/product/example")).toBe(true);
+    expect(isAllowed("https://boohooman.com/mens/example")).toBe(true);
+    expect(isAllowed("https://shein.co.uk/example-p-123.html")).toBe(true);
+    expect(isAllowed("https://prettylittlething.com/example.html")).toBe(true);
+    expect(isAllowed("https://missguided.co.uk/example")).toBe(true);
+    expect(isAllowed("https://nastygal.com/product/example")).toBe(true);
+    expect(isAllowed("https://ohpolly.com/products/example")).toBe(true);
+    expect(isAllowed("https://meshki.co.uk/products/example")).toBe(true);
+    expect(isAllowed("https://shopcider.com/product/detail")).toBe(true);
+    expect(isAllowed("https://motelrocks.com/products/example")).toBe(true);
+    expect(isAllowed("https://houseofcb.com/example.html")).toBe(true);
+    expect(isAllowed("https://skims.com/products/example")).toBe(true);
+    expect(isAllowed("https://princesspolly.com/products/example")).toBe(true);
+    expect(isAllowed("https://revolve.com/example/dp/example")).toBe(true);
+    expect(isAllowed("https://freepeople.com/shop/example")).toBe(true);
+    expect(isAllowed("https://abercrombie.com/shop/uk/p/example")).toBe(true);
+    expect(isAllowed("https://hollisterco.com/shop/uk/p/example")).toBe(true);
+    expect(isAllowed("https://garageclothing.com/products/example")).toBe(true);
+    expect(isAllowed("https://brandymelville.com/products/example")).toBe(true);
+    expect(isAllowed("https://weekday.com/en_gbp/p/example")).toBe(true);
+    expect(isAllowed("https://newlook.com/uk/womens/example")).toBe(true);
+    expect(isAllowed("https://riverisland.com/p/example")).toBe(true);
+    expect(isAllowed("https://next.co.uk/style/example")).toBe(true);
+    expect(isAllowed("https://marksandspencer.com/example/p/example")).toBe(true);
+    expect(isAllowed("https://primark.com/en-gb/p/example")).toBe(true);
+    expect(isAllowed("https://tkmaxx.com/uk/en/women/example")).toBe(true);
+    expect(isAllowed("https://lululemon.co.uk/p/example")).toBe(true);
+    expect(isAllowed("https://aloyoga.com/products/example")).toBe(true);
+    expect(isAllowed("https://gymshark.com/products/example")).toBe(true);
+    expect(isAllowed("https://stockx.com/example")).toBe(true);
+    expect(isAllowed("https://goat.com/sneakers/example")).toBe(true);
+    expect(isAllowed("https://vestiairecollective.com/women-clothing/example")).toBe(true);
+    expect(isAllowed("https://therealreal.com/products/example")).toBe(true);
+    expect(containsDisallowedUrl("fit inspo https://pinterest.com/pin/123")).toEqual({ found: false });
+    expect(containsDisallowedUrl("selling on https://vinted.co.uk/items/123")).toEqual({ found: false });
+  });
+
+  it("blocks shopping lookalikes", () => {
+    expect(isAllowed("https://amazon.evil.com/dp/example")).toBe(false);
+    expect(isAllowed("https://depop.evil.com/products/example")).toBe(false);
+    expect(isAllowed("https://ebay-listing.example.com/itm/123")).toBe(false);
+    expect(isAllowed("https://mypinterest.co.uk/pin/123")).toBe(false);
+    expect(isAllowed("https://endclothing.com.evil.net/gb/example.html")).toBe(false);
+    expect(isAllowed("https://shein.evil.com/product/example")).toBe(false);
+    expect(isAllowed("https://fashionnova.example.com/products/example")).toBe(false);
+    expect(isAllowed("https://prettylittlething.com.evil.net/example.html")).toBe(false);
+  });
+
   it("keeps existing blocked link behavior", () => {
     expect(containsDisallowedUrl("visit https://ra.co/events/1")).toEqual({
       found: true,
