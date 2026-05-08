@@ -15,6 +15,7 @@ export const ALLOWED_DOMAINS = [
   "soundcloud.com",
   "mixcloud.com",
   "pinterest.com",
+  "maps.apple.com",
 ] as const;
 
 const ACCOMMODATION_BRAND_NAMES = new Set([
@@ -98,6 +99,22 @@ const SHOPPING_EXACT_DOMAINS = new Set([
   "shopcider.com",
   "stories.com",
 ]);
+
+const PRACTICAL_LINK_DOMAINS = [
+  "bolt.eu",
+  "citymapper.com",
+  "g7.fr",
+  "iledefrance-mobilites.fr",
+  "opentable.com",
+  "ratp.fr",
+  "resy.com",
+  "sevenrooms.com",
+  "sncf-connect.com",
+  "thefork.com",
+  "trainline.com",
+  "uber.com",
+  "zenchef.com",
+] as const;
 
 export const BLOCKED_DOMAINS = [
   "chat.whatsapp.com",
@@ -338,6 +355,20 @@ const isShoppingDomain = (domain: string): boolean => {
   return Boolean(registeredName && SHOPPING_BRAND_NAMES.has(registeredName));
 };
 
+const isGoogleMapsUrl = (domain: string, url: string): boolean => {
+  const parsed = parseUrl(url);
+  if (!parsed) {
+    return false;
+  }
+
+  const registeredDomain = getDomain(domain);
+  if (!registeredDomain || !["google.com", "google.co.uk"].includes(registeredDomain)) {
+    return false;
+  }
+
+  return domain.startsWith("maps.google.") || parsed.pathname === "/maps" || parsed.pathname.startsWith("/maps/");
+};
+
 const isAllowedDomain = (domain: string, url: string): boolean => {
   if (domain === "music.apple.com" || domain === "music.youtube.com") {
     return true;
@@ -368,6 +399,14 @@ const isAllowedDomain = (domain: string, url: string): boolean => {
   }
 
   if (domain === "pinterest.com" || domain.endsWith(".pinterest.com")) {
+    return true;
+  }
+
+  if (domain === "maps.apple.com" || domain === "maps.app.goo.gl" || isGoogleMapsUrl(domain, url)) {
+    return true;
+  }
+
+  if (matchesDomain(domain, PRACTICAL_LINK_DOMAINS)) {
     return true;
   }
 

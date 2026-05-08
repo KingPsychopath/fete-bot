@@ -93,6 +93,43 @@ describe("linkChecker accommodation links", () => {
     expect(isAllowed("https://prettylittlething.com.evil.net/example.html")).toBe(false);
   });
 
+  it("allows Apple Maps and Google Maps links without allowing all Google links", () => {
+    expect(isAllowed("https://maps.apple.com/?q=Venue")).toBe(true);
+    expect(isAllowed("https://www.google.com/maps/place/Venue")).toBe(true);
+    expect(isAllowed("https://google.com/maps/search/?api=1&query=Venue")).toBe(true);
+    expect(isAllowed("https://maps.google.com/?q=Venue")).toBe(true);
+    expect(isAllowed("https://maps.google.co.uk/maps?q=Venue")).toBe(true);
+    expect(isAllowed("https://maps.app.goo.gl/example")).toBe(true);
+    expect(containsDisallowedUrl("meet here https://maps.apple.com/?q=Venue")).toEqual({ found: false });
+    expect(containsDisallowedUrl("pin https://www.google.com/maps/place/Venue")).toEqual({ found: false });
+
+    expect(isAllowed("https://google.com/search?q=Venue")).toBe(false);
+    expect(isAllowed("https://docs.google.com/document/d/example")).toBe(false);
+    expect(isAllowed("https://maps.google.evil.com/?q=Venue")).toBe(false);
+  });
+
+  it("allows reservations, rides, transit, and Paris practical links", () => {
+    expect(isAllowed("https://opentable.com/r/example-paris")).toBe(true);
+    expect(isAllowed("https://resy.com/cities/paris/venues/example")).toBe(true);
+    expect(isAllowed("https://sevenrooms.com/reservations/example")).toBe(true);
+    expect(isAllowed("https://thefork.com/restaurant/example-r123")).toBe(true);
+    expect(isAllowed("https://zenchef.com/restaurants/example")).toBe(true);
+    expect(isAllowed("https://citymapper.com/directions")).toBe(true);
+    expect(isAllowed("https://m.uber.com/ul/")).toBe(true);
+    expect(isAllowed("https://bolt.eu/en/")).toBe(true);
+    expect(isAllowed("https://ratp.fr/itineraires")).toBe(true);
+    expect(isAllowed("https://iledefrance-mobilites.fr/itineraire")).toBe(true);
+    expect(isAllowed("https://sncf-connect.com/app/en-en/")).toBe(true);
+    expect(isAllowed("https://trainline.com/book/results")).toBe(true);
+    expect(isAllowed("https://g7.fr/en/")).toBe(true);
+    expect(containsDisallowedUrl("booked https://resy.com/cities/paris/venues/example")).toEqual({ found: false });
+    expect(containsDisallowedUrl("route https://citymapper.com/directions")).toEqual({ found: false });
+
+    expect(isAllowed("https://resy.evil.com/cities/paris")).toBe(false);
+    expect(isAllowed("https://uber.evil.com/ul/")).toBe(false);
+    expect(isAllowed("https://ratp.fr.evil.net/itineraires")).toBe(false);
+  });
+
   it("keeps existing blocked link behavior", () => {
     expect(containsDisallowedUrl("visit https://ra.co/events/1")).toEqual({
       found: true,

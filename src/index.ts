@@ -598,10 +598,10 @@ const getWarningText = (
   }
 
   if (reason === "bare profile handle or URL") {
-    return `Hey ${mentionLabel} - this group only allows links to social profiles, music, accommodation, or shopping. If that was a social profile, please write it as @username, @/username, or share the full Instagram/TikTok/X profile URL. Bare dotted text can look like a website, so this one was removed without a strike. Future repeats may count as link violations 🙏`;
+    return `Hey ${mentionLabel} - this group only allows practical links like social profiles, music, accommodation, shopping, maps, bookings, or travel. If that was a social profile, please write it as @username, @/username, or share the full Instagram/TikTok/X profile URL. Bare dotted text can look like a website, so this one was removed without a strike. Future repeats may count as link violations 🙏`;
   }
 
-  return `Hey ${mentionLabel} — please keep links to social profiles, music, accommodation, or shopping only. For events, post at fete.outofofficecollective.co.uk 🙏`;
+  return `Hey ${mentionLabel} — please keep links practical: social profiles, music, accommodation, shopping, maps, bookings, or travel. For events, post at fete.outofofficecollective.co.uk 🙏`;
 };
 
 const getSpamWarningText = (
