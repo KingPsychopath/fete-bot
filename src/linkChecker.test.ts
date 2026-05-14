@@ -39,6 +39,8 @@ describe("linkChecker accommodation links", () => {
     expect(isAllowed("https://vinted.co.uk/items/123")).toBe(true);
     expect(isAllowed("https://depop.com/products/example")).toBe(true);
     expect(isAllowed("https://www.ebay.co.uk/itm/123")).toBe(true);
+    expect(isAllowed("https://etsy.com/listing/123/example")).toBe(true);
+    expect(isAllowed("https://www.etsy.co.uk/listing/123/example")).toBe(true);
     expect(isAllowed("https://amazon.fr/dp/example")).toBe(true);
     expect(isAllowed("https://asos.com/women/dresses")).toBe(true);
     expect(isAllowed("https://www.zara.com/uk/en/example-p123.html")).toBe(true);
@@ -121,6 +123,7 @@ describe("linkChecker accommodation links", () => {
     expect(isAllowed("https://iledefrance-mobilites.fr/itineraire")).toBe(true);
     expect(isAllowed("https://sncf-connect.com/app/en-en/")).toBe(true);
     expect(isAllowed("https://trainline.com/book/results")).toBe(true);
+    expect(isAllowed("https://eurostar.com/uk-en/train/france/paris")).toBe(true);
     expect(isAllowed("https://g7.fr/en/")).toBe(true);
     expect(containsDisallowedUrl("booked https://resy.com/cities/paris/venues/example")).toEqual({ found: false });
     expect(containsDisallowedUrl("route https://citymapper.com/directions")).toEqual({ found: false });

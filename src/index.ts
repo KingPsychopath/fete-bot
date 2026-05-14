@@ -39,8 +39,10 @@ import {
   type CallGuardAuditAction,
 } from "./db.js";
 import { runStartupHealthCheck } from "./healthCheck.js";
+import { isGroupShhEnabled } from "./groupShhSwitch.js";
 import { loadLidMappings, recordLidMapping } from "./lidMap.js";
 import { containsDisallowedUrl } from "./linkChecker.js";
+import { isLinkGraceActive } from "./linkGrace.js";
 import {
   ADMIN_MENTION_OVERUSE_REPLIES,
   AdminMentionCooldown,
@@ -1741,6 +1743,31 @@ Push name: ${getPushName(msg) ?? "unknown"}`,
       }
     }
 
+    if (isGroupShhEnabled(groupJid)) {
+      if (!config.dryRun) {
+        await sock.sendMessage(groupJid, { delete: msg.key as WAMessageKey });
+      }
+
+      logAction({
+        timestamp: new Date().toISOString(),
+        group_jid: groupJid,
+        user_id: sender.userId,
+        participant_jid: liveSenderJid,
+        push_name: getPushName(msg),
+        message_text: text || null,
+        url_found: null,
+        action: config.dryRun ? "DRY_RUN" : "DELETED",
+        reason: "group shh",
+      });
+      warn(config.dryRun ? "Dry run: would delete message during group shh" : "Deleted message during group shh", {
+        groupJid,
+        senderJid: canonicalSenderAlias,
+        lidJid,
+        hasText: text.length > 0,
+      });
+      return;
+    }
+
     const senderIsProtected = isProtectedGroupMember(
       sender.userId,
       sender.knownAliases,
@@ -2163,7 +2190,9 @@ They have been banned and removed after repeatedly trying to post while muted.`,
       });
     }
 
-    const moderationResult = containsDisallowedUrl(text);
+    const moderationResult = isLinkGraceActive(sender.userId, groupJid)
+      ? { found: false }
+      : containsDisallowedUrl(text);
     const baseLogEntry = {
       timestamp: new Date().toISOString(),
       group_jid: groupJid,

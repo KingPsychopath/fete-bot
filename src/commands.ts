@@ -51,6 +51,8 @@ import {
   type UserSummary,
 } from "./identity.js";
 import { containsDisallowedUrl, type DisallowedUrlReason } from "./linkChecker.js";
+import { getGroupShhEntry, listEnabledGroupShhEntries, setGroupShhEnabled } from "./groupShhSwitch.js";
+import { grantLinkGrace } from "./linkGrace.js";
 import { getModerationReplyContext } from "./moderation/moderationReplyContext.js";
 import { buildTicketMarketplaceExplainText } from "./moderation/ticketMarketplace/explain.js";
 import {
@@ -100,6 +102,7 @@ const HELP_MESSAGE = `*Fete Bot — Admin Help*
   !pardon       —               | {identifier} {groupJid?}
   !whois        —               | {identifier}
   !undo         —               | —
+  !grace        {duration?}     | {identifier} {groupJid?} {duration?}
 
 *Info commands*
   !status
@@ -116,6 +119,7 @@ const HELP_MESSAGE = `*Fete Bot — Admin Help*
   !audit        {limit?}
   !test         {url}
   !explain      {groupJid?} {text} — or reply to a message
+  !shh          {on|off|status} — group only, delete all chat until off
   !help
 
 *Examples*
@@ -184,7 +188,12 @@ const destructiveCommandTimestamps = new Map<string, number[]>();
 
 const normaliseCommand = (text: string): string => text.trim().toLowerCase();
 const getCommandToken = (text: string): string => normaliseCommand(text).split(/\s+/)[0] ?? "";
-const canonicalCommand = (command: string): string => command === "!kick" ? "!remove" : command;
+const canonicalCommand = (command: string): string =>
+  command === "!kick"
+    ? "!remove"
+    : ["!immunity", "!immune", "!linkgrace", "!link-grace"].includes(command)
+      ? "!grace"
+      : command;
 const canonicalOwnerCommand = (command: string): string =>
   ["!quiet", "!silence", "!killswitch"].includes(command)
     ? "!quiet"
@@ -204,6 +213,7 @@ const COMMANDS_WITH_TARGET = new Set([
   "!strike",
   "!remove",
   "!whois",
+  "!grace",
 ]);
 
 const getReplyJidForActor = (actor: ResolvedUser): string | null =>
@@ -474,6 +484,23 @@ const formatDurationLabel = (input?: string): string => {
   } as const;
 
   return `${value} ${labels[match[2] as keyof typeof labels]}`;
+};
+
+const parseGraceDurationMs = (input?: string): number | null => {
+  const normalised = input?.trim().toLowerCase();
+  if (!normalised) {
+    return 5 * 60 * 1000;
+  }
+
+  const match = normalised.match(/^(\d+)([mhd])$/u);
+  if (!match) {
+    return null;
+  }
+
+  const value = Number(match[1]);
+  const unit = match[2];
+  const multiplier = unit === "m" ? 60 * 1000 : unit === "h" ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
+  return Math.min(value * multiplier, 24 * 60 * 60 * 1000);
 };
 
 const getEffectiveSpotlightTargetJids = (
@@ -1284,6 +1311,96 @@ Updated: ${formatDate(state.updatedAt)}
 Updated by: ${state.updatedBy ?? "unknown"}`;
 };
 
+const formatGroupShhStatus = (
+  groupJid: string,
+  groups: ReadonlyMap<string, string> | ReadonlyMap<string, GroupMetadata>,
+): string => {
+  const state = getGroupShhEntry(groupJid);
+  const status = state.enabled ? "ON - all non-command chat is deleted" : "OFF - chat is allowed";
+  return `Shh for ${formatGroupName(groupJid, groups)}: ${status}
+Updated: ${formatDate(state.updatedAt)}
+Updated by: ${state.updatedBy ?? "unknown"}`;
+};
+
+const formatEnabledGroupShhSummary = (
+  groups: ReadonlyMap<string, string> | ReadonlyMap<string, GroupMetadata>,
+): string => {
+  const enabledEntries = listEnabledGroupShhEntries();
+  if (enabledEntries.length === 0) {
+    return "Shh enabled groups: none";
+  }
+
+  return `Shh enabled groups:
+${enabledEntries.map((entry) => `• ${formatGroupName(entry.groupJid, groups)} (${entry.groupJid})`).join("\n")}`;
+};
+
+const handleGroupShhCommand = async (
+  sock: WASocket,
+  destinationJid: string,
+  actorContext: ActorContext,
+  groupJid: string,
+  text: string,
+  groups: ReadonlyMap<string, string> | ReadonlyMap<string, GroupMetadata>,
+): Promise<boolean> => {
+  const mode = text.trim().split(/\s+/)[1]?.toLowerCase() ?? "toggle";
+  const current = getGroupShhEntry(groupJid);
+
+  if (["status", "state"].includes(mode)) {
+    await sock.sendMessage(destinationJid, { text: formatGroupShhStatus(groupJid, groups) });
+    return true;
+  }
+
+  const enabled = ["on", "enable", "enabled", "true", "1"].includes(mode)
+    ? true
+    : ["off", "disable", "disabled", "false", "0"].includes(mode)
+      ? false
+      : !current.enabled;
+
+  setGroupShhEnabled(groupJid, enabled, actorContext.participantJid ?? actorContext.userId);
+  await sock.sendMessage(destinationJid, {
+    text: enabled
+      ? `Shh is ON for ${formatGroupName(groupJid, groups)}. New chat messages will be deleted until an authorised user runs !shh off.`
+      : `Shh is OFF for ${formatGroupName(groupJid, groups)}. Chat is allowed again.`,
+  });
+  return true;
+};
+
+const grantLinkGraceAndReply = async (
+  sock: WASocket,
+  destinationJid: string,
+  target: ResolvedUser,
+  groupJid: string,
+  durationToken: string | undefined,
+  actorContext: ActorContext,
+  groups: ReadonlyMap<string, string> | ReadonlyMap<string, GroupMetadata>,
+): Promise<boolean> => {
+  const durationMs = parseGraceDurationMs(durationToken);
+  if (!durationMs) {
+    await sock.sendMessage(destinationJid, { text: "Usage: !grace {identifier?} {groupJid?} {duration?}\nDuration examples: 5m, 1h. Default is 5m, max is 24h." });
+    return false;
+  }
+
+  const grant = grantLinkGrace(
+    target.userId,
+    groupJid,
+    durationMs,
+    actorContext.participantJid ?? actorContext.userId,
+  );
+  await sock.sendMessage(destinationJid, {
+    text: `Granted link grace to ${formatUserSummary(target)} in ${formatGroupName(groupJid, groups)} until ${formatDate(grant.expiresAt)}.
+They can post any link during this window without deletion, warning, or strikes.`,
+  });
+
+  const targetReplyJid = getReplyJidForActor(target);
+  if (targetReplyJid && targetReplyJid !== destinationJid) {
+    await sock.sendMessage(targetReplyJid, {
+      text: `You've got link grace in ${formatGroupName(groupJid, groups)} until ${formatDate(grant.expiresAt)}. You can post the link there now.`,
+    }).catch(() => {});
+  }
+
+  return true;
+};
+
 const handleTicketMarketplaceDeletionCommand = async (
   sock: WASocket,
   destinationJid: string,
@@ -1365,6 +1482,12 @@ export async function handleGroupCommand(
     return true;
   }
 
+  if (command === "!shh") {
+    await handleGroupShhCommand(sock, actorContext.participantJid ?? groupJid, actorContext, groupJid, text, groups);
+    logAudit(actorContext, command, null, null, groupJid, text, "success");
+    return true;
+  }
+
   if (command === "!announce" || command === "!announcements") {
     const handledAnnouncementCommand = await handleAnnouncementCommand(
       sock,
@@ -1428,6 +1551,14 @@ export async function handleGroupCommand(
   if (command === "!spotlight-cancel" && !quotedParticipant) {
     await sock.sendMessage(commandReplyJid, {
       text: "Reply to a spotlighted message with !spotlight-cancel, or run !spotlight-cancel {messageId|rowId} in DM.",
+    });
+    logAudit(actorContext, command, null, null, groupJid, text, "error");
+    return true;
+  }
+
+  if (command === "!grace" && !quotedParticipant) {
+    await sock.sendMessage(commandReplyJid, {
+      text: "Reply to someone's message with !grace {duration?}, or DM me: !grace {identifier} {groupJid?} {duration?}",
     });
     logAudit(actorContext, command, null, null, groupJid, text, "error");
     return true;
@@ -1544,6 +1675,21 @@ Reaction: ${reacted ? "sent" : "failed"}
 Text: "${formatPreview(queued.body)}"`,
     });
     logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "success");
+    return true;
+  }
+
+  if (command === "!grace") {
+    const durationToken = rest.split(/\s+/)[0] || undefined;
+    const granted = await grantLinkGraceAndReply(
+      sock,
+      commandReplyJid,
+      target,
+      groupJid,
+      durationToken,
+      actorContext,
+      groups,
+    );
+    logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, granted ? "success" : "error");
     return true;
   }
 
@@ -1750,6 +1896,12 @@ ${buildIdentityDebugText(actor)}`,
     return;
   }
 
+  if (command === "!shh") {
+    await sock.sendMessage(replyJid, { text: formatEnabledGroupShhSummary(groups) });
+    logAudit(actorContext, "!shh", null, null, null, text, "success");
+    return;
+  }
+
   if (command === "!explain") {
     const explainInput = parseExplainArgs(text, quotedText, null, config, groups);
     if (!explainInput) {
@@ -1792,6 +1944,7 @@ Started: ${STARTED_AT}
 Mode: ${config.dryRun ? "DRY RUN (not deleting)" : "LIVE (deleting messages)"}
 ${formatQuietSwitchStatus()}
 ${formatTicketMarketplaceDeletionStatus()}
+${formatEnabledGroupShhSummary(groups)}
 
 Active in ${configuredGroups.length} group(s):
 ${configuredGroups.length > 0 ? configuredGroups.join("\n") : "• None configured"}
@@ -2115,6 +2268,37 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
   ) {
     await sendIdentifierParseFailure(sock, replyJid, parsed.targetIdentifier);
     logAudit(actorContext, parsed.command, null, null, parsed.groupJid, text, "error");
+    return;
+  }
+
+  if (parsed.command === "!grace") {
+    const { groupJids, invalid } = resolveGroupTargets(parsed.groupJid, config, groups);
+    if (!target || groupJids.length === 0) {
+      await sock.sendMessage(replyJid, {
+        text: invalid ? "❌ That group isn't one of this bot's managed groups." : "Usage: !grace {identifier} {groupJid?} {duration?}",
+      });
+      logAudit(actorContext, parsed.command, target?.userId ?? null, target?.participantJid ?? null, parsed.groupJid, text, "error");
+      return;
+    }
+
+    if (groupJids.length > 1) {
+      await sock.sendMessage(replyJid, {
+        text: "Usage: !grace {identifier} {groupJid} {duration?}\nPlease include one group JID so the grace window is scoped to the right chat.",
+      });
+      logAudit(actorContext, parsed.command, target.userId, target.participantJid, null, text, "error");
+      return;
+    }
+
+    const granted = await grantLinkGraceAndReply(
+      sock,
+      replyJid,
+      target,
+      groupJids[0] ?? "",
+      parsed.rest.split(/\s+/)[0] || undefined,
+      actorContext,
+      groups,
+    );
+    logAudit(actorContext, parsed.command, target.userId, target.participantJid, groupJids[0] ?? null, text, granted ? "success" : "error");
     return;
   }
 

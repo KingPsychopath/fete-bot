@@ -48,6 +48,7 @@ const SHOPPING_BRAND_NAMES = new Set([
   "cos",
   "depop",
   "ebay",
+  "etsy",
   "farfetch",
   "fashionnova",
   "freepeople",
@@ -103,6 +104,7 @@ const SHOPPING_EXACT_DOMAINS = new Set([
 const PRACTICAL_LINK_DOMAINS = [
   "bolt.eu",
   "citymapper.com",
+  "eurostar.com",
   "g7.fr",
   "iledefrance-mobilites.fr",
   "opentable.com",
