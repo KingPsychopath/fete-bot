@@ -47,6 +47,14 @@ export const TRUE_POSITIVES_BUYING = [
 
 export const TRUE_POSITIVES_SELLING = [
   "Selling 2 Sunday tickets £80 each",
+  "selling 2x recessland tickets Saturday for those interested £35",
+  "selling 2x recessland Saturday for those interested £35",
+  "anyone looking for 2 recess saturday tickets?",
+  "anyone looking to buy 2 recess saturday tickets?",
+  "anyone need 2 recess saturday tickets?",
+  "have 2 recess saturday tickets available",
+  "have 2 recess saturday tickets dm me",
+  "can’t make it, 2 recess saturday £35",
   "Selling my ticket",
   "I am selling a ticket",
   "1 Saturday pass £70",
@@ -99,6 +107,8 @@ export const TRUE_NEGATIVES = [
   "After the set we should meet",
   "I'm after the headliner set",
   "Got 2 tickets and I'm buzzing!",
+  "Anyone looking for 2 people for Saturday tickets?",
+  "got 2 tickets and can sell me on saturday plans",
   "Just got my tickets!",
   "Finally got tickets for Sunday 🎉",
   "Can't go tonight, see you tomorrow",

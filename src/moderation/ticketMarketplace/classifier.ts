@@ -142,14 +142,23 @@ const AVAILABILITY_CUES = [
   "can't make it",
 ] as const;
 
-const STRONG_SELL_PHRASES = ["for sale", "à vendre", "a vendre", "en venta", "face value"] as const;
-const STRONG_SELL_REGEXES = [/\bfv\b/iu];
-const CANT_GO_REGEX = /\b(?:can't\s+go|cannot\s+go|can't\s+make\s+it)\b/iu;
-
 const ticketTermPattern = String.raw`(?:ticket|tickets|tix|pass|passes|wristband|wristbands|billet|billets|place|places|bracelet|bracelets|entree|entrée|entrada|entradas|boleto|boletos|billete|billetes|biglietto|biglietti|karte|karten|kaartje|kaartjes|bilet|bilety)`;
 const pricePattern = String.raw`(?:[£€$]\s*)?\d+[\d.,]*(?:\s*[£€$])?`;
+const explicitPriceCuePattern = String.raw`(?:[£€$]\s*\d+|\d+[\d.,]*\s*[£€$]|\b(?:gbp|eur|usd)\s*\d+|\d+[\d.,]*\s*(?:gbp|eur|usd|quid|pounds?|euros?|dollars?)\b|\b(?:face\s+value|fv|free|gratuit|gratis)\b)`;
+const eventAccessPattern = String.raw`(?:recess|recessland|sixtion|sixton|fdlm|fete|fête|friday|fri|saturday|sat|sunday|sun|weekend)`;
+const saleQuantityPattern = String.raw`(?:\d+\s*x|x\s*\d+|\d+|one|two|three|four|five|six|pair|couple)`;
+const nonOfferQuantityObjectPattern = String.raw`(?:people|ppl|persons?|friends?|mates?|guests?)`;
 const thirdPartyActorPattern = String.raw`(?:(?:these|those)\s+(?:ppl|people|guys|lot|sellers)|someone|somebody|they|he|she|a\s+(?:guy|girl|person|seller)|this\s+(?:guy|girl|person|seller))`;
 const thirdPartyPluralActorPattern = String.raw`(?:(?:these|those)\s+(?:ppl|people|guys|lot|sellers)|people|ppl|they|sellers)`;
+const STRONG_SELL_PHRASES = ["for sale", "à vendre", "a vendre", "en venta", "face value"] as const;
+const STRONG_SELL_REGEXES = [
+  /\bfv\b/iu,
+  new RegExp(
+    String.raw`\b(?:selling|sell|spare|available|have|got|can't\s+go|cant\s+go|cannot\s+go|can't\s+make\s+it|cant\s+make\s+it|can\s+no\s+longer\s+go)\b(?=.{0,100}\b${saleQuantityPattern}\b)(?=.{0,100}\b${eventAccessPattern}\b)(?=.{0,100}(?:${explicitPriceCuePattern}|\b(?:interested|dm|pm|message)\b))`,
+    "iu",
+  ),
+];
+const CANT_GO_REGEX = /\b(?:can't\s+go|cant\s+go|cannot\s+go|can't\s+make\s+it|cant\s+make\s+it|can\s+no\s+longer\s+go)\b/iu;
 
 const STRONG_BUY_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   {
@@ -239,6 +248,26 @@ const BUYER_INTENT_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   },
 ];
 
+const SELLER_OFFER_QUESTION_PATTERNS: Array<{ label: string; regex: RegExp }> = [
+  {
+    label: "anyone looking for offered tickets",
+    regex: new RegExp(
+      String.raw`\b(?:anyone|anybody|any1|someone|somebody)\s+(?:(?:looking|lookin)\s+for|looking\s+to\s+buy|need|want|after)\s+(?:a\s+|an\s+|${saleQuantityPattern}\s+)(?!${nonOfferQuantityObjectPattern}\b)(?:[\p{L}\p{N}]+\s+){0,5}${ticketTermPattern}\b`,
+      "iu",
+    ),
+  },
+];
+
+const DECLARATIVE_SELLER_PATTERNS: Array<{ label: string; regex: RegExp }> = [
+  {
+    label: "have event tickets",
+    regex: new RegExp(
+      String.raw`\b(?:i\s+)?(?:have|got)\s+${saleQuantityPattern}\s+(?!${nonOfferQuantityObjectPattern}\b)(?=.{0,80}\b${eventAccessPattern}\b)(?:[\p{L}\p{N}]+\s+){0,5}${ticketTermPattern}\b(?:$|\s+(?:available|spare|going|left|for\s+sale|dm|pm|message|if\s+anyone|if\s+someone|if\s+anybody|${explicitPriceCuePattern}))`,
+      "iu",
+    ),
+  },
+];
+
 const TICKET_DEPENDENT_STRONG_BUY_SIGNALS = new Set([
   "anyone selling ticket",
   "ISO ticket",
@@ -260,6 +289,13 @@ const NEGATED_BUYER_INTENT_PATTERNS: Array<{ label: string; regex: RegExp }> = [
 
 const NON_MARKETPLACE_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   {
+    label: "looking for people",
+    regex: new RegExp(
+      String.raw`\b(?:looking|lookin)\s+for\s+${saleQuantityPattern}\s+${nonOfferQuantityObjectPattern}\b`,
+      "iu",
+    ),
+  },
+  {
     label: "negated ticket buying",
     regex: /\b(?:not|never|dont|don't|do\s+not)\s+buy(?:ing)?\s+(?:any\s+)?tickets?\b/iu,
   },
@@ -269,6 +305,10 @@ const NON_MARKETPLACE_PATTERNS: Array<{ label: string; regex: RegExp }> = [
       String.raw`\b(?:scammer|scammers)\s+(?:is\s+|are\s+|was\s+|were\s+|just\s+)?(?:trying|tryin|tryna|tried)\s+(?:to\s+)?sell\s+me\b`,
       "iu",
     ),
+  },
+  {
+    label: "sell me on idea",
+    regex: /\bsell\s+me\s+on\b/iu,
   },
   {
     label: "third party tried to sell me",
@@ -675,6 +715,8 @@ export const classify = (text: string): TicketMarketplaceClassification => {
   const strongSell =
     hasAnyPhrase(normalisedText, STRONG_SELL_PHRASES, sellSignals) ||
     hasAnyRegex(normalisedText, STRONG_SELL_REGEXES, sellSignals);
+  const sellerOfferQuestionSignals = findPatternMatches(normalisedText, SELLER_OFFER_QUESTION_PATTERNS);
+  const declarativeSellerSignals = findPatternMatches(normalisedText, DECLARATIVE_SELLER_PATTERNS);
   const priceTicketSelling = pricePresentBeforeIntent && concreteTicketMatches.length > 0;
 
   if (
@@ -698,7 +740,25 @@ export const classify = (text: string): TicketMarketplaceClassification => {
     pricePresentBeforeIntent,
   );
 
-  if (strongSell || cantGoSelling || weakSell || gotTicketsSelling || priceTicketSelling) {
+  if (
+    strongSell ||
+    sellerOfferQuestionSignals.length > 0 ||
+    declarativeSellerSignals.length > 0 ||
+    cantGoSelling ||
+    weakSell ||
+    gotTicketsSelling ||
+    priceTicketSelling
+  ) {
+    if (sellerOfferQuestionSignals.length > 0) {
+      sellSignals.push(...sellerOfferQuestionSignals);
+      sellSignals.push(...concreteTicketMatches.map((match) => match.token));
+    }
+
+    if (declarativeSellerSignals.length > 0) {
+      sellSignals.push(...declarativeSellerSignals);
+      sellSignals.push(...concreteTicketMatches.map((match) => match.token));
+    }
+
     if (cantGoSelling) {
       sellSignals.push("can't go");
       sellSignals.push(...concreteTicketMatches.map((match) => match.token));
@@ -731,6 +791,7 @@ export const classify = (text: string): TicketMarketplaceClassification => {
   const hasBuySignals = buySignals.length > 0;
   const hasSellSignals = sellSignals.length > 0;
   const buyDominates =
+    sellerOfferQuestionSignals.length === 0 &&
     hasBuySignals &&
     hasSellSignals &&
     (strongBuySignals.length > 0 ||
@@ -788,6 +849,8 @@ export const classify = (text: string): TicketMarketplaceClassification => {
           strongBuy: false,
           strongSell:
             strongSell ||
+            sellerOfferQuestionSignals.length > 0 ||
+            declarativeSellerSignals.length > 0 ||
             cantGoSelling ||
             weakSell ||
             gotTicketsSelling ||
