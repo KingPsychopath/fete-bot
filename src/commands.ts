@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 
 import { handleAnnouncementCommand } from "./announcements/commands.js";
 import { formatAuditGroupLabel } from "./auditFormat.js";
+import { handleCleanupCommand } from "./cleanup/commands.js";
 import { NEVER_SPOTLIGHT_GROUP_JIDS, type Config } from "./config.js";
 import {
   addBan,
@@ -113,6 +114,7 @@ const HELP_MESSAGE = `*Fete Bot — Admin Help*
   !spotlight-requeue {messageId|rowId} {minutes?}
   !spotlight-cancel {messageId|rowId} {reason?} — reply only or DM
   !announce     help|list|show|raw|preview|next|check|add|edit|publish|on|off|move|remove|schedule|pause|resume|test|test-group|send-now
+  !cleanup      start|status|whitelist|candidates|pause|resume|extend|stop
   !deleted      {limit?} {reason?} — DM only
   !bans         {groupJid?}
   !mutes        {groupJid?}
@@ -691,12 +693,8 @@ const previewWarningText = (reason: DisallowedUrlReason): string => {
     return `Hey @name - please use fete.outofofficecollective.co.uk to share event links 🙏`;
   }
 
-  if (reason === "tiktok video (profile links only)") {
-    return `Hey @name - TikTok profile links only please. Share their profile page instead of a specific video 🎵`;
-  }
-
-  if (reason === "youtube (music.youtube.com only)") {
-    return `Hey @name - only YouTube Music links are allowed for YouTube (music.youtube.com) 🎵`;
+  if (reason === "social video (profile links only)") {
+    return `Hey @name - Instagram and TikTok video links are removed here. Please share the creator's profile page directly instead 🙏`;
   }
 
   if (reason === "url shortener") {
@@ -1488,6 +1486,27 @@ export async function handleGroupCommand(
     return true;
   }
 
+  if (command === "!cleanup") {
+    const handledCleanupCommand = await handleCleanupCommand(
+      sock,
+      {
+        userId: actorContext.userId,
+        label: actorContext.participantJid ?? actorContext.userId,
+        role: actorContext.actorRole,
+      },
+      actorContext.participantJid ?? groupJid,
+      text,
+      config,
+      groups,
+      groupMetadataByJid,
+      selfJids,
+    );
+    if (handledCleanupCommand) {
+      logAudit(actorContext, "!cleanup", null, null, groupJid, text, "success");
+      return true;
+    }
+  }
+
   if (command === "!announce" || command === "!announcements") {
     const handledAnnouncementCommand = await handleAnnouncementCommand(
       sock,
@@ -1900,6 +1919,27 @@ ${buildIdentityDebugText(actor)}`,
     await sock.sendMessage(replyJid, { text: formatEnabledGroupShhSummary(groups) });
     logAudit(actorContext, "!shh", null, null, null, text, "success");
     return;
+  }
+
+  if (command === "!cleanup") {
+    const handledCleanupCommand = await handleCleanupCommand(
+      sock,
+      {
+        userId: actorContext.userId,
+        label: actorContext.participantJid ?? actorContext.userId,
+        role: actorContext.actorRole,
+      },
+      replyJid,
+      text,
+      config,
+      groups,
+      groupMetadataByJid,
+      selfJids,
+    );
+    if (handledCleanupCommand) {
+      logAudit(actorContext, "!cleanup", null, null, null, text, "success");
+      return;
+    }
   }
 
   if (command === "!explain") {

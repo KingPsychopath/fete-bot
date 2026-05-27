@@ -8,6 +8,8 @@ export const ALLOWED_DOMAINS = [
   "music.apple.com",
   "outofofficecollective.co.uk",
   "music.youtube.com",
+  "youtube.com",
+  "youtu.be",
   "instagram.com",
   "x.com",
   "twitter.com",
@@ -164,8 +166,7 @@ export type DisallowedUrlReason =
   | "bare profile handle or URL"
   | "ticket platform"
   | "url shortener"
-  | "tiktok video (profile links only)"
-  | "youtube (music.youtube.com only)"
+  | "social video (profile links only)"
   | "whatsapp invite link";
 
 const INSTAGRAM_RESERVED_SEGMENTS = new Set([
@@ -432,12 +433,8 @@ export const isAllowed = (url: string): boolean => {
     return false;
   }
 
-  if (domain === "youtube.com" || domain.endsWith(".youtube.com")) {
-    return domain === "music.youtube.com";
-  }
-
-  if (domain === "youtu.be") {
-    return false;
+  if (domain === "youtube.com" || domain.endsWith(".youtube.com") || domain === "youtu.be") {
+    return true;
   }
 
   if (domain === "tiktok.com") {
@@ -458,6 +455,14 @@ const getDisallowedReason = (url: string): DisallowedUrlReason => {
     return "not in allowlist";
   }
 
+  if (domain === "instagram.com" || domain === "l.instagram.com") {
+    return "social video (profile links only)";
+  }
+
+  if (domain === "vm.tiktok.com" || domain === "tiktok.com") {
+    return "social video (profile links only)";
+  }
+
   if (isShortener(url) || matchesDomain(domain, SHORTENER_DOMAINS)) {
     return "url shortener";
   }
@@ -468,14 +473,6 @@ const getDisallowedReason = (url: string): DisallowedUrlReason => {
 
   if (domain === "chat.whatsapp.com") {
     return "whatsapp invite link";
-  }
-
-  if (domain === "youtube.com" || domain.endsWith(".youtube.com") || domain === "youtu.be") {
-    return "youtube (music.youtube.com only)";
-  }
-
-  if (domain === "vm.tiktok.com" || domain === "tiktok.com") {
-    return "tiktok video (profile links only)";
   }
 
   if (isBareDomainOnly(url)) {
@@ -502,7 +499,7 @@ Quick checks:
 - isAllowed("https://open.spotify.com/track/abc") => true
 - isAllowed("https://fete.outofofficecollective.co.uk") => true
 - isAllowed("https://music.youtube.com/watch?v=123") => true
-- isAllowed("https://www.youtube.com/watch?v=123") => false
+- isAllowed("https://www.youtube.com/watch?v=123") => true
 - isAllowed("https://airbnb.fr/rooms/123") => true
 - isTikTokProfileUrl("https://tiktok.com/@username") => true
 - isTikTokProfileUrl("https://tiktok.com/@username/video/123") => false

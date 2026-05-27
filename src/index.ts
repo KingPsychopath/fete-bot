@@ -16,6 +16,12 @@ import pino from "pino";
 import QRCode from "qrcode";
 
 import { startAnnouncementScheduler, stopAnnouncementScheduler } from "./announcements/scheduler.js";
+import { buildCleanupWhitelistConfirmationMessage } from "./cleanup/format.js";
+import { startCleanupScheduler, stopCleanupScheduler } from "./cleanup/scheduler.js";
+import {
+  findCleanupMessage,
+  recordCleanupSignalForOpenCampaign,
+} from "./cleanup/store.js";
 import { config, NEVER_SPOTLIGHT_GROUP_JIDS } from "./config.js";
 import { handleAuthorisedCommand, handleGroupCommand } from "./commands.js";
 import {
@@ -353,6 +359,22 @@ const extractTextFromMessageContent = (message: WAMessage["message"]): string =>
 
 const extractMessageText = (msg: WAMessage): string => extractTextFromMessageContent(msg.message);
 
+const getReactionInfo = (
+  message: WAMessage["message"],
+): { targetKey: WAMessageKey; emoji: string | null } | null => {
+  const reactionMessage = (message as {
+    reactionMessage?: { key?: WAMessageKey | null; text?: string | null } | null;
+  } | null)?.reactionMessage;
+  if (!reactionMessage?.key) {
+    return null;
+  }
+
+  return {
+    targetKey: reactionMessage.key,
+    emoji: reactionMessage.text ?? null,
+  };
+};
+
 const getQuotedParticipant = (message: WAMessage["message"]): string | null => {
   return getMessageContextInfo(message)?.participant ?? null;
 };
@@ -393,6 +415,84 @@ const maybeLogTextField = (text: string): { text?: string } => config.logMessage
 
 const getPhoneJid = (phoneNumber: string | null): string | null =>
   phoneNumber ? parseToJid(phoneNumber) : null;
+
+const maybeAcknowledgeCleanupSignal = async (
+  sock: WASocket,
+  signal: ReturnType<typeof recordCleanupSignalForOpenCampaign>,
+  kind: "dm_reply" | "public_reply" | "silent",
+  remoteJid: string,
+  msg: WAMessage,
+): Promise<void> => {
+  if (!signal.firstWhitelist || !signal.campaign) {
+    return;
+  }
+
+  if (kind === "dm_reply") {
+    await sock.sendMessage(remoteJid, {
+      text: buildCleanupWhitelistConfirmationMessage(signal.campaign.channelLink),
+    });
+    return;
+  }
+
+  if (kind === "public_reply") {
+    await sock.sendMessage(remoteJid, {
+      react: {
+        text: "✅",
+        key: msg.key,
+      },
+    });
+  }
+};
+
+const recordCleanupInteraction = async (
+  sock: WASocket,
+  sender: ResolvedUser,
+  remoteJid: string,
+  msg: WAMessage,
+  text: string,
+  isDirectChat: boolean,
+): Promise<void> => {
+  const reactionInfo = getReactionInfo(msg.message);
+  const reactionTarget = reactionInfo
+    ? findCleanupMessage(reactionInfo.targetKey.remoteJid ?? remoteJid, reactionInfo.targetKey.id)
+    : null;
+
+  if (reactionTarget) {
+    recordCleanupSignalForOpenCampaign(
+      sender.userId,
+      reactionTarget.messageType === "dm" ? "dm_reaction" : "public_reaction",
+      remoteJid,
+      reactionInfo?.targetKey.id ?? msg.key.id ?? null,
+    );
+    return;
+  }
+
+  if (isDirectChat) {
+    if (text.trim()) {
+      const signal = recordCleanupSignalForOpenCampaign(sender.userId, "dm_reply", remoteJid, msg.key.id ?? null);
+      await maybeAcknowledgeCleanupSignal(sock, signal, "dm_reply", remoteJid, msg);
+    }
+    return;
+  }
+
+  const quotedMessageKey = getQuotedMessageKey(msg.message, remoteJid);
+  const quotedCleanupMessage = quotedMessageKey
+    ? findCleanupMessage(remoteJid, quotedMessageKey.id)
+    : null;
+  const signal = recordCleanupSignalForOpenCampaign(
+    sender.userId,
+    quotedCleanupMessage ? "public_reply" : "group_activity",
+    remoteJid,
+    msg.key.id ?? quotedMessageKey?.id ?? null,
+  );
+  await maybeAcknowledgeCleanupSignal(
+    sock,
+    signal,
+    quotedCleanupMessage ? "public_reply" : "silent",
+    remoteJid,
+    msg,
+  );
+};
 
 const refreshSelfJids = (sock: WASocket): ReadonlySet<string> => {
   botSelfJids = buildSelfJids(sock.user);
@@ -587,12 +687,8 @@ const getWarningText = (
     return `Hey ${mentionLabel} - please use fete.outofofficecollective.co.uk to share event links 🙏`;
   }
 
-  if (reason === "tiktok video (profile links only)") {
-    return `Hey ${mentionLabel} - TikTok profile links only please. Share their profile page instead of a specific video 🎵`;
-  }
-
-  if (reason === "youtube (music.youtube.com only)") {
-    return `Hey ${mentionLabel} - only YouTube Music links are allowed for YouTube (music.youtube.com) 🎵`;
+  if (reason === "social video (profile links only)") {
+    return `Hey ${mentionLabel} - Instagram and TikTok video links are removed here. Please share the creator's profile page directly instead 🙏`;
   }
 
   if (reason === "url shortener") {
@@ -1670,6 +1766,7 @@ Push name: ${getPushName(msg) ?? "unknown"}`,
     if (isDirectChat) {
       const directSenderFromGroups = await resolveDirectSenderFromKnownGroups(sender, remoteJid, getPushName(msg), sock);
       const directSender = await resolveDirectSenderFromOwnerAliases(directSenderFromGroups, selfJids);
+      await recordCleanupInteraction(sock, directSender, remoteJid, msg, text, true);
       if (text) {
         await handleAuthorisedCommand(
           sock,
@@ -1722,6 +1819,8 @@ Push name: ${getPushName(msg) ?? "unknown"}`,
     if (config.ticketMarketplaceGroupJids.includes(groupJid)) {
       recordTicketMarketplaceRuleReminderActivity(groupJid);
     }
+
+    await recordCleanupInteraction(sock, sender, groupJid, msg, text, false);
 
     if (text) {
       const handledGroupCommand = await handleGroupCommand(
@@ -2240,10 +2339,11 @@ They have been banned and removed after repeatedly trying to post while muted.`,
       try {
         await sock.sendMessage(groupJid, { delete: msg.key as WAMessageKey });
         const reason = moderationResult.reason ?? "unknown";
-        const shouldSkipFirstAmbiguousBareUrlStrike =
-          reason === "bare profile handle or URL" &&
-          getDeletedMessageLogCount(sender.userId, groupJid, reason) === 0;
-        const strikeCount = shouldSkipFirstAmbiguousBareUrlStrike
+        const shouldRemoveWithoutStrike =
+          reason === "social video (profile links only)" ||
+          (reason === "bare profile handle or URL" &&
+            getDeletedMessageLogCount(sender.userId, groupJid, reason) === 0);
+        const strikeCount = shouldRemoveWithoutStrike
           ? 0
           : addStrike(
               sender.userId,
@@ -2254,7 +2354,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
         await sendModerationMessage(
           sock,
           groupJid,
-          shouldSkipFirstAmbiguousBareUrlStrike
+          shouldRemoveWithoutStrike
             ? warningText
             : appendStrikeWarning(warningText, strikeCount),
           mentionTargetJid,
@@ -2586,6 +2686,7 @@ export const startBot = async (): Promise<void> => {
         startSpotlightScheduler(sock, config, getEffectiveTicketSpotlightTargetJids);
         startTicketMarketplaceRuleReminderScheduler(sock, config);
         startAnnouncementScheduler(sock, config, () => discoveredGroups);
+        startCleanupScheduler(sock, config);
       })();
       return;
     }
@@ -2602,6 +2703,7 @@ export const startBot = async (): Promise<void> => {
       stopSpotlightScheduler();
       stopTicketMarketplaceRuleReminderScheduler();
       stopAnnouncementScheduler();
+      stopCleanupScheduler();
 
       const statusCode = isBoomLike(lastDisconnect?.error)
         ? lastDisconnect.error.output?.statusCode

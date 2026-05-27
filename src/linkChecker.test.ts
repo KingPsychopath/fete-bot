@@ -144,11 +144,7 @@ describe("linkChecker accommodation links", () => {
       url: "https://bit.ly/example",
       reason: "url shortener",
     });
-    expect(containsDisallowedUrl("watch https://youtube.com/watch?v=123")).toEqual({
-      found: true,
-      url: "https://youtube.com/watch?v=123",
-      reason: "youtube (music.youtube.com only)",
-    });
+    expect(containsDisallowedUrl("watch https://youtube.com/watch?v=123")).toEqual({ found: false });
     expect(containsDisallowedUrl("join https://chat.whatsapp.com/abc123")).toEqual({
       found: true,
       url: "https://chat.whatsapp.com/abc123",
@@ -162,7 +158,8 @@ describe("linkChecker accommodation links", () => {
     expect(isAllowed("https://tiktok.com/@outofofficecollective")).toBe(true);
     expect(isAllowed("https://tiktok.com/@outofofficecollective/video/123")).toBe(false);
     expect(isAllowed("https://music.youtube.com/watch?v=123")).toBe(true);
-    expect(isAllowed("https://youtu.be/abc123")).toBe(false);
+    expect(isAllowed("https://www.youtube.com/watch?v=abc123")).toBe(true);
+    expect(isAllowed("https://youtu.be/abc123")).toBe(true);
   });
 
   it("allows common social profile URL shapes with and without www or @", () => {
@@ -224,17 +221,17 @@ describe("linkChecker accommodation links", () => {
     expect(containsDisallowedUrl("https://instagram.com/reel/abc123")).toEqual({
       found: true,
       url: "https://instagram.com/reel/abc123",
-      reason: "not in allowlist",
+      reason: "social video (profile links only)",
     });
     expect(containsDisallowedUrl("https://l.instagram.com/?u=https%3A%2F%2Fexample.com")).toEqual({
       found: true,
       url: "https://l.instagram.com/?u=https%3A%2F%2Fexample.com",
-      reason: "not in allowlist",
+      reason: "social video (profile links only)",
     });
     expect(containsDisallowedUrl("https://vm.tiktok.com/example")).toEqual({
       found: true,
       url: "https://vm.tiktok.com/example",
-      reason: "url shortener",
+      reason: "social video (profile links only)",
     });
   });
 });

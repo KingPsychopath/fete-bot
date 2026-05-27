@@ -224,7 +224,7 @@ type LegacyReviewQueueRow = {
   flagged_at: string;
 };
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 const RESET_DB_FLAG = "RESET_DB";
 export const GLOBAL_MODERATION_GROUP_JID = "__all_groups__";
 
@@ -356,6 +356,83 @@ const CALL_GUARD_SCHEMA_SQL = `
   CREATE INDEX idx_call_guard_audit_time ON call_guard_audit(created_at);
 `;
 
+const CLEANUP_SCHEMA_SQL = `
+  CREATE TABLE cleanup_campaigns (
+    id TEXT PRIMARY KEY,
+    status TEXT NOT NULL CHECK(status IN ('active','paused','completed','stopped')),
+    started_at INTEGER NOT NULL,
+    ends_at INTEGER NOT NULL,
+    created_by_user_id TEXT REFERENCES users(id),
+    created_by_label TEXT NOT NULL,
+    channel_link TEXT,
+    public_message TEXT NOT NULL,
+    dm_message TEXT NOT NULL,
+    batch_size INTEGER NOT NULL,
+    batch_interval_minutes INTEGER NOT NULL,
+    next_batch_not_before INTEGER,
+    last_batch_sent_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    completed_at INTEGER,
+    stopped_at INTEGER
+  );
+  CREATE UNIQUE INDEX idx_cleanup_one_open
+    ON cleanup_campaigns((1))
+    WHERE status IN ('active','paused');
+  CREATE INDEX idx_cleanup_campaigns_status ON cleanup_campaigns(status, ends_at);
+
+  CREATE TABLE cleanup_members (
+    campaign_id TEXT NOT NULL REFERENCES cleanup_campaigns(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    display_name TEXT,
+    primary_jid TEXT NOT NULL,
+    first_seen_group_jid TEXT,
+    whitelisted_at INTEGER,
+    whitelist_reason TEXT,
+    last_signal_at INTEGER,
+    dm_status TEXT NOT NULL CHECK(dm_status IN ('pending','sent','failed','skipped')) DEFAULT 'pending',
+    dm_sent_at INTEGER,
+    dm_error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(campaign_id, user_id)
+  );
+  CREATE INDEX idx_cleanup_members_campaign_whitelist ON cleanup_members(campaign_id, whitelisted_at);
+  CREATE INDEX idx_cleanup_members_campaign_dm ON cleanup_members(campaign_id, dm_status, whitelisted_at, updated_at);
+
+  CREATE TABLE cleanup_messages (
+    campaign_id TEXT NOT NULL REFERENCES cleanup_campaigns(id) ON DELETE CASCADE,
+    destination_jid TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    message_type TEXT NOT NULL CHECK(message_type IN ('public','dm')),
+    user_id TEXT REFERENCES users(id),
+    sent_at INTEGER NOT NULL,
+    PRIMARY KEY(campaign_id, destination_jid, message_id)
+  );
+  CREATE INDEX idx_cleanup_messages_lookup ON cleanup_messages(destination_jid, message_id);
+
+  CREATE TABLE cleanup_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id TEXT NOT NULL REFERENCES cleanup_campaigns(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    signal_type TEXT NOT NULL CHECK(signal_type IN (
+      'public_reaction',
+      'public_reply',
+      'group_activity',
+      'dm_reaction',
+      'dm_reply',
+      'manual',
+      'protected'
+    )),
+    source_jid TEXT,
+    message_id TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE UNIQUE INDEX idx_cleanup_signals_unique
+    ON cleanup_signals(campaign_id, user_id, signal_type, IFNULL(source_jid, ''), IFNULL(message_id, ''));
+  CREATE INDEX idx_cleanup_signals_campaign ON cleanup_signals(campaign_id, signal_type, created_at);
+`;
+
 const recreateSchema = (database: Database.Database): void => {
   database.exec("PRAGMA foreign_keys = OFF");
 
@@ -366,6 +443,10 @@ const recreateSchema = (database: Database.Database): void => {
     "announcement_queue_items",
     "call_guard_audit",
     "call_violations",
+    "cleanup_signals",
+    "cleanup_messages",
+    "cleanup_members",
+    "cleanup_campaigns",
     "spotlight_history",
     "spotlight_pending",
     "identity_merges",
@@ -502,6 +583,7 @@ const recreateSchema = (database: Database.Database): void => {
     ${SPOTLIGHT_SCHEMA_SQL}
     ${ANNOUNCEMENT_SCHEMA_SQL}
     ${CALL_GUARD_SCHEMA_SQL}
+    ${CLEANUP_SCHEMA_SQL}
   `);
 
   database.pragma(`user_version = ${SCHEMA_VERSION}`);
@@ -798,6 +880,30 @@ export const migrateSchemaV4ToV5 = (
     if (options.throwAfterSchemaForTest) {
       throw new Error("Intentional migration failure");
     }
+    database.pragma("user_version = 5");
+    database.exec("COMMIT");
+  } catch (migrationError) {
+    if (database.inTransaction) {
+      database.exec("ROLLBACK");
+    }
+    throw migrationError;
+  }
+};
+
+export const migrateSchemaV5ToV6 = (
+  database: Database.Database,
+  options: { throwAfterSchemaForTest?: boolean } = {},
+): void => {
+  if (database.inTransaction) {
+    throw new Error("Cannot migrate schema while another transaction is active");
+  }
+
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    database.exec(CLEANUP_SCHEMA_SQL);
+    if (options.throwAfterSchemaForTest) {
+      throw new Error("Intentional migration failure");
+    }
     database.pragma(`user_version = ${SCHEMA_VERSION}`);
     database.exec("COMMIT");
   } catch (migrationError) {
@@ -840,6 +946,10 @@ export const ensureSchema = (database: Database.Database): void => {
 
   if (Number(database.pragma("user_version", { simple: true }) ?? 0) === 4) {
     migrateSchemaV4ToV5(database);
+  }
+
+  if (Number(database.pragma("user_version", { simple: true }) ?? 0) === 5) {
+    migrateSchemaV5ToV6(database);
     database.pragma("journal_mode = WAL");
     database.exec("PRAGMA foreign_keys = ON");
     return;

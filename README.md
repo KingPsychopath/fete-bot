@@ -114,7 +114,7 @@ Allowed:
 - `open.spotify.com`
 - `music.apple.com`
 - `outofofficecollective.co.uk` and all subdomains
-- `music.youtube.com` only
+- YouTube links: `youtube.com`, `youtu.be`, and `music.youtube.com`
 - `instagram.com` profile URLs only
 - `x.com` profile URLs only
 - `twitter.com` profile URLs only
@@ -130,18 +130,17 @@ Explicitly blocked:
 - Ticketing/event platforms: `ra.co`, `dice.fm`, `eventbrite.com`, `skiddle.com`, `ticketmaster.com`, `ticketweb.com`, `seetickets.com`, `billetto.co.uk`, `fixr.co`
 - URL shorteners: `bit.ly`, `t.co`, `tinyurl.com`, `ow.ly`, `buff.ly`, `shorturl.at`, `is.gd`, `rebrand.ly`, `cutt.ly`, `rb.gy`, `tiny.cc`, `lnkd.in`
 - `chat.whatsapp.com`
-- `vm.tiktok.com`
-- `youtu.be`
+- `vm.tiktok.com` when used as a TikTok short-share link
 
 Special rules:
 
 - TikTok only allows profile pages like `tiktok.com/@username`
-- TikTok video links like `tiktok.com/@username/video/...` are blocked
-- TikTok short share links like `tiktok.com/t/...` are blocked
+- TikTok video links like `tiktok.com/@username/video/...` are removed without a strike
+- TikTok short share links like `vm.tiktok.com/...` and `tiktok.com/t/...` are removed without a strike
 - Instagram only allows profile pages like `instagram.com/username`
+- Instagram video/reel/share links are removed without a strike
 - X / Twitter only allow profile pages like `x.com/username` or `twitter.com/username`
-- Only `music.youtube.com` is allowed for YouTube
-- General `youtube.com`, `www.youtube.com`, `m.youtube.com`, and `youtu.be` are blocked
+- General YouTube video links are allowed
 
 ## Spam and Moderation Rules
 
