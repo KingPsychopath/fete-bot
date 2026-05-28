@@ -24,7 +24,15 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "better-sqlite3"
-    ]
+    ],
+    "peerDependencyRules": {
+      "ignoreMissing": [
+        "audio-decode",
+        "jimp",
+        "link-preview-js",
+        "sharp"
+      ]
+    }
   },
   "dependencies": {
     "@whiskeysockets/baileys": "7.0.0-rc.9",
