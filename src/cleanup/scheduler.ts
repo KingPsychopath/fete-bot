@@ -13,6 +13,9 @@ import {
 } from "./store.js";
 
 const CLEANUP_SCHEDULER_INTERVAL_MS = 30_000;
+const CLEANUP_DM_HARD_PAUSED = true;
+
+export const isCleanupDmHardPaused = (): boolean => CLEANUP_DM_HARD_PAUSED;
 
 let cleanupSchedulerTimer: ReturnType<typeof setInterval> | null = null;
 let cleanupBatchInFlight = false;
@@ -20,7 +23,7 @@ let cleanupBatchInFlight = false;
 const describeError = (value: unknown): string =>
   value instanceof Error ? value.message : String(value);
 
-const sendCleanupBatch = async (sock: WASocket): Promise<void> => {
+export const runCleanupSchedulerTick = async (sock: WASocket): Promise<void> => {
   if (cleanupBatchInFlight) {
     return;
   }
@@ -44,6 +47,11 @@ const sendCleanupBatch = async (sock: WASocket): Promise<void> => {
     }
 
     if (campaign.nextBatchNotBefore && campaign.nextBatchNotBefore > nowMs) {
+      return;
+    }
+
+    if (CLEANUP_DM_HARD_PAUSED) {
+      log("cleanup.dm_hard_paused", { campaignId: campaign.id });
       return;
     }
 
@@ -97,9 +105,9 @@ export const startCleanupScheduler = (
 ): void => {
   stopCleanupScheduler();
   cleanupSchedulerTimer = setInterval(() => {
-    void sendCleanupBatch(sock);
+    void runCleanupSchedulerTick(sock);
   }, CLEANUP_SCHEDULER_INTERVAL_MS);
-  void sendCleanupBatch(sock);
+  void runCleanupSchedulerTick(sock);
 };
 
 export const stopCleanupScheduler = (): void => {
@@ -110,4 +118,3 @@ export const stopCleanupScheduler = (): void => {
   clearInterval(cleanupSchedulerTimer);
   cleanupSchedulerTimer = null;
 };
-

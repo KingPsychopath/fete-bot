@@ -21,6 +21,7 @@ const config = {
   spamFloodDeleteMessageLimit: 25,
   defaultPhoneRegion: null,
   botName: "Fete Bot",
+  whatsappPairingPhoneNumber: null,
   groupCallGuardEnabled: true,
   groupCallGuardGroupJids: [],
   groupCallGuardWarningText: "Hey {mention} - calls aren't allowed in this group. Don't do that again. 🙏🏾",

@@ -161,6 +161,7 @@ const loadedConfig = {
   ),
   defaultPhoneRegion: normaliseEnvValue(process.env.DEFAULT_PHONE_REGION)?.toUpperCase() || null,
   botName: normaliseEnvValue(process.env.BOT_NAME) || "Fete Bot",
+  whatsappPairingPhoneNumber: normaliseEnvValue(process.env.WHATSAPP_PAIRING_PHONE_NUMBER) || null,
   groupCallGuardEnabled: parseBoolean(process.env.GROUP_CALL_GUARD_ENABLED, true),
   groupCallGuardGroupJids: parseList(process.env.GROUP_CALL_GUARD_GROUP_JIDS),
   groupCallGuardWarningText:

@@ -1,18 +1,29 @@
-FROM node:24-slim AS builder
+FROM node:24-slim AS base
 
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 make g++ \
-  && rm -rf /var/lib/apt/lists/*
+ENV PNPM_HOME=/pnpm
+ENV PATH=$PNPM_HOME:$PATH
 
 WORKDIR /app
 
 RUN corepack enable
 
-COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+FROM base AS deps
 
-COPY src ./src
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY package.json pnpm-lock.yaml ./
+
+RUN pnpm config set store-dir /pnpm/store \
+  && pnpm fetch --frozen-lockfile
+
+RUN pnpm install --frozen-lockfile --offline
+
+FROM deps AS builder
+
 COPY tsconfig.json ./
+COPY src ./src
 
 ENV NODE_ENV=production
 
@@ -22,8 +33,6 @@ RUN pnpm build \
 FROM node:24-slim AS runner
 
 WORKDIR /app
-
-RUN corepack enable
 
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist

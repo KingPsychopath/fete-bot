@@ -4,6 +4,7 @@ import type { Config } from "../config.js";
 import type { ActorRole } from "../db.js";
 import { describeUser, resolveUser } from "../identity.js";
 import { formatJidForDisplay, isProtectedGroupMember, parseToJid } from "../utils.js";
+import { isCleanupDmHardPaused } from "./scheduler.js";
 import {
   buildCleanupDmMessage,
   buildCleanupPublicMessage,
@@ -14,6 +15,7 @@ import {
 import {
   createCleanupCampaign,
   extendCleanupCampaign,
+  findCleanupMemberByUserOrJid,
   getCleanupStats,
   getLatestCleanupCampaign,
   getOpenCleanupCampaign,
@@ -22,6 +24,7 @@ import {
   recordCleanupMessage,
   recordCleanupSignal,
   setCleanupCampaignStatus,
+  updateCleanupDmThrottle,
   type CleanupMemberSeed,
 } from "./store.js";
 
@@ -39,8 +42,11 @@ const CLEANUP_HELP = `*Cleanup commands*
 !cleanup candidates {limit?}
 !cleanup pause
 !cleanup resume
+!cleanup throttle [batch=10] [interval=6h]
 !cleanup extend {duration}
 !cleanup stop
+!cleanup keep {userId|phone|jid}
+!cleanup keepmany {phone/user ids...}
 
 Safety: cleanup never removes members. It only whitelists responders and lists purge candidates for admins.`;
 
@@ -110,6 +116,22 @@ const parseChannelOption = (tokens: readonly string[], fallback: string | null):
 };
 
 const getCommandParts = (text: string): string[] => text.trim().split(/\s+/).filter(Boolean);
+
+const getManualKeepIdentifiers = (input: string): string[] => {
+  const cleaned = input.trim().replace(/^@/, "");
+  const phoneJid = parseToJid(cleaned);
+  const digits = cleaned.replace(/\D/gu, "");
+  const digitJid = digits.length >= 7 && digits.length <= 15 ? parseToJid(digits) : null;
+  return [cleaned, phoneJid, digitJid].filter((identifier): identifier is string => Boolean(identifier));
+};
+
+const extractKeepManyIdentifiers = (text: string): string[] => {
+  const [, , , rest = ""] = text.match(/^(\S+)\s+(\S+)\s*([\s\S]*)$/u) ?? [];
+  const candidates = rest
+    .split(/\r?\n/u)
+    .flatMap((line) => line.match(/[+]?\d[\d ().-]{6,}\d|[0-9a-f]{8}-[0-9a-f-]{27,}|[0-9]{7,15}@s\.whatsapp\.net/giu) ?? []);
+  return Array.from(new Set(candidates.map((candidate) => candidate.trim()).filter(Boolean)));
+};
 
 const getManagedGroupJids = (
   config: Config,
@@ -318,7 +340,7 @@ export const handleCleanupCommand = async (
 
     const stats = getCleanupStats(campaign.id);
     await sock.sendMessage(replyJid, {
-      text: stats ? formatCleanupStatus(stats) : "Couldn't load cleanup status.",
+      text: stats ? formatCleanupStatus(stats, Date.now(), { hardPauseDms: isCleanupDmHardPaused() }) : "Couldn't load cleanup status.",
     });
     return true;
   }
@@ -333,6 +355,42 @@ export const handleCleanupCommand = async (
     const updated = setCleanupCampaignStatus(campaign.id, nextStatus);
     await sock.sendMessage(replyJid, {
       text: updated ? formatCleanupStatus(getCleanupStats(updated.id)!) : `Cleanup ${subcommand} failed.`,
+    });
+    return true;
+  }
+
+  if (subcommand === "throttle" || subcommand === "rate") {
+    const campaign = await getActiveOrReply(sock, replyJid);
+    if (!campaign) {
+      return true;
+    }
+
+    const optionTokens = parts.slice(2);
+    const batchToken = optionTokens.find((token) => token.startsWith("batch="));
+    const intervalToken = optionTokens.find((token) => token.startsWith("interval="));
+    if (!batchToken && !intervalToken) {
+      await sock.sendMessage(replyJid, {
+        text: "Usage: !cleanup throttle batch=10 interval=6h\nTip: use !cleanup pause immediately if the account is restricted.",
+      });
+      return true;
+    }
+
+    const batchSize = parsePositiveNumberOption(batchToken, "batch=", campaign.batchSize, 250);
+    const batchIntervalMinutes = parseIntervalOption(intervalToken, campaign.batchIntervalMinutes);
+    const nowMs = Date.now();
+    const nextBatchNotBefore = Math.max(
+      campaign.nextBatchNotBefore ?? nowMs,
+      nowMs + batchIntervalMinutes * 60_000,
+    );
+    const updated = updateCleanupDmThrottle(
+      campaign.id,
+      batchSize,
+      batchIntervalMinutes,
+      nextBatchNotBefore,
+      nowMs,
+    );
+    await sock.sendMessage(replyJid, {
+      text: updated ? formatCleanupStatus(getCleanupStats(updated.id)!) : "Cleanup throttle update failed.",
     });
     return true;
   }
@@ -379,14 +437,73 @@ export const handleCleanupCommand = async (
 
   if (subcommand === "keep") {
     const campaign = await getActiveOrReply(sock, replyJid);
-    const userId = parts[2];
-    if (!campaign || !userId) {
-      await sock.sendMessage(replyJid, { text: "Usage: !cleanup keep {userId}" });
+    const identifier = parts[2];
+    if (!campaign || !identifier) {
+      await sock.sendMessage(replyJid, { text: "Usage: !cleanup keep {userId|phone|jid}" });
       return true;
     }
 
-    recordCleanupSignal(campaign.id, userId, "manual", replyJid, null);
-    await sock.sendMessage(replyJid, { text: `Whitelisted ${formatJidForDisplay(userId)} manually.` });
+    const member = findCleanupMemberByUserOrJid(campaign.id, getManualKeepIdentifiers(identifier));
+    if (!member) {
+      await sock.sendMessage(replyJid, {
+        text: `Couldn't find ${formatJidForDisplay(identifier)} in the active cleanup campaign. Use \`!cleanup candidates 100\` to confirm the exact entry.`,
+      });
+      return true;
+    }
+
+    const recorded = recordCleanupSignal(campaign.id, member.userId, "manual", replyJid, null);
+    await sock.sendMessage(replyJid, {
+      text: recorded
+        ? `Whitelisted ${member.displayName ?? formatJidForDisplay(member.primaryJid)} manually.`
+        : `${member.displayName ?? formatJidForDisplay(member.primaryJid)} was already whitelisted.`,
+    });
+    return true;
+  }
+
+  if (subcommand === "keepmany") {
+    const campaign = await getActiveOrReply(sock, replyJid);
+    const identifiers = extractKeepManyIdentifiers(text);
+    if (!campaign || identifiers.length === 0) {
+      await sock.sendMessage(replyJid, {
+        text: "Usage: !cleanup keepmany {phone/user ids...}\nPaste one or many phone numbers after the command.",
+      });
+      return true;
+    }
+
+    let added = 0;
+    let already = 0;
+    const notFound: string[] = [];
+    const seenUserIds = new Set<string>();
+
+    for (const identifier of identifiers.slice(0, 200)) {
+      const member = findCleanupMemberByUserOrJid(campaign.id, getManualKeepIdentifiers(identifier));
+      if (!member) {
+        notFound.push(identifier);
+        continue;
+      }
+
+      if (seenUserIds.has(member.userId)) {
+        continue;
+      }
+      seenUserIds.add(member.userId);
+
+      const recorded = recordCleanupSignal(campaign.id, member.userId, "manual", replyJid, null);
+      if (recorded) {
+        added += 1;
+      } else {
+        already += 1;
+      }
+    }
+
+    await sock.sendMessage(replyJid, {
+      text: [
+        "Bulk keep complete.",
+        `Added: ${added}`,
+        `Already whitelisted: ${already}`,
+        `Not found: ${notFound.length}`,
+        notFound.length > 0 ? `Not found examples: ${notFound.slice(0, 10).join(", ")}` : null,
+      ].filter(Boolean).join("\n"),
+    });
     return true;
   }
 

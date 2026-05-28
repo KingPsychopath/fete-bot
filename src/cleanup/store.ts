@@ -468,6 +468,27 @@ export const markCleanupBatchSent = (
     .run(sentAt, nextBatchNotBefore, sentAt, campaignId);
 };
 
+export const updateCleanupDmThrottle = (
+  campaignId: string,
+  batchSize: number,
+  batchIntervalMinutes: number,
+  nextBatchNotBefore: number,
+  updatedAt = Date.now(),
+): CleanupCampaign | null => {
+  getDb()
+    .prepare(`
+      UPDATE cleanup_campaigns
+      SET
+        batch_size = ?,
+        batch_interval_minutes = ?,
+        next_batch_not_before = ?,
+        updated_at = ?
+      WHERE id = ? AND status IN ('active','paused')
+    `)
+    .run(batchSize, batchIntervalMinutes, nextBatchNotBefore, updatedAt, campaignId);
+  return getCleanupCampaign(campaignId);
+};
+
 export const setCleanupCampaignStatus = (
   campaignId: string,
   status: CleanupCampaignStatus,
@@ -604,3 +625,27 @@ export const listCleanupCandidateMembers = (
     `)
     .all(campaignId, Math.min(Math.max(Math.trunc(limit), 1), 500))
     .map(toMember);
+
+export const findCleanupMemberByUserOrJid = (
+  campaignId: string,
+  identifiers: readonly string[],
+): CleanupMember | null => {
+  const uniqueIdentifiers = Array.from(new Set(identifiers.map((identifier) => identifier.trim()).filter(Boolean)));
+  if (uniqueIdentifiers.length === 0) {
+    return null;
+  }
+
+  const placeholders = uniqueIdentifiers.map(() => "?").join(", ");
+  const row = getDb()
+    .prepare<string[], MemberRow>(`
+      SELECT *
+      FROM cleanup_members
+      WHERE campaign_id = ?
+        AND (user_id IN (${placeholders}) OR primary_jid IN (${placeholders}))
+      ORDER BY whitelisted_at IS NOT NULL, updated_at DESC
+      LIMIT 1
+    `)
+    .get(campaignId, ...uniqueIdentifiers, ...uniqueIdentifiers);
+
+  return row ? toMember(row) : null;
+};

@@ -19,7 +19,10 @@ import { startAnnouncementScheduler, stopAnnouncementScheduler } from "./announc
 import { buildCleanupWhitelistConfirmationMessage } from "./cleanup/format.js";
 import { startCleanupScheduler, stopCleanupScheduler } from "./cleanup/scheduler.js";
 import {
+  findCleanupMemberByUserOrJid,
   findCleanupMessage,
+  getOpenCleanupCampaign,
+  recordCleanupSignal,
   recordCleanupSignalForOpenCampaign,
 } from "./cleanup/store.js";
 import { config, NEVER_SPOTLIGHT_GROUP_JIDS } from "./config.js";
@@ -123,6 +126,8 @@ const HANDLED_CALL_TTL_MS = 10 * 60 * 1000;
 const HANDLED_CALL_MAX_ENTRIES = 5_000;
 const MESSAGE_HANDLER_CONCURRENCY = 4;
 const MESSAGE_HANDLER_MAX_QUEUE = 500;
+const CLEANUP_DM_BACKFILL_MARKER = "OOOC KEEP";
+const CLEANUP_DM_BACKFILL_HUMAN_MARKER = "OOOC stay list noted";
 let strikePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let mutePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let callViolationPurgeTimer: ReturnType<typeof setInterval> | null = null;
@@ -134,6 +139,7 @@ let reconnecting = false;
 let reconnectAttempts = 0;
 let socketInstanceCounter = 0;
 let botSelfJids = new Set<string>();
+let pairingCodeRequested = false;
 
 type QueuedMessage = {
   socketInstanceId: number;
@@ -143,6 +149,18 @@ type QueuedMessage = {
 
 const messageQueue: QueuedMessage[] = [];
 let activeMessageHandlers = 0;
+
+const getPairingPhoneDigits = (phoneNumber: string | null): string | null => {
+  if (!phoneNumber) {
+    return null;
+  }
+
+  const jid = parseToJid(phoneNumber);
+  const digits = jid?.replace(/@s\.whatsapp\.net$/i, "") ?? phoneNumber.replace(/\D/gu, "");
+  return /^\d{7,15}$/u.test(digits) ? digits : null;
+};
+
+const formatPairingCode = (code: string): string => code.replace(/(.{4})/gu, "$1-").replace(/-$/u, "");
 
 const healthPort = Number(process.env.PORT ?? "3000");
 const healthServer = createServer((req, res) => {
@@ -415,6 +433,48 @@ const maybeLogTextField = (text: string): { text?: string } => config.logMessage
 
 const getPhoneJid = (phoneNumber: string | null): string | null =>
   phoneNumber ? parseToJid(phoneNumber) : null;
+
+const isCleanupDmBackfillMarker = (text: string): boolean =>
+  [CLEANUP_DM_BACKFILL_MARKER, CLEANUP_DM_BACKFILL_HUMAN_MARKER].some(
+    (marker) => text.trim().toUpperCase() === marker.toUpperCase(),
+  );
+
+const handleCleanupDmBackfillMarker = async (
+  sock: WASocket,
+  remoteJid: string,
+  msg: WAMessage,
+  text: string,
+): Promise<boolean> => {
+  if (!isCleanupDmBackfillMarker(text)) {
+    return false;
+  }
+
+  const campaign = getOpenCleanupCampaign();
+  const member = campaign ? findCleanupMemberByUserOrJid(campaign.id, [remoteJid]) : null;
+  if (!campaign || !member) {
+    await sock.sendMessage(remoteJid, {
+      react: {
+        text: "❌",
+        key: msg.key,
+      },
+    });
+    return true;
+  }
+
+  recordCleanupSignal(campaign.id, member.userId, "manual", remoteJid, msg.key.id ?? null);
+  await sock.sendMessage(remoteJid, {
+    react: {
+      text: "✅",
+      key: msg.key,
+    },
+  });
+  log("cleanup.dm_backfill_marker_recorded", {
+    campaignId: campaign.id,
+    userId: member.userId,
+    jid: remoteJid,
+  });
+  return true;
+};
 
 const maybeAcknowledgeCleanupSignal = async (
   sock: WASocket,
@@ -1716,20 +1776,24 @@ export const handleMessage = async (
       return;
     }
 
-    if (msg.key.fromMe) {
-      return;
-    }
-
     const remoteJid = msg.key.remoteJid;
     if (!remoteJid) {
       return;
     }
 
     const text = extractMessageText(msg);
+    const isDirectChat = remoteJid.endsWith("@s.whatsapp.net") || remoteJid.endsWith("@lid");
+
+    if (msg.key.fromMe) {
+      if (isDirectChat) {
+        await handleCleanupDmBackfillMarker(sock, remoteJid, msg, text);
+      }
+      return;
+    }
+
     const selfJids = getSelfJids(sock);
     const { senderJid, phoneNumber, lidJid } = extractAllIdentifiers(msg);
     const phoneJid = getPhoneJid(phoneNumber);
-    const isDirectChat = remoteJid.endsWith("@s.whatsapp.net") || remoteJid.endsWith("@lid");
     const sender = await resolveUser({
       participantJid: senderJid || null,
       phoneJid,
@@ -2631,6 +2695,27 @@ export const startBot = async (): Promise<void> => {
   activeSocket = sock;
   refreshSelfJids(sock);
 
+  const pairingPhoneDigits = getPairingPhoneDigits(config.whatsappPairingPhoneNumber);
+  if (!state.creds.registered && config.whatsappPairingPhoneNumber && !pairingPhoneDigits) {
+    warn("WHATSAPP_PAIRING_PHONE_NUMBER is set but could not be parsed. Use international format, for example +447700900000.");
+  }
+  if (!state.creds.registered && pairingPhoneDigits && !pairingCodeRequested) {
+    pairingCodeRequested = true;
+    setTimeout(() => {
+      void (async () => {
+        try {
+          const code = await sock.requestPairingCode(pairingPhoneDigits);
+          log("WhatsApp pairing code requested. In WhatsApp, choose Link with phone number instead.", {
+            pairingCode: formatPairingCode(code),
+          });
+        } catch (pairingError) {
+          pairingCodeRequested = false;
+          error("Failed to request WhatsApp pairing code", pairingError);
+        }
+      })();
+    }, 3_000);
+  }
+
   sock.ev.on("creds.update", saveCreds);
   sock.ev.on("lid-mapping.update", ({ lid, pn }) => {
     void syncLidMappingIdentity(lid, pn, sock);
@@ -2722,7 +2807,8 @@ export const startBot = async (): Promise<void> => {
       if (isLoggedOut) {
         cleanupSocket(sock);
         error(`WhatsApp logged the bot out. Remove the auth folder (${authFolder}) and pair again.`, { statusCode });
-        process.exit(1);
+        warn("Bot is staying online for health/SSH while waiting for WhatsApp re-pair.");
+        return;
       }
 
       const delay = Math.min(Math.max(reconnectAttempts, 1) * 2000, 30_000);
@@ -2878,6 +2964,7 @@ const shutdown = async (signal: string): Promise<void> => {
     stopSpotlightScheduler();
     stopTicketMarketplaceRuleReminderScheduler();
     stopAnnouncementScheduler();
+    stopCleanupScheduler();
 
     const socketToClose = activeSocket;
     activeSocket = null;

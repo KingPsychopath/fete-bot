@@ -24,9 +24,13 @@ const formatTime = (ms: number | null, nowMs = Date.now()): string => {
   return `in ${formatDurationLeft(ms, nowMs)}`;
 };
 
-const getDmBatchEstimate = (stats: CleanupStats, nowMs = Date.now()): string => {
+const getDmBatchEstimate = (stats: CleanupStats, hardPauseDms: boolean, nowMs = Date.now()): string => {
   if (stats.dmPending <= 0) {
     return "complete";
+  }
+
+  if (hardPauseDms) {
+    return "hard-paused";
   }
 
   const batchesRemaining = Math.ceil(stats.dmPending / stats.campaign.batchSize);
@@ -84,20 +88,26 @@ export const buildCleanupWhitelistConfirmationMessage = (channelLink: string | n
       : "You can also follow the Channel for official drops and announcements.",
   ].join("\n");
 
-export const formatCleanupStatus = (stats: CleanupStats, nowMs = Date.now()): string => {
+export const formatCleanupStatus = (
+  stats: CleanupStats,
+  nowMs = Date.now(),
+  options: { hardPauseDms?: boolean } = {},
+): string => {
   const { campaign } = stats;
+  const hardPauseDms = Boolean(options.hardPauseDms);
   return [
     "🧹 *Cleanup status*",
     "",
     `Status: *${campaign.status}*`,
+    `Cleanup DMs: *${hardPauseDms ? "hard-paused" : "enabled"}*`,
     `Time left: *${formatDurationLeft(campaign.endsAt, nowMs)}*`,
     `Whitelist: *${stats.whitelisted}/${stats.total}* (${formatPercent(stats.whitelisted, stats.total)})`,
     `No signal: *${stats.noSignal}*`,
     "",
     `Signals: reactions ${stats.signals.public_reaction + stats.signals.dm_reaction}, replies ${stats.signals.public_reply + stats.signals.dm_reply}, activity ${stats.signals.group_activity}, protected ${stats.signals.protected}`,
     `DMs: sent ${stats.dmSent}, pending ${stats.dmPending}, failed ${stats.dmFailed}, skipped ${stats.dmSkipped}`,
-    `Next batch: ${stats.nextBatchSize > 0 ? `${stats.nextBatchSize} DM${stats.nextBatchSize === 1 ? "" : "s"} ${formatTime(stats.nextBatchAt, nowMs)}` : "none"}`,
-    `DM finish: ${getDmBatchEstimate(stats, nowMs)}`,
+    `Next batch: ${hardPauseDms ? "hard-paused" : stats.nextBatchSize > 0 ? `${stats.nextBatchSize} DM${stats.nextBatchSize === 1 ? "" : "s"} ${formatTime(stats.nextBatchAt, nowMs)}` : "none"}`,
+    `DM finish: ${getDmBatchEstimate(stats, hardPauseDms, nowMs)}`,
     "",
     "Bot safety: cleanup never removes members. It only lists candidates for admins.",
   ].join("\n");
@@ -138,7 +148,7 @@ export const formatCleanupStarted = (
     `Already whitelisted/protected: ${stats.whitelisted}`,
     `Public notices sent: ${publicTargets.length}`,
     `DM batches: ${stats.campaign.batchSize} every ${stats.campaign.batchIntervalMinutes}m`,
-    `Estimated DM finish: ${getDmBatchEstimate(stats, stats.campaign.startedAt)}`,
+    `Estimated DM finish: ${getDmBatchEstimate(stats, false, stats.campaign.startedAt)}`,
     "",
     "Bot safety: cleanup never removes members. It only lists candidates for admins.",
     "",
