@@ -24,10 +24,11 @@ import {
   listCleanupWhitelistedMembers,
   recordCleanupMessage,
   recordCleanupSignal,
+  removeCleanupWhitelist,
   setCleanupCampaignStatus,
-  updateCleanupDmThrottle,
   type CleanupMemberSeed,
 } from "./store.js";
+import { CLEANUP_DM_RATE_LIMIT } from "./policy.js";
 
 export type CleanupActor = {
   userId: string;
@@ -37,16 +38,16 @@ export type CleanupActor = {
 
 const CLEANUP_HELP = `*Cleanup commands*
 
-!cleanup start {duration?} [batch=50] [interval=60m] [channel=https://...]
+!cleanup start {duration?} [channel=https://...]
 !cleanup status
 !cleanup whitelist {limit?}
 !cleanup candidates {limit?}
 !cleanup pause
 !cleanup resume
-!cleanup throttle [batch=10] [interval=6h]
 !cleanup extend {duration}
 !cleanup stop
 !cleanup keep {userId|phone|jid}
+!cleanup unkeep {userId|phone|jid}
 !cleanup keepmany {phone/user ids...}
 
 Safety: cleanup never removes members. It only whitelists responders and lists purge candidates for admins.`;
@@ -78,29 +79,6 @@ const durationLabel = (durationMs: number): string => {
     return `${hours} hour${hours === 1 ? "" : "s"}`;
   }
   return `${minutes} minute${minutes === 1 ? "" : "s"}`;
-};
-
-const parsePositiveNumberOption = (
-  token: string | undefined,
-  prefix: string,
-  fallback: number,
-  max: number,
-): number => {
-  if (!token?.startsWith(prefix)) {
-    return fallback;
-  }
-
-  const parsed = Number(token.slice(prefix.length));
-  return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, max) : fallback;
-};
-
-const parseIntervalOption = (token: string | undefined, fallbackMinutes: number): number => {
-  if (!token?.startsWith("interval=")) {
-    return fallbackMinutes;
-  }
-
-  const durationMs = durationMsFromToken(token.slice("interval=".length), fallbackMinutes * 60_000);
-  return durationMs ? Math.max(1, Math.round(durationMs / 60_000)) : fallbackMinutes;
 };
 
 const parseChannelOption = (tokens: readonly string[], fallback: string | null): string | null => {
@@ -331,14 +309,20 @@ export const handleCleanupCommand = async (
     const durationToken = optionTokens.find((token) => !token.includes("="));
     const durationMs = durationMsFromToken(durationToken, 72 * 60 * 60_000);
     if (!durationMs) {
-      await sock.sendMessage(replyJid, { text: "Usage: !cleanup start {duration?}. Example: `!cleanup start 72h`" });
+      await sock.sendMessage(replyJid, { text: "Usage: !cleanup start {duration?} [channel=https://...]. Example: `!cleanup start 72h`" });
       return true;
     }
 
-    const batchToken = optionTokens.find((token) => token.startsWith("batch="));
-    const intervalToken = optionTokens.find((token) => token.startsWith("interval="));
-    const batchSize = parsePositiveNumberOption(batchToken, "batch=", config.cleanupDmBatchSize, 250);
-    const batchIntervalMinutes = parseIntervalOption(intervalToken, config.cleanupDmBatchIntervalMinutes);
+    const unsupportedOption = optionTokens.find((token) =>
+      token.includes("=") && !token.startsWith("channel=")
+    );
+    if (unsupportedOption) {
+      await sock.sendMessage(replyJid, {
+        text: `Unsupported cleanup option: ${unsupportedOption}\nDM batch options are disabled. Cleanup DMs use the fixed safety rate: ${CLEANUP_DM_RATE_LIMIT.messagesPerWindow} every ${CLEANUP_DM_RATE_LIMIT.windowMinutes}m, ${Math.round(CLEANUP_DM_RATE_LIMIT.perMessageDelayMs / 1000)}s apart.`,
+      });
+      return true;
+    }
+
     const channelLink = parseChannelOption(optionTokens, config.cleanupChannelLink);
     const label = durationLabel(durationMs);
     const publicMessage = buildCleanupPublicMessage(label, channelLink);
@@ -360,8 +344,8 @@ export const handleCleanupCommand = async (
       channelLink,
       publicMessage,
       dmMessage,
-      batchSize,
-      batchIntervalMinutes,
+      batchSize: CLEANUP_DM_RATE_LIMIT.messagesPerWindow,
+      batchIntervalMinutes: CLEANUP_DM_RATE_LIMIT.windowMinutes,
       members,
     });
 
@@ -396,42 +380,6 @@ export const handleCleanupCommand = async (
     const updated = setCleanupCampaignStatus(campaign.id, nextStatus);
     await sock.sendMessage(replyJid, {
       text: updated ? formatCleanupStatus(getCleanupStats(updated.id)!) : `Cleanup ${subcommand} failed.`,
-    });
-    return true;
-  }
-
-  if (subcommand === "throttle" || subcommand === "rate") {
-    const campaign = await getActiveOrReply(sock, replyJid);
-    if (!campaign) {
-      return true;
-    }
-
-    const optionTokens = parts.slice(2);
-    const batchToken = optionTokens.find((token) => token.startsWith("batch="));
-    const intervalToken = optionTokens.find((token) => token.startsWith("interval="));
-    if (!batchToken && !intervalToken) {
-      await sock.sendMessage(replyJid, {
-        text: "Usage: !cleanup throttle batch=10 interval=6h\nTip: use !cleanup pause immediately if the account is restricted.",
-      });
-      return true;
-    }
-
-    const batchSize = parsePositiveNumberOption(batchToken, "batch=", campaign.batchSize, 250);
-    const batchIntervalMinutes = parseIntervalOption(intervalToken, campaign.batchIntervalMinutes);
-    const nowMs = Date.now();
-    const nextBatchNotBefore = Math.max(
-      campaign.nextBatchNotBefore ?? nowMs,
-      nowMs + batchIntervalMinutes * 60_000,
-    );
-    const updated = updateCleanupDmThrottle(
-      campaign.id,
-      batchSize,
-      batchIntervalMinutes,
-      nextBatchNotBefore,
-      nowMs,
-    );
-    await sock.sendMessage(replyJid, {
-      text: updated ? formatCleanupStatus(getCleanupStats(updated.id)!) : "Cleanup throttle update failed.",
     });
     return true;
   }
@@ -497,6 +445,42 @@ export const handleCleanupCommand = async (
       text: recorded
         ? `Whitelisted ${member.displayName ?? formatJidForDisplay(member.primaryJid)} manually.`
         : `${member.displayName ?? formatJidForDisplay(member.primaryJid)} was already whitelisted.`,
+    });
+    return true;
+  }
+
+  if (subcommand === "unkeep") {
+    const campaign = await getActiveOrReply(sock, replyJid);
+    const identifier = parts[2];
+    if (!campaign || !identifier) {
+      await sock.sendMessage(replyJid, { text: "Usage: !cleanup unkeep {userId|phone|jid}" });
+      return true;
+    }
+
+    const member = findCleanupMemberByUserOrJid(campaign.id, getManualKeepIdentifiers(identifier));
+    if (!member) {
+      await sock.sendMessage(replyJid, {
+        text: `Couldn't find ${formatJidForDisplay(identifier)} in the active cleanup campaign. Use \`!cleanup whitelist 100\` or \`!cleanup candidates 100\` to confirm the exact entry.`,
+      });
+      return true;
+    }
+
+    const label = member.displayName ?? formatJidForDisplay(member.primaryJid);
+    if (member.whitelistReason === "protected") {
+      await sock.sendMessage(replyJid, {
+        text: `${label} is protected and cannot be removed from the cleanup whitelist.`,
+      });
+      return true;
+    }
+
+    if (!member.whitelistedAt) {
+      await sock.sendMessage(replyJid, { text: `${label} is not whitelisted.` });
+      return true;
+    }
+
+    const removed = removeCleanupWhitelist(campaign.id, member.userId);
+    await sock.sendMessage(replyJid, {
+      text: removed ? `Removed ${label} from the cleanup whitelist.` : `Couldn't remove ${label} from the cleanup whitelist.`,
     });
     return true;
   }

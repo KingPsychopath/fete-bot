@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { assertUserWritable, getDb, withImmediateTransaction } from "../db.js";
+import { CLEANUP_DM_RATE_LIMIT } from "./policy.js";
 
 export type CleanupCampaignStatus = "active" | "paused" | "completed" | "stopped";
 export type CleanupSignalType =
@@ -408,6 +409,25 @@ export const recordCleanupSignalForOpenCampaign = (
   };
 };
 
+export const removeCleanupWhitelist = (
+  campaignId: string,
+  userId: string,
+  nowMs = Date.now(),
+): boolean => {
+  const result = getDb()
+    .prepare(`
+      UPDATE cleanup_members
+      SET
+        whitelisted_at = NULL,
+        whitelist_reason = NULL,
+        dm_status = CASE WHEN dm_status = 'skipped' THEN 'pending' ELSE dm_status END,
+        updated_at = ?
+      WHERE campaign_id = ? AND user_id = ? AND whitelisted_at IS NOT NULL
+    `)
+    .run(nowMs, campaignId, assertUserWritable(userId));
+  return result.changes > 0;
+};
+
 export const listCleanupMembersForDmBatch = (
   campaignId: string,
   limit: number,
@@ -466,27 +486,6 @@ export const markCleanupBatchSent = (
       WHERE id = ?
     `)
     .run(sentAt, nextBatchNotBefore, sentAt, campaignId);
-};
-
-export const updateCleanupDmThrottle = (
-  campaignId: string,
-  batchSize: number,
-  batchIntervalMinutes: number,
-  nextBatchNotBefore: number,
-  updatedAt = Date.now(),
-): CleanupCampaign | null => {
-  getDb()
-    .prepare(`
-      UPDATE cleanup_campaigns
-      SET
-        batch_size = ?,
-        batch_interval_minutes = ?,
-        next_batch_not_before = ?,
-        updated_at = ?
-      WHERE id = ? AND status IN ('active','paused')
-    `)
-    .run(batchSize, batchIntervalMinutes, nextBatchNotBefore, updatedAt, campaignId);
-  return getCleanupCampaign(campaignId);
 };
 
 export const setCleanupCampaignStatus = (
@@ -577,7 +576,7 @@ export const getCleanupStats = (campaignId: string): CleanupStats | null => {
   const whitelisted = counts?.whitelisted ?? 0;
   const dmPending = counts?.dm_pending ?? 0;
   const nextBatchSize = campaign.status === "active"
-    ? Math.min(campaign.batchSize, dmPending)
+    ? Math.min(CLEANUP_DM_RATE_LIMIT.messagesPerWindow, dmPending)
     : 0;
 
   return {

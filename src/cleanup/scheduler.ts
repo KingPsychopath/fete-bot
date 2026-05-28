@@ -11,6 +11,7 @@ import {
   recordCleanupMessage,
   setCleanupCampaignStatus,
 } from "./store.js";
+import { CLEANUP_DM_RATE_LIMIT } from "./policy.js";
 
 const CLEANUP_SCHEDULER_INTERVAL_MS = 30_000;
 const CLEANUP_DM_HARD_PAUSED = true;
@@ -22,6 +23,10 @@ let cleanupBatchInFlight = false;
 
 const describeError = (value: unknown): string =>
   value instanceof Error ? value.message : String(value);
+
+const wait = (delayMs: number): Promise<void> => new Promise((resolve) => {
+  setTimeout(resolve, delayMs);
+});
 
 export const runCleanupSchedulerTick = async (sock: WASocket): Promise<void> => {
   if (cleanupBatchInFlight) {
@@ -55,11 +60,11 @@ export const runCleanupSchedulerTick = async (sock: WASocket): Promise<void> => 
       return;
     }
 
-    const members = listCleanupMembersForDmBatch(campaign.id, campaign.batchSize);
+    const members = listCleanupMembersForDmBatch(campaign.id, CLEANUP_DM_RATE_LIMIT.messagesPerWindow);
     if (members.length === 0) {
       markCleanupBatchSent(
         campaign.id,
-        nowMs + campaign.batchIntervalMinutes * 60_000,
+        nowMs + CLEANUP_DM_RATE_LIMIT.windowMinutes * 60_000,
         nowMs,
       );
       return;
@@ -68,10 +73,12 @@ export const runCleanupSchedulerTick = async (sock: WASocket): Promise<void> => 
     log("cleanup.dm_batch.start", {
       campaignId: campaign.id,
       count: members.length,
-      batchSize: campaign.batchSize,
+      batchSize: CLEANUP_DM_RATE_LIMIT.messagesPerWindow,
+      batchIntervalMinutes: CLEANUP_DM_RATE_LIMIT.windowMinutes,
+      perMessageDelayMs: CLEANUP_DM_RATE_LIMIT.perMessageDelayMs,
     });
 
-    for (const member of members) {
+    for (const [index, member] of members.entries()) {
       try {
         const sent = await sock.sendMessage(member.primaryJid, { text: campaign.dmMessage });
         markCleanupDmSent(campaign.id, member.userId, Date.now());
@@ -85,11 +92,15 @@ export const runCleanupSchedulerTick = async (sock: WASocket): Promise<void> => 
           error: sendError,
         });
       }
+
+      if (index < members.length - 1) {
+        await wait(CLEANUP_DM_RATE_LIMIT.perMessageDelayMs);
+      }
     }
 
     markCleanupBatchSent(
       campaign.id,
-      Date.now() + campaign.batchIntervalMinutes * 60_000,
+      Date.now() + CLEANUP_DM_RATE_LIMIT.windowMinutes * 60_000,
       Date.now(),
     );
   } catch (batchError) {

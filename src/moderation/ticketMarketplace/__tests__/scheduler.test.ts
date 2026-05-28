@@ -68,8 +68,6 @@ const config = {
   announcementsGroupMentions: [],
   cleanupChannelLink: null,
   cleanupPublicTargetJids: [],
-  cleanupDmBatchSize: 50,
-  cleanupDmBatchIntervalMinutes: 60,
   logAllowedMessages: true,
   logMessageText: false,
 } satisfies Config;

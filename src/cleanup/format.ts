@@ -1,4 +1,5 @@
 import type { CleanupMember, CleanupStats } from "./store.js";
+import { CLEANUP_DM_RATE_LIMIT, cleanupDmRateLabel } from "./policy.js";
 
 const formatPercent = (value: number, total: number): string =>
   total > 0 ? `${((value / total) * 100).toFixed(1)}%` : "0.0%";
@@ -33,7 +34,7 @@ const getDmBatchEstimate = (stats: CleanupStats, hardPauseDms: boolean, nowMs = 
     return "hard-paused";
   }
 
-  const batchesRemaining = Math.ceil(stats.dmPending / stats.campaign.batchSize);
+  const batchesRemaining = Math.ceil(stats.dmPending / CLEANUP_DM_RATE_LIMIT.messagesPerWindow);
   const batchLabel = `${batchesRemaining} batch${batchesRemaining === 1 ? "" : "es"}`;
 
   if (stats.campaign.status === "paused") {
@@ -45,7 +46,7 @@ const getDmBatchEstimate = (stats: CleanupStats, hardPauseDms: boolean, nowMs = 
   }
 
   const firstBatchAt = Math.max(nowMs, stats.nextBatchAt ?? nowMs);
-  const lastBatchAt = firstBatchAt + Math.max(0, batchesRemaining - 1) * stats.campaign.batchIntervalMinutes * 60_000;
+  const lastBatchAt = firstBatchAt + Math.max(0, batchesRemaining - 1) * CLEANUP_DM_RATE_LIMIT.windowMinutes * 60_000;
   return `${formatTime(lastBatchAt, nowMs)} (${batchLabel})`;
 };
 
@@ -53,7 +54,7 @@ export const buildCleanupPublicMessage = (durationLabel: string, channelLink: st
   [
     "📣 *Out of Office Collective Fete Community Cleanup*",
     "",
-    "The OOOC Fete is full, so we need to make space for active members, especially as Fete is approaching soon.",
+    "The OOOC Fete group chats are full, so we need to make space for active members, especially as Fete is approaching soon.",
     "",
     `If you want to stay in the chat community, please *react to this message* or *reply here* within the next *${durationLabel}*. Any reaction or reply counts.`,
     "",
@@ -68,20 +69,20 @@ export const buildCleanupDmMessage = (durationLabel: string, channelLink: string
   [
     "📣 *Out of Office Collective Fete Community Cleanup*",
     "",
-    "Hey, The OOOC Fete is full, so we're cleaning inactive members, especially as Fete is approaching soon.",
+    "Hey - quick one from the OOOC Fete group chats. The chats are full, so we're checking who still wants to stay in before Fete.",
     "",
-    `If you want to stay in the chat community, please *reply to this message* or *react* within *${durationLabel}*. Any reaction or reply counts.`,
+    `If you still want to be in the OOOC Fete group chats, just *reply to this message* or *react* within *${durationLabel}*. Any reaction or reply counts.`,
     "",
     channelLink
-      ? `If you only want official drops and announcements, follow the WhatsApp Channel here:\n${channelLink}`
-      : "If you only want official drops and announcements, follow the WhatsApp Channel.",
+      ? `If you only want official drops and announcements, you can follow the WhatsApp Channel instead:\n${channelLink}`
+      : "If you only want official drops and announcements, you can follow the WhatsApp Channel instead.",
     "",
-    "If removed from the chats, you'll still be able to follow announcements through the Channel.",
+    "No stress if not. If you do get removed from the chats, you can still keep up through the Channel.",
   ].join("\n");
 
 export const buildCleanupWhitelistConfirmationMessage = (channelLink: string | null): string =>
   [
-    "✅ Noted — you're on the stay list for The OOOC Fete chats.",
+    "✅ Noted — you're on the stay list for the OOOC Fete group chats.",
     "",
     channelLink
       ? `You can also follow the Channel for official drops and announcements:\n${channelLink}`
@@ -100,6 +101,7 @@ export const formatCleanupStatus = (
     "",
     `Status: *${campaign.status}*`,
     `Cleanup DMs: *${hardPauseDms ? "hard-paused" : "enabled"}*`,
+    `DM safety rate: ${cleanupDmRateLabel()}, ${Math.round(CLEANUP_DM_RATE_LIMIT.perMessageDelayMs / 1000)}s apart`,
     `Time left: *${formatDurationLeft(campaign.endsAt, nowMs)}*`,
     `Whitelist: *${stats.whitelisted}/${stats.total}* (${formatPercent(stats.whitelisted, stats.total)})`,
     `No signal: *${stats.noSignal}*`,
@@ -116,6 +118,26 @@ export const formatCleanupStatus = (
 const memberLabel = (member: CleanupMember): string =>
   `${member.displayName?.trim() || member.primaryJid} (${member.primaryJid})`;
 
+const cleanupSignalLabel = (reason: CleanupMember["whitelistReason"]): string => {
+  if (!reason) {
+    return "";
+  }
+  if (reason === "manual") {
+    return "manually kept";
+  }
+  return `via ${reason}`;
+};
+
+const cleanupDmStatusLabel = (status: CleanupMember["dmStatus"]): string => {
+  if (status === "pending") {
+    return "";
+  }
+  if (status === "skipped") {
+    return "no cleanup DM needed";
+  }
+  return `DM ${status}`;
+};
+
 export const formatCleanupMemberList = (
   title: string,
   members: CleanupMember[],
@@ -129,9 +151,11 @@ export const formatCleanupMemberList = (
     title,
     "",
     ...members.map((member, index) => {
-      const signal = member.whitelistReason ? ` via ${member.whitelistReason}` : "";
-      const dm = member.dmStatus !== "pending" ? `, DM ${member.dmStatus}` : "";
-      return `${index + 1}. ${memberLabel(member)}${signal}${dm}`;
+      const details = [
+        cleanupSignalLabel(member.whitelistReason),
+        cleanupDmStatusLabel(member.dmStatus),
+      ].filter(Boolean);
+      return `${index + 1}. ${memberLabel(member)}${details.length > 0 ? `, ${details.join(", ")}` : ""}`;
     }),
   ].join("\n");
 };
@@ -147,7 +171,7 @@ export const formatCleanupStarted = (
     `Tracked members: ${stats.total}`,
     `Already whitelisted/protected: ${stats.whitelisted}`,
     `Public notices sent: ${publicTargets.length}`,
-    `DM batches: ${stats.campaign.batchSize} every ${stats.campaign.batchIntervalMinutes}m`,
+    `DM safety rate: ${cleanupDmRateLabel()}, ${Math.round(CLEANUP_DM_RATE_LIMIT.perMessageDelayMs / 1000)}s apart`,
     `Estimated DM finish: ${getDmBatchEstimate(stats, false, stats.campaign.startedAt)}`,
     "",
     "Bot safety: cleanup never removes members. It only lists candidates for admins.",

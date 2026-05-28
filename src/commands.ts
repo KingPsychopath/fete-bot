@@ -219,8 +219,10 @@ const COMMANDS_WITH_TARGET = new Set([
 ]);
 
 const getReplyJidForActor = (actor: ResolvedUser): string | null =>
+  actor.knownAliases.find((alias) => alias.endsWith("@s.whatsapp.net")) ??
+  (actor.participantJid?.endsWith("@s.whatsapp.net") ? actor.participantJid : null) ??
   actor.participantJid ??
-  actor.knownAliases.find((alias) => alias.endsWith("@s.whatsapp.net") || alias.endsWith("@lid")) ??
+  actor.knownAliases.find((alias) => alias.endsWith("@lid")) ??
   null;
 
 const formatGroupName = (

@@ -8,6 +8,8 @@ import type { Config } from "../../config.js";
 let tempDir: string;
 let previousDbPath: string | undefined;
 let previousResetDb: string | undefined;
+const cleanupBackfillMessage =
+  "Hey - we've added you to the OOOC Fete group chat stay list, so you're all good. No need to reply.";
 
 const config = {
   dryRun: false,
@@ -68,8 +70,6 @@ const config = {
   announcementsGroupMentions: [],
   cleanupChannelLink: "https://whatsapp.com/channel/example",
   cleanupPublicTargetJids: [],
-  cleanupDmBatchSize: 25,
-  cleanupDmBatchIntervalMinutes: 30,
   logAllowedMessages: true,
   logMessageText: false,
 } satisfies Config;
@@ -115,6 +115,14 @@ const setupDb = async () => {
 };
 
 describe("cleanup campaign", () => {
+  it("uses human cleanup copy that names the OOOC Fete group chats", async () => {
+    const format = await import("../format.js");
+
+    expect(format.buildCleanupPublicMessage("72 hours", null)).toContain("OOOC Fete group chats");
+    expect(format.buildCleanupDmMessage("72 hours", null)).toContain("quick one from the OOOC Fete group chats");
+    expect(format.buildCleanupWhitelistConfirmationMessage(null)).toContain("OOOC Fete group chats");
+  });
+
   it("whitelists any positive signal and keeps candidates as a list only", async () => {
     await setupDb();
     const store = await import("../store.js");
@@ -194,7 +202,7 @@ describe("cleanup campaign", () => {
       { sendMessage, groupParticipantsUpdate } as never,
       { userId: "owner", label: "owner", role: "owner" },
       "447700900000@s.whatsapp.net",
-      "!cleanup start 72h batch=25 interval=30m",
+      "!cleanup start 72h",
       config,
       new Map([["group@g.us", "Fete Group"]]),
       new Map([
@@ -222,43 +230,39 @@ describe("cleanup campaign", () => {
     expect(groupParticipantsUpdate).not.toHaveBeenCalled();
   });
 
-  it("can throttle an active cleanup campaign without restarting it", async () => {
+  it("rejects disabled DM batch options", async () => {
     await setupDb();
     const { handleCleanupCommand } = await import("../commands.js");
     const store = await import("../store.js");
-    store.createCleanupCampaign({
-      durationMs: 72 * 60 * 60_000,
-      actorUserId: "owner",
-      actorLabel: "owner",
-      channelLink: config.cleanupChannelLink,
-      publicMessage: "public",
-      dmMessage: "dm",
-      batchSize: 25,
-      batchIntervalMinutes: 30,
-      nowMs: Date.now(),
-      members: [
-        { userId: "user-1", displayName: "User One", primaryJid: "447700900001@s.whatsapp.net" },
-        { userId: "user-2", displayName: "User Two", primaryJid: "447700900002@s.whatsapp.net" },
-      ],
-    });
     const sendMessage = vi.fn().mockResolvedValue({ key: { id: "admin-reply" } });
 
     await handleCleanupCommand(
       { sendMessage } as never,
       { userId: "owner", label: "owner", role: "owner" },
       "447700900000@s.whatsapp.net",
-      "!cleanup throttle batch=5 interval=6h",
+      "!cleanup start 72h batch=5",
       config,
       new Map([["group@g.us", "Fete Group"]]),
-      new Map() as never,
+      new Map([
+        [
+          "group@g.us",
+          {
+            id: "group@g.us",
+            subject: "Fete Group",
+            participants: [
+              { id: "447700900001@s.whatsapp.net" },
+              { id: "447700900002@s.whatsapp.net" },
+            ],
+          },
+        ],
+      ]) as never,
       new Set(["bot@s.whatsapp.net"]),
     );
 
     const updated = store.getOpenCleanupCampaign();
-    expect(updated?.batchSize).toBe(5);
-    expect(updated?.batchIntervalMinutes).toBe(360);
+    expect(updated).toBeNull();
     expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", expect.objectContaining({
-      text: expect.stringContaining("Next batch: 2 DMs in"),
+      text: expect.stringContaining("Unsupported cleanup option: batch=5"),
     }));
   });
 
@@ -298,6 +302,109 @@ describe("cleanup campaign", () => {
     expect(store.listCleanupWhitelistedMembers(campaign.id, 10)[0]?.userId).toBe("user-2");
     expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", expect.objectContaining({
       text: "Whitelisted User Two manually.",
+    }));
+  });
+
+  it("formats manual cleanup whitelist entries as admin-readable labels", async () => {
+    await setupDb();
+    const format = await import("../format.js");
+    const store = await import("../store.js");
+    const campaign = store.createCleanupCampaign({
+      durationMs: 72 * 60 * 60_000,
+      actorUserId: "owner",
+      actorLabel: "owner",
+      channelLink: config.cleanupChannelLink,
+      publicMessage: "public",
+      dmMessage: "dm",
+      batchSize: 25,
+      batchIntervalMinutes: 30,
+      nowMs: Date.now(),
+      members: [
+        { userId: "user-1", displayName: "User One", primaryJid: "447700900001@s.whatsapp.net" },
+      ],
+    });
+    store.recordCleanupSignal(campaign.id, "user-1", "manual", "owner@s.whatsapp.net", null);
+
+    expect(format.formatCleanupMemberList(
+      "Whitelisted members (1)",
+      store.listCleanupWhitelistedMembers(campaign.id, 10),
+      "Nobody is whitelisted yet.",
+    )).toContain("User One (447700900001@s.whatsapp.net), manually kept, no cleanup DM needed");
+  });
+
+  it("can remove a manually whitelisted cleanup member", async () => {
+    await setupDb();
+    const { handleCleanupCommand } = await import("../commands.js");
+    const store = await import("../store.js");
+    const campaign = store.createCleanupCampaign({
+      durationMs: 72 * 60 * 60_000,
+      actorUserId: "owner",
+      actorLabel: "owner",
+      channelLink: config.cleanupChannelLink,
+      publicMessage: "public",
+      dmMessage: "dm",
+      batchSize: 25,
+      batchIntervalMinutes: 30,
+      nowMs: Date.now(),
+      members: [
+        { userId: "user-1", displayName: "User One", primaryJid: "447700900001@s.whatsapp.net" },
+      ],
+    });
+    store.recordCleanupSignal(campaign.id, "user-1", "manual", "owner@s.whatsapp.net", null);
+    const sendMessage = vi.fn().mockResolvedValue({ key: { id: "admin-reply" } });
+
+    await handleCleanupCommand(
+      { sendMessage } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "447700900000@s.whatsapp.net",
+      "!cleanup unkeep +447700900001",
+      config,
+      new Map([["group@g.us", "Fete Group"]]),
+      new Map() as never,
+      new Set(["bot@s.whatsapp.net"]),
+    );
+
+    expect(store.getCleanupStats(campaign.id)?.whitelisted).toBe(0);
+    expect(store.listCleanupCandidateMembers(campaign.id, 10)[0]?.userId).toBe("user-1");
+    expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", expect.objectContaining({
+      text: "Removed User One from the cleanup whitelist.",
+    }));
+  });
+
+  it("reports when cleanup unkeep targets someone who is not whitelisted", async () => {
+    await setupDb();
+    const { handleCleanupCommand } = await import("../commands.js");
+    const store = await import("../store.js");
+    const campaign = store.createCleanupCampaign({
+      durationMs: 72 * 60 * 60_000,
+      actorUserId: "owner",
+      actorLabel: "owner",
+      channelLink: config.cleanupChannelLink,
+      publicMessage: "public",
+      dmMessage: "dm",
+      batchSize: 25,
+      batchIntervalMinutes: 30,
+      nowMs: Date.now(),
+      members: [
+        { userId: "user-1", displayName: "User One", primaryJid: "447700900001@s.whatsapp.net" },
+      ],
+    });
+    const sendMessage = vi.fn().mockResolvedValue({ key: { id: "admin-reply" } });
+
+    await handleCleanupCommand(
+      { sendMessage } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "447700900000@s.whatsapp.net",
+      "!cleanup unkeep +447700900001",
+      config,
+      new Map([["group@g.us", "Fete Group"]]),
+      new Map() as never,
+      new Set(["bot@s.whatsapp.net"]),
+    );
+
+    expect(store.getCleanupStats(campaign.id)?.whitelisted).toBe(0);
+    expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", expect.objectContaining({
+      text: "User One is not whitelisted.",
     }));
   });
 
@@ -369,7 +476,7 @@ describe("cleanup campaign", () => {
     }));
   });
 
-  it("whitelists a DM recipient from the outgoing backfill marker", async () => {
+  it("whitelists a DM recipient from the outgoing natural backfill marker", async () => {
     await setupDb();
     const { handleMessage } = await import("../../index.js");
     const store = await import("../store.js");
@@ -398,7 +505,7 @@ describe("cleanup campaign", () => {
           fromMe: true,
         },
         message: {
-          conversation: "OOOC KEEP",
+          conversation: cleanupBackfillMessage,
         },
       } as never,
     );
@@ -413,7 +520,7 @@ describe("cleanup campaign", () => {
     });
   });
 
-  it("whitelists a DM recipient from the human-readable outgoing marker", async () => {
+  it("edits the KEEP shortcut into the natural backfill marker before reacting", async () => {
     await setupDb();
     const { handleMessage } = await import("../../index.js");
     const store = await import("../store.js");
@@ -442,7 +549,54 @@ describe("cleanup campaign", () => {
           fromMe: true,
         },
         message: {
-          conversation: "OOOC stay list noted",
+          conversation: "KEEP",
+        },
+      } as never,
+    );
+
+    expect(store.getCleanupStats(campaign.id)?.whitelisted).toBe(1);
+    expect(sendMessage).toHaveBeenNthCalledWith(1, "447700900001@s.whatsapp.net", {
+      text: cleanupBackfillMessage,
+      edit: expect.objectContaining({ id: "marker-1" }),
+    });
+    expect(sendMessage).toHaveBeenNthCalledWith(2, "447700900001@s.whatsapp.net", {
+      react: {
+        text: "✅",
+        key: expect.objectContaining({ id: "marker-1" }),
+      },
+    });
+  });
+
+  it("reacts with X when the outgoing natural backfill marker was already whitelisted", async () => {
+    await setupDb();
+    const { handleMessage } = await import("../../index.js");
+    const store = await import("../store.js");
+    const campaign = store.createCleanupCampaign({
+      durationMs: 72 * 60 * 60_000,
+      actorUserId: "owner",
+      actorLabel: "owner",
+      channelLink: config.cleanupChannelLink,
+      publicMessage: "public",
+      dmMessage: "dm",
+      batchSize: 25,
+      batchIntervalMinutes: 30,
+      nowMs: Date.now(),
+      members: [
+        { userId: "user-1", displayName: "User One", primaryJid: "447700900001@s.whatsapp.net", protected: true },
+      ],
+    });
+    const sendMessage = vi.fn().mockResolvedValue({ key: { id: "react-1" } });
+
+    await handleMessage(
+      { sendMessage } as never,
+      {
+        key: {
+          id: "marker-1",
+          remoteJid: "447700900001@s.whatsapp.net",
+          fromMe: true,
+        },
+        message: {
+          conversation: cleanupBackfillMessage,
         },
       } as never,
     );
@@ -450,10 +604,146 @@ describe("cleanup campaign", () => {
     expect(store.getCleanupStats(campaign.id)?.whitelisted).toBe(1);
     expect(sendMessage).toHaveBeenCalledWith("447700900001@s.whatsapp.net", {
       react: {
-        text: "✅",
+        text: "❌",
         key: expect.objectContaining({ id: "marker-1" }),
       },
     });
+  });
+
+  it("allows repeated KEEP tests against an already-whitelisted protected account", async () => {
+    await setupDb();
+    const { handleMessage } = await import("../../index.js");
+    const store = await import("../store.js");
+    const campaign = store.createCleanupCampaign({
+      durationMs: 72 * 60 * 60_000,
+      actorUserId: "owner",
+      actorLabel: "owner",
+      channelLink: config.cleanupChannelLink,
+      publicMessage: "public",
+      dmMessage: "dm",
+      batchSize: 25,
+      batchIntervalMinutes: 30,
+      nowMs: Date.now(),
+      members: [
+        { userId: "owner", displayName: "Owner", primaryJid: "447700900000@s.whatsapp.net", protected: true },
+      ],
+    });
+    const sendMessage = vi.fn().mockResolvedValue({ key: { id: "react-1" } });
+
+    for (const messageId of ["marker-1", "marker-2"]) {
+      await handleMessage(
+        { sendMessage } as never,
+        {
+          key: {
+            id: messageId,
+            remoteJid: "447700900000@s.whatsapp.net",
+            fromMe: true,
+          },
+          message: {
+            conversation: "KEEP",
+          },
+        } as never,
+      );
+    }
+
+    expect(store.getCleanupStats(campaign.id)?.whitelisted).toBe(1);
+    expect(sendMessage).toHaveBeenNthCalledWith(1, "447700900000@s.whatsapp.net", {
+      text: cleanupBackfillMessage,
+      edit: expect.objectContaining({ id: "marker-1" }),
+    });
+    expect(sendMessage).toHaveBeenNthCalledWith(2, "447700900000@s.whatsapp.net", {
+      react: {
+        text: "❌",
+        key: expect.objectContaining({ id: "marker-1" }),
+      },
+    });
+    expect(sendMessage).toHaveBeenNthCalledWith(3, "447700900000@s.whatsapp.net", {
+      text: cleanupBackfillMessage,
+      edit: expect.objectContaining({ id: "marker-2" }),
+    });
+    expect(sendMessage).toHaveBeenNthCalledWith(4, "447700900000@s.whatsapp.net", {
+      react: {
+        text: "❌",
+        key: expect.objectContaining({ id: "marker-2" }),
+      },
+    });
+  });
+
+  it("reacts with a question mark when the outgoing natural backfill marker cannot match cleanup", async () => {
+    await setupDb();
+    const { handleMessage } = await import("../../index.js");
+    const sendMessage = vi.fn().mockResolvedValue({ key: { id: "react-1" } });
+
+    await handleMessage(
+      { sendMessage } as never,
+      {
+        key: {
+          id: "marker-1",
+          remoteJid: "447700900001@s.whatsapp.net",
+          fromMe: true,
+        },
+        message: {
+          conversation: cleanupBackfillMessage,
+        },
+      } as never,
+    );
+
+    expect(sendMessage).toHaveBeenCalledWith("447700900001@s.whatsapp.net", {
+      react: {
+        text: "❓",
+        key: expect.objectContaining({ id: "marker-1" }),
+      },
+    });
+  });
+
+  it("does not treat unauthorized direct commands as cleanup opt-ins", async () => {
+    await setupDb();
+    const { handleMessage } = await import("../../index.js");
+    const { resolveUser } = await import("../../identity.js");
+    const store = await import("../store.js");
+    const resolved = await resolveUser({
+      participantJid: "447700900001@s.whatsapp.net",
+      phoneJid: "447700900001@s.whatsapp.net",
+      pushName: "User One",
+      selfJids: new Set(["bot@s.whatsapp.net"]),
+    });
+    expect(resolved).not.toBeNull();
+    const campaign = store.createCleanupCampaign({
+      durationMs: 72 * 60 * 60_000,
+      actorUserId: "owner",
+      actorLabel: "owner",
+      channelLink: config.cleanupChannelLink,
+      publicMessage: "public",
+      dmMessage: "dm",
+      batchSize: 25,
+      batchIntervalMinutes: 30,
+      nowMs: Date.now(),
+      members: [
+        { userId: resolved!.userId, displayName: "User One", primaryJid: "447700900001@s.whatsapp.net" },
+      ],
+    });
+    const sendMessage = vi.fn().mockResolvedValue({ key: { id: "reply-1" } });
+
+    await handleMessage(
+      { sendMessage, user: { id: "bot@s.whatsapp.net" } } as never,
+      {
+        key: {
+          id: "command-1",
+          remoteJid: "447700900001@s.whatsapp.net",
+          fromMe: false,
+        },
+        pushName: "User One",
+        message: {
+          conversation: "!help",
+        },
+      } as never,
+    );
+
+    expect(store.getCleanupStats(campaign.id)?.whitelisted).toBe(0);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledWith("447700900001@s.whatsapp.net", expect.objectContaining({
+      text: expect.stringContaining("You're not authorised to use Fete Bot commands"),
+    }), undefined);
   });
 
   it("can manually whitelist many cleanup members from pasted phone numbers", async () => {

@@ -126,8 +126,9 @@ const HANDLED_CALL_TTL_MS = 10 * 60 * 1000;
 const HANDLED_CALL_MAX_ENTRIES = 5_000;
 const MESSAGE_HANDLER_CONCURRENCY = 4;
 const MESSAGE_HANDLER_MAX_QUEUE = 500;
-const CLEANUP_DM_BACKFILL_MARKER = "OOOC KEEP";
-const CLEANUP_DM_BACKFILL_HUMAN_MARKER = "OOOC stay list noted";
+const CLEANUP_DM_BACKFILL_SHORTCUT = "KEEP";
+const CLEANUP_DM_BACKFILL_MARKER =
+  "Hey - we've added you to the OOOC Fete group chat stay list, so you're all good. No need to reply.";
 let strikePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let mutePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let callViolationPurgeTimer: ReturnType<typeof setInterval> | null = null;
@@ -433,11 +434,95 @@ const maybeLogTextField = (text: string): { text?: string } => config.logMessage
 
 const getPhoneJid = (phoneNumber: string | null): string | null =>
   phoneNumber ? parseToJid(phoneNumber) : null;
+const getPhoneAliasFromSender = (senderJid: string | null | undefined): string | null =>
+  senderJid?.endsWith("@s.whatsapp.net") ? senderJid : null;
+
+const isUserChatJid = (jid: string): boolean => jid.endsWith("@s.whatsapp.net") || jid.endsWith("@lid");
+const isGroupChatJid = (jid: string): boolean => jid.endsWith("@g.us");
+const isSystemChatJid = (jid: string): boolean =>
+  jid === "status@broadcast" || jid.endsWith("@newsletter") || jid.endsWith("@broadcast");
+const isDirectCommandCandidate = (remoteJid: string, text: string): boolean =>
+  text.trim().startsWith("!") && !isGroupChatJid(remoteJid) && !isSystemChatJid(remoteJid);
+
+const buildDirectCommandReplySocket = (
+  sock: WASocket,
+  inboundRemoteJid: string,
+): WASocket => Object.assign(Object.create(Object.getPrototypeOf(sock)), sock, {
+  sendMessage: async (
+    jid: string,
+    content: AnyMessageContent,
+    options?: MiscMessageGenerationOptions,
+  ) => {
+    const targets = [
+      jid,
+      inboundRemoteJid !== jid && isUserChatJid(inboundRemoteJid) ? inboundRemoteJid : null,
+    ].filter((target): target is string => Boolean(target));
+
+    let lastResult: Awaited<ReturnType<WASocket["sendMessage"]>> | undefined;
+    let lastError: unknown;
+    for (const target of targets) {
+      try {
+        log("direct.command.reply.send_attempt", {
+          targetJid: target,
+          originalJid: jid,
+          inboundRemoteJid,
+          mirrored: target !== jid,
+        });
+        lastResult = await sock.sendMessage(target, content, options);
+        log("direct.command.reply.send_success", {
+          targetJid: target,
+          originalJid: jid,
+          inboundRemoteJid,
+          mirrored: target !== jid,
+          messageId: lastResult?.key?.id ?? null,
+        });
+      } catch (sendError) {
+        lastError = sendError;
+        warn("direct.command.reply.send_failed", {
+          targetJid: target,
+          originalJid: jid,
+          inboundRemoteJid,
+          mirrored: target !== jid,
+          error: sendError,
+        });
+      }
+    }
+
+    if (lastResult) {
+      return lastResult;
+    }
+    throw lastError instanceof Error ? lastError : new Error("direct command reply send failed");
+  },
+});
 
 const isCleanupDmBackfillMarker = (text: string): boolean =>
-  [CLEANUP_DM_BACKFILL_MARKER, CLEANUP_DM_BACKFILL_HUMAN_MARKER].some(
+  [CLEANUP_DM_BACKFILL_SHORTCUT, CLEANUP_DM_BACKFILL_MARKER].some(
     (marker) => text.trim().toUpperCase() === marker.toUpperCase(),
   );
+
+const maybeEditCleanupDmBackfillShortcut = async (
+  sock: WASocket,
+  remoteJid: string,
+  msg: WAMessage,
+  text: string,
+): Promise<void> => {
+  if (text.trim().toUpperCase() !== CLEANUP_DM_BACKFILL_SHORTCUT) {
+    return;
+  }
+
+  try {
+    await sock.sendMessage(remoteJid, {
+      text: CLEANUP_DM_BACKFILL_MARKER,
+      edit: msg.key,
+    });
+  } catch (editError) {
+    warn("cleanup.dm_backfill_marker_edit_failed", {
+      jid: remoteJid,
+      messageId: msg.key.id ?? null,
+      error: editError,
+    });
+  }
+};
 
 const handleCleanupDmBackfillMarker = async (
   sock: WASocket,
@@ -449,22 +534,27 @@ const handleCleanupDmBackfillMarker = async (
     return false;
   }
 
+  await maybeEditCleanupDmBackfillShortcut(sock, remoteJid, msg, text);
+
   const campaign = getOpenCleanupCampaign();
   const member = campaign ? findCleanupMemberByUserOrJid(campaign.id, [remoteJid]) : null;
   if (!campaign || !member) {
     await sock.sendMessage(remoteJid, {
       react: {
-        text: "❌",
+        text: "❓",
         key: msg.key,
       },
     });
     return true;
   }
 
-  recordCleanupSignal(campaign.id, member.userId, "manual", remoteJid, msg.key.id ?? null);
+  const wasWhitelisted = member.whitelistedAt !== null;
+  if (!wasWhitelisted) {
+    recordCleanupSignal(campaign.id, member.userId, "manual", remoteJid, msg.key.id ?? null);
+  }
   await sock.sendMessage(remoteJid, {
     react: {
-      text: "✅",
+      text: wasWhitelisted ? "❌" : "✅",
       key: msg.key,
     },
   });
@@ -472,6 +562,7 @@ const handleCleanupDmBackfillMarker = async (
     campaignId: campaign.id,
     userId: member.userId,
     jid: remoteJid,
+    wasWhitelisted,
   });
   return true;
 };
@@ -1419,6 +1510,43 @@ const syncLidMappingIdentity = async (
   }
 };
 
+const syncObservedPhoneLidIdentity = async (
+  phoneJid: string | null | undefined,
+  lidJid: string | null | undefined,
+  pushName: string | null,
+  sock: WASocket,
+): Promise<void> => {
+  if (!phoneJid || !lidJid) {
+    return;
+  }
+
+  try {
+    recordLidMapping(phoneJid, lidJid);
+    const resolved = await resolveUser({
+      participantJid: lidJid,
+      phoneJid,
+      lidJid,
+      pushName,
+      selfJids: getSelfJids(sock),
+      reason: "metadata_sync",
+    });
+    const merged = await mergeUserAliases([phoneJid, lidJid], getSelfJids(sock), "metadata_sync");
+    log("identity.observed_phone_lid_synced", {
+      phoneJid,
+      lidJid,
+      resolvedUserId: resolved?.userId ?? null,
+      mergedUserId: merged?.userId ?? null,
+      mergedFrom: merged?.mergedFrom ?? [],
+    });
+  } catch (mappingError) {
+    warn("Failed to sync observed phone/lid identity", {
+      phoneJid,
+      lidJid,
+      error: mappingError,
+    });
+  }
+};
+
 const syncGroupParticipantIdentities = async (metadata: GroupMetadata): Promise<void> => {
   const selfJids = botSelfJids;
   for (const participant of metadata.participants) {
@@ -1483,6 +1611,39 @@ const resolveDirectSenderFromKnownGroups = async (
   }
 
   return sender;
+};
+
+const resolveDirectSenderFromMetadataJid = async (
+  remoteJid: string,
+  pushName: string | null,
+  sock: WASocket,
+): Promise<ResolvedUser | null> => {
+  const normalizedRemoteJid = normalizeJid(remoteJid);
+  for (const metadata of discoveredGroupMetadata.values()) {
+    for (const participant of metadata.participants) {
+      const participantAliases = [
+        participant.id ? normalizeJid(participant.id) : null,
+        participant.lid ? normalizeJid(participant.lid) : null,
+        participant.phoneNumber ? parseToJid(participant.phoneNumber) : null,
+      ].filter((alias): alias is string => Boolean(alias));
+
+      if (!participantAliases.includes(normalizedRemoteJid)) {
+        continue;
+      }
+
+      await syncLidMappingIdentity(participant.lid, participant.phoneNumber, sock);
+      return await resolveUser({
+        participantJid: participant.id ?? remoteJid,
+        phoneJid: participant.phoneNumber ? parseToJid(participant.phoneNumber) : null,
+        lidJid: participant.lid ?? (remoteJid.endsWith("@lid") ? remoteJid : null),
+        pushName,
+        selfJids: getSelfJids(sock),
+        reason: "metadata_sync",
+      });
+    }
+  }
+
+  return null;
 };
 
 const resolveDirectSenderFromOwnerAliases = async (
@@ -1865,9 +2026,19 @@ export const handleMessage = async (
     }
 
     const text = extractMessageText(msg);
-    const isDirectChat = remoteJid.endsWith("@s.whatsapp.net") || remoteJid.endsWith("@lid");
+    const isDirectChat = isUserChatJid(remoteJid);
+    const isDirectCommand = isDirectCommandCandidate(remoteJid, text);
 
     if (msg.key.fromMe) {
+      if (isDirectCommand) {
+        log("Ignored own direct command message", {
+          remoteJid,
+          messageId: msg.key.id ?? null,
+          hasText: text.length > 0,
+          textLength: text.length,
+          ...maybeLogTextField(text),
+        });
+      }
       if (isDirectChat) {
         await handleCleanupDmBackfillMarker(sock, remoteJid, msg, text);
       }
@@ -1876,14 +2047,39 @@ export const handleMessage = async (
 
     const selfJids = getSelfJids(sock);
     const { senderJid, phoneNumber, lidJid } = extractAllIdentifiers(msg);
-    const phoneJid = getPhoneJid(phoneNumber);
+    const rawPhoneJid = getPhoneJid(phoneNumber);
+    const observedPhoneJid = rawPhoneJid ?? getPhoneAliasFromSender(senderJid);
+    const phoneJid = observedPhoneJid;
+    await syncObservedPhoneLidIdentity(observedPhoneJid, lidJid, getPushName(msg), sock);
+
+    if (isDirectCommand) {
+      log("direct.command.received", {
+        remoteJid,
+        senderJid: senderJid || null,
+        phoneNumber,
+        phoneJid,
+        rawPhoneJid,
+        lidJid,
+        participantJid: msg.key.participant ?? null,
+        participantPn: (msg.key as { participantPn?: string | null }).participantPn ?? null,
+        pushName: getPushName(msg),
+        hasText: text.length > 0,
+        textLength: text.length,
+        remoteJidClassification: isDirectChat ? "user" : "unknown_direct_candidate",
+        ...maybeLogTextField(text),
+      });
+    }
+
+    const directMetadataSender = isDirectCommand
+      ? await resolveDirectSenderFromMetadataJid(remoteJid, getPushName(msg), sock)
+      : null;
     const sender = await resolveUser({
       participantJid: senderJid || null,
-      phoneJid,
+      phoneJid: observedPhoneJid,
       lidJid,
       pushName: getPushName(msg),
       selfJids,
-    }) ?? (isDirectChat
+    }) ?? directMetadataSender ?? (isDirectCommand
       ? await resolveUser({
           participantJid: remoteJid,
           phoneJid: remoteJid.endsWith("@s.whatsapp.net") ? remoteJid : null,
@@ -1894,7 +2090,7 @@ export const handleMessage = async (
       : null);
 
     if (!sender) {
-      if (isDirectChat && text.trim().startsWith("!")) {
+      if (isDirectCommand) {
         await sock.sendMessage(remoteJid, {
           text: `⛔ You're not authorised to use Fete Bot commands. Ignoring this command.
 
@@ -1902,6 +2098,7 @@ Raw identity:
 Remote JID: ${remoteJid}
 Sender JID: ${senderJid || "unknown"}
 Phone JID: ${phoneJid ?? "unknown"}
+Observed phone JID: ${observedPhoneJid ?? "unknown"}
 Phone number: ${phoneNumber ?? "unknown"}
 LID JID: ${lidJid ?? "unknown"}
 Push name: ${getPushName(msg) ?? "unknown"}`,
@@ -1910,13 +2107,25 @@ Push name: ${getPushName(msg) ?? "unknown"}`,
       return;
     }
 
-    if (isDirectChat) {
+    if (isDirectCommand) {
+      log("direct.command.identity.resolved", {
+        remoteJid,
+        userId: sender.userId,
+        shortId: sender.shortId,
+        participantJid: sender.participantJid,
+        knownAliases: sender.knownAliases,
+      });
+    }
+
+    if (isDirectCommand || isDirectChat) {
       const directSenderFromGroups = await resolveDirectSenderFromKnownGroups(sender, remoteJid, getPushName(msg), sock);
       const directSender = await resolveDirectSenderFromOwnerAliases(directSenderFromGroups, selfJids);
-      await recordCleanupInteraction(sock, directSender, remoteJid, msg, text, true);
+      if (!isDirectCommand) {
+        await recordCleanupInteraction(sock, directSender, remoteJid, msg, text, true);
+      }
       if (text) {
         await handleAuthorisedCommand(
-          sock,
+          isDirectCommand ? buildDirectCommandReplySocket(sock, remoteJid) : sock,
           directSender,
           text,
           getQuotedText(msg.message),
@@ -1943,7 +2152,7 @@ Push name: ${getPushName(msg) ?? "unknown"}`,
     if (!liveSenderJid) {
       return;
     }
-    const canonicalSenderAlias = groupSender.knownAliases.find((alias) => alias.endsWith("@s.whatsapp.net")) ?? phoneJid ?? liveSenderJid;
+    const canonicalSenderAlias = groupSender.knownAliases.find((alias) => alias.endsWith("@s.whatsapp.net")) ?? observedPhoneJid ?? liveSenderJid;
 
     if (config.logAllowedMessages) {
       log("message.seen", {
@@ -1963,7 +2172,7 @@ Push name: ${getPushName(msg) ?? "unknown"}`,
 
     recordCallGuardRecentActivityForUser(
       groupSender,
-      [senderJid, liveSenderJid, lidJid, phoneJid, canonicalSenderAlias],
+      [senderJid, liveSenderJid, lidJid, observedPhoneJid, canonicalSenderAlias],
       groupJid,
     );
 

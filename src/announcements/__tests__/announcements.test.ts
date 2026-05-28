@@ -70,8 +70,6 @@ const config = {
   announcementsGroupMentions: [{ label: "FDLM General", jid: "general@g.us" }],
   cleanupChannelLink: null,
   cleanupPublicTargetJids: [],
-  cleanupDmBatchSize: 50,
-  cleanupDmBatchIntervalMinutes: 60,
   logAllowedMessages: true,
   logMessageText: false,
 } satisfies Config;
