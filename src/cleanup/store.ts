@@ -626,6 +626,21 @@ export const listCleanupCandidateMembers = (
     .all(campaignId, Math.min(Math.max(Math.trunc(limit), 1), 500))
     .map(toMember);
 
+export const listCleanupMembers = (
+  campaignId: string,
+  limit = 5_000,
+): CleanupMember[] =>
+  getDb()
+    .prepare<[string, number], MemberRow>(`
+      SELECT *
+      FROM cleanup_members
+      WHERE campaign_id = ?
+      ORDER BY updated_at DESC
+      LIMIT ?
+    `)
+    .all(campaignId, Math.min(Math.max(Math.trunc(limit), 1), 5_000))
+    .map(toMember);
+
 export const findCleanupMemberByUserOrJid = (
   campaignId: string,
   identifiers: readonly string[],

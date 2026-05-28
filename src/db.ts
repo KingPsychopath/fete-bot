@@ -357,7 +357,7 @@ const CALL_GUARD_SCHEMA_SQL = `
 `;
 
 const CLEANUP_SCHEMA_SQL = `
-  CREATE TABLE cleanup_campaigns (
+  CREATE TABLE IF NOT EXISTS cleanup_campaigns (
     id TEXT PRIMARY KEY,
     status TEXT NOT NULL CHECK(status IN ('active','paused','completed','stopped')),
     started_at INTEGER NOT NULL,
@@ -376,12 +376,12 @@ const CLEANUP_SCHEMA_SQL = `
     completed_at INTEGER,
     stopped_at INTEGER
   );
-  CREATE UNIQUE INDEX idx_cleanup_one_open
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_cleanup_one_open
     ON cleanup_campaigns((1))
     WHERE status IN ('active','paused');
-  CREATE INDEX idx_cleanup_campaigns_status ON cleanup_campaigns(status, ends_at);
+  CREATE INDEX IF NOT EXISTS idx_cleanup_campaigns_status ON cleanup_campaigns(status, ends_at);
 
-  CREATE TABLE cleanup_members (
+  CREATE TABLE IF NOT EXISTS cleanup_members (
     campaign_id TEXT NOT NULL REFERENCES cleanup_campaigns(id) ON DELETE CASCADE,
     user_id TEXT NOT NULL REFERENCES users(id),
     display_name TEXT,
@@ -397,10 +397,10 @@ const CLEANUP_SCHEMA_SQL = `
     updated_at INTEGER NOT NULL,
     PRIMARY KEY(campaign_id, user_id)
   );
-  CREATE INDEX idx_cleanup_members_campaign_whitelist ON cleanup_members(campaign_id, whitelisted_at);
-  CREATE INDEX idx_cleanup_members_campaign_dm ON cleanup_members(campaign_id, dm_status, whitelisted_at, updated_at);
+  CREATE INDEX IF NOT EXISTS idx_cleanup_members_campaign_whitelist ON cleanup_members(campaign_id, whitelisted_at);
+  CREATE INDEX IF NOT EXISTS idx_cleanup_members_campaign_dm ON cleanup_members(campaign_id, dm_status, whitelisted_at, updated_at);
 
-  CREATE TABLE cleanup_messages (
+  CREATE TABLE IF NOT EXISTS cleanup_messages (
     campaign_id TEXT NOT NULL REFERENCES cleanup_campaigns(id) ON DELETE CASCADE,
     destination_jid TEXT NOT NULL,
     message_id TEXT NOT NULL,
@@ -409,9 +409,9 @@ const CLEANUP_SCHEMA_SQL = `
     sent_at INTEGER NOT NULL,
     PRIMARY KEY(campaign_id, destination_jid, message_id)
   );
-  CREATE INDEX idx_cleanup_messages_lookup ON cleanup_messages(destination_jid, message_id);
+  CREATE INDEX IF NOT EXISTS idx_cleanup_messages_lookup ON cleanup_messages(destination_jid, message_id);
 
-  CREATE TABLE cleanup_signals (
+  CREATE TABLE IF NOT EXISTS cleanup_signals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     campaign_id TEXT NOT NULL REFERENCES cleanup_campaigns(id) ON DELETE CASCADE,
     user_id TEXT NOT NULL REFERENCES users(id),
@@ -428,9 +428,9 @@ const CLEANUP_SCHEMA_SQL = `
     message_id TEXT,
     created_at INTEGER NOT NULL
   );
-  CREATE UNIQUE INDEX idx_cleanup_signals_unique
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_cleanup_signals_unique
     ON cleanup_signals(campaign_id, user_id, signal_type, IFNULL(source_jid, ''), IFNULL(message_id, ''));
-  CREATE INDEX idx_cleanup_signals_campaign ON cleanup_signals(campaign_id, signal_type, created_at);
+  CREATE INDEX IF NOT EXISTS idx_cleanup_signals_campaign ON cleanup_signals(campaign_id, signal_type, created_at);
 `;
 
 const recreateSchema = (database: Database.Database): void => {

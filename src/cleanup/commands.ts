@@ -20,6 +20,7 @@ import {
   getLatestCleanupCampaign,
   getOpenCleanupCampaign,
   listCleanupCandidateMembers,
+  listCleanupMembers,
   listCleanupWhitelistedMembers,
   recordCleanupMessage,
   recordCleanupSignal,
@@ -123,6 +124,46 @@ const getManualKeepIdentifiers = (input: string): string[] => {
   const digits = cleaned.replace(/\D/gu, "");
   const digitJid = digits.length >= 7 && digits.length <= 15 ? parseToJid(digits) : null;
   return [cleaned, phoneJid, digitJid].filter((identifier): identifier is string => Boolean(identifier));
+};
+
+const digitsOnly = (value: string): string => value.replace(/\D/gu, "");
+
+const findLongestCommonDigitRun = (left: string, right: string): number => {
+  const shorter = left.length <= right.length ? left : right;
+  for (let length = Math.min(shorter.length, 10); length >= 7; length -= 1) {
+    for (let start = 0; start <= shorter.length - length; start += 1) {
+      if (right.includes(shorter.slice(start, start + length))) {
+        return length;
+      }
+    }
+  }
+  return 0;
+};
+
+const getNearbyMemberSuggestions = (
+  identifier: string,
+  members: readonly { displayName: string | null; primaryJid: string }[],
+): string[] => {
+  const wanted = digitsOnly(identifier);
+  if (wanted.length < 7) {
+    return [];
+  }
+
+  return members
+    .map((member) => {
+      const actual = digitsOnly(member.primaryJid);
+      const commonSuffix = [...Array(Math.min(wanted.length, actual.length) + 1).keys()]
+        .reverse()
+        .find((length) => length >= 4 && wanted.endsWith(actual.slice(-length))) ?? 0;
+      return {
+        member,
+        score: Math.max(commonSuffix + 2, findLongestCommonDigitRun(wanted, actual)),
+      };
+    })
+    .filter((entry) => entry.score >= 7)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 3)
+    .map(({ member }) => `${member.displayName ?? "Unknown"} (${formatJidForDisplay(member.primaryJid)})`);
 };
 
 const extractKeepManyIdentifiers = (text: string): string[] => {
@@ -473,12 +514,18 @@ export const handleCleanupCommand = async (
     let added = 0;
     let already = 0;
     const notFound: string[] = [];
+    const suggestions: string[] = [];
     const seenUserIds = new Set<string>();
+    const campaignMembers = listCleanupMembers(campaign.id);
 
     for (const identifier of identifiers.slice(0, 200)) {
       const member = findCleanupMemberByUserOrJid(campaign.id, getManualKeepIdentifiers(identifier));
       if (!member) {
         notFound.push(identifier);
+        const nearby = getNearbyMemberSuggestions(identifier, campaignMembers);
+        if (nearby.length > 0 && suggestions.length < 8) {
+          suggestions.push(`${identifier} -> did you mean ${nearby.join(" or ")}?`);
+        }
         continue;
       }
 
@@ -502,6 +549,7 @@ export const handleCleanupCommand = async (
         `Already whitelisted: ${already}`,
         `Not found: ${notFound.length}`,
         notFound.length > 0 ? `Not found examples: ${notFound.slice(0, 10).join(", ")}` : null,
+        suggestions.length > 0 ? `Suggestions:\n${suggestions.join("\n")}` : null,
       ].filter(Boolean).join("\n"),
     });
     return true;

@@ -496,4 +496,45 @@ describe("cleanup campaign", () => {
       text: expect.stringContaining("Not found: 1"),
     }));
   });
+
+  it("suggests nearby cleanup members for keepmany numbers it cannot match", async () => {
+    await setupDb();
+    const { handleCleanupCommand } = await import("../commands.js");
+    const store = await import("../store.js");
+    store.createCleanupCampaign({
+      durationMs: 72 * 60 * 60_000,
+      actorUserId: "owner",
+      actorLabel: "owner",
+      channelLink: config.cleanupChannelLink,
+      publicMessage: "public",
+      dmMessage: "dm",
+      batchSize: 25,
+      batchIntervalMinutes: 30,
+      nowMs: Date.now(),
+      members: [
+        { userId: "user-1", displayName: "User One", primaryJid: "447700900001@s.whatsapp.net" },
+        { userId: "user-2", displayName: "User Two", primaryJid: "447700900002@s.whatsapp.net" },
+      ],
+    });
+    const sendMessage = vi.fn().mockResolvedValue({ key: { id: "admin-reply" } });
+
+    await handleCleanupCommand(
+      { sendMessage } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "447700900000@s.whatsapp.net",
+      "!cleanup keepmany\n+44 7700 900003",
+      config,
+      new Map([["group@g.us", "Fete Group"]]),
+      new Map() as never,
+      new Set(["bot@s.whatsapp.net"]),
+    );
+
+    expect(store.getCleanupStats(store.getOpenCleanupCampaign()?.id ?? "")?.whitelisted).toBe(0);
+    expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", expect.objectContaining({
+      text: expect.stringContaining("Suggestions:"),
+    }));
+    expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", expect.objectContaining({
+      text: expect.stringContaining("User Two"),
+    }));
+  });
 });

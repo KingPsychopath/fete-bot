@@ -1505,6 +1505,89 @@ const resolveDirectSenderFromOwnerAliases = async (
   return sender;
 };
 
+const resolveGroupSenderFromMetadata = async (
+  sender: ResolvedUser,
+  groupJid: string,
+  pushName: string | null,
+  sock: WASocket,
+): Promise<ResolvedUser> => {
+  const metadata = discoveredGroupMetadata.get(groupJid);
+  if (!metadata) {
+    return sender;
+  }
+
+  const senderAliases = new Set(
+    [sender.participantJid, ...sender.knownAliases]
+      .filter((alias): alias is string => Boolean(alias))
+      .map((alias) => normalizeJid(alias)),
+  );
+
+  const participant = metadata.participants.find((candidate) => {
+    const candidateAliases = [
+      candidate.id ? normalizeJid(candidate.id) : null,
+      candidate.lid ? normalizeJid(candidate.lid) : null,
+      candidate.phoneNumber ? parseToJid(candidate.phoneNumber) : null,
+    ].filter((alias): alias is string => Boolean(alias));
+
+    return candidateAliases.some((alias) => senderAliases.has(alias));
+  });
+
+  if (!participant) {
+    return sender;
+  }
+
+  await syncLidMappingIdentity(participant.lid, participant.phoneNumber, sock);
+  const resolved = await resolveUser({
+    participantJid: participant.id ?? sender.participantJid,
+    phoneJid: participant.phoneNumber ? parseToJid(participant.phoneNumber) : null,
+    lidJid: participant.lid ?? (sender.participantJid?.endsWith("@lid") ? sender.participantJid : null),
+    pushName,
+    selfJids: getSelfJids(sock),
+    reason: "metadata_sync",
+  });
+
+  return resolved ?? sender;
+};
+
+const sendIgnoredGroupCommandDiagnostic = async (
+  sock: WASocket,
+  replyJid: string | null,
+  groupJid: string,
+  sender: ResolvedUser,
+  text: string,
+  phoneJid: string | null,
+  lidJid: string | null,
+  pushName: string | null,
+): Promise<void> => {
+  if (!replyJid) {
+    return;
+  }
+
+  try {
+    await sock.sendMessage(replyJid, {
+      text: `⛔ You're not authorised to use Fete Bot commands in this group.
+
+Command: ${text.trim().split(/\s+/)[0] ?? "unknown"}
+Group: ${groupJid}
+User ID: ${sender.userId}
+Participant JID: ${sender.participantJid ?? "unknown"}
+Phone JID: ${phoneJid ?? "unknown"}
+LID JID: ${lidJid ?? "unknown"}
+Known aliases: ${sender.knownAliases.length > 0 ? sender.knownAliases.join(", ") : "none"}
+Push name: ${pushName ?? "unknown"}
+
+If this is you, make sure one of those aliases is in OWNER_JIDS or added with !addmod.`,
+    });
+  } catch (diagnosticError) {
+    warn("Failed to send ignored group command diagnostic", {
+      groupJid,
+      replyJid,
+      senderJid: sender.participantJid,
+      error: diagnosticError,
+    });
+  }
+};
+
 const listDiscoveredGroups = async (
   sock: WASocket,
 ): Promise<void> => {
@@ -1850,13 +1933,17 @@ Push name: ${getPushName(msg) ?? "unknown"}`,
       return;
     }
 
-    const liveSenderJid = sender.participantJid;
-    const canonicalSenderAlias = phoneJid ?? liveSenderJid;
-
     const groupJid = remoteJid;
     if (!groupJid.endsWith("@g.us")) {
       return;
     }
+
+    const groupSender = await resolveGroupSenderFromMetadata(sender, groupJid, getPushName(msg), sock);
+    const liveSenderJid = groupSender.participantJid ?? sender.participantJid;
+    if (!liveSenderJid) {
+      return;
+    }
+    const canonicalSenderAlias = groupSender.knownAliases.find((alias) => alias.endsWith("@s.whatsapp.net")) ?? phoneJid ?? liveSenderJid;
 
     if (config.logAllowedMessages) {
       log("message.seen", {
@@ -1875,7 +1962,7 @@ Push name: ${getPushName(msg) ?? "unknown"}`,
     }
 
     recordCallGuardRecentActivityForUser(
-      sender,
+      groupSender,
       [senderJid, liveSenderJid, lidJid, phoneJid, canonicalSenderAlias],
       groupJid,
     );
@@ -1884,12 +1971,12 @@ Push name: ${getPushName(msg) ?? "unknown"}`,
       recordTicketMarketplaceRuleReminderActivity(groupJid);
     }
 
-    await recordCleanupInteraction(sock, sender, groupJid, msg, text, false);
+    await recordCleanupInteraction(sock, groupSender, groupJid, msg, text, false);
 
     if (text) {
       const handledGroupCommand = await handleGroupCommand(
         sock,
-        sender,
+        groupSender,
         groupJid,
         text,
         getQuotedParticipant(msg.message),
@@ -1914,7 +2001,7 @@ Push name: ${getPushName(msg) ?? "unknown"}`,
       logAction({
         timestamp: new Date().toISOString(),
         group_jid: groupJid,
-        user_id: sender.userId,
+        user_id: groupSender.userId,
         participant_jid: liveSenderJid,
         push_name: getPushName(msg),
         message_text: text || null,
@@ -1932,8 +2019,8 @@ Push name: ${getPushName(msg) ?? "unknown"}`,
     }
 
     const senderIsProtected = isProtectedGroupMember(
-      sender.userId,
-      sender.knownAliases,
+      groupSender.userId,
+      groupSender.knownAliases,
       groupJid,
       config,
       discoveredGroupMetadata,
@@ -1957,6 +2044,16 @@ Push name: ${getPushName(msg) ?? "unknown"}`,
         command: text.trim().split(/\s+/)[0] ?? "",
         ...maybeLogTextField(text),
       });
+      await sendIgnoredGroupCommandDiagnostic(
+        sock,
+        groupSender.participantJid,
+        groupJid,
+        groupSender,
+        text,
+        phoneJid,
+        lidJid,
+        getPushName(msg),
+      );
     }
 
     try {
