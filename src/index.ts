@@ -102,6 +102,7 @@ import {
 } from "./identity.js";
 import { extractAllIdentifiers, isProtectedGroupMember, parseToJid } from "./utils.js";
 import { STARTED_AT, VERSION } from "./version.js";
+import { shouldRequestWhatsAppPairingCode } from "./whatsappPairing.js";
 
 const spamDetector = new SpamDetector({
   duplicateMinLength: config.spamDuplicateMinLength,
@@ -3002,15 +3003,22 @@ export const startBot = async (): Promise<void> => {
   refreshSelfJids(sock);
 
   const pairingPhoneDigits = getPairingPhoneDigits(config.whatsappPairingPhoneNumber);
-  if (!state.creds.registered && config.whatsappPairingPhoneNumber && !pairingPhoneDigits) {
+  const shouldRequestPairingCode = shouldRequestWhatsAppPairingCode(state.creds, pairingPhoneDigits);
+  if (!shouldRequestPairingCode && pairingPhoneDigits && !state.creds.registered) {
+    log("Skipping WhatsApp pairing code request because an existing linked account identity is present.", {
+      me: state.creds.me ?? null,
+    });
+  }
+  if (!shouldRequestPairingCode && config.whatsappPairingPhoneNumber && !pairingPhoneDigits) {
     warn("WHATSAPP_PAIRING_PHONE_NUMBER is set but could not be parsed. Use international format, for example +447700900000.");
   }
-  if (!state.creds.registered && pairingPhoneDigits && !pairingCodeRequested) {
+  if (shouldRequestPairingCode && pairingPhoneDigits && !pairingCodeRequested) {
+    const pairingDigits = pairingPhoneDigits;
     pairingCodeRequested = true;
     setTimeout(() => {
       void (async () => {
         try {
-          const code = await sock.requestPairingCode(pairingPhoneDigits);
+          const code = await sock.requestPairingCode(pairingDigits);
           log("WhatsApp pairing code requested. In WhatsApp, choose Link with phone number instead.", {
             pairingCode: formatPairingCode(code),
           });
