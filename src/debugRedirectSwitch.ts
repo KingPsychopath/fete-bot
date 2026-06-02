@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { DATA_DIR, ensureStorageDirs } from "./storagePaths.js";
 
 const DEBUG_REDIRECT_SWITCH_PATH = join(DATA_DIR, "debug-redirect-switch.json");
+const DEFAULT_DEBUG_REDIRECT_JID = "120363424893007022@g.us";
 
 type DebugRedirectSwitchState = {
   enabled: boolean;
@@ -33,7 +34,7 @@ const parseBoolean = (value: string | undefined, fallback: boolean): boolean => 
 
 const defaultState = (): DebugRedirectSwitchState => ({
   enabled: parseBoolean(process.env.DEBUG_REDIRECT_ENABLED, false),
-  targetJid: normaliseEnvValue(process.env.DEBUG_REDIRECT_JID) ?? null,
+  targetJid: normaliseEnvValue(process.env.DEBUG_REDIRECT_JID) ?? DEFAULT_DEBUG_REDIRECT_JID,
   updatedAt: new Date(0).toISOString(),
   updatedBy: null,
 });
