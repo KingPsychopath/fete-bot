@@ -18,9 +18,22 @@ const CLEANUP_SCHEDULER_INTERVAL_MS = 30_000;
 
 export const isCleanupDmHardPaused = (config: Config): boolean => !config.cleanupDmsEnabled;
 
+type CleanupDmSendAcceptedEvent = {
+  campaignId: string;
+  userId: string;
+  targetJid: string;
+  messageId: string;
+  remoteJid: string | null | undefined;
+};
+
+type CleanupSchedulerHooks = {
+  onDmSendAccepted?: (event: CleanupDmSendAcceptedEvent) => void;
+};
+
 let cleanupSchedulerTimer: ReturnType<typeof setInterval> | null = null;
 let cleanupBatchInFlight = false;
 let activeCleanupConfig: Config | null = null;
+let activeCleanupHooks: CleanupSchedulerHooks = {};
 
 const describeError = (value: unknown): string =>
   value instanceof Error ? value.message : String(value);
@@ -118,6 +131,13 @@ export const runCleanupSchedulerTick = async (sock: WASocket, config = activeCle
         markCleanupDmSent(campaign.id, member.userId, sentAt);
         recordCleanupMessage(campaign.id, member.primaryJid, messageId, "dm", member.userId, sentAt);
         sentCount += 1;
+        activeCleanupHooks.onDmSendAccepted?.({
+          campaignId: campaign.id,
+          userId: member.userId,
+          targetJid: member.primaryJid,
+          messageId,
+          remoteJid: sent.key.remoteJid,
+        });
         log("cleanup.dm_send_success", {
           campaignId: campaign.id,
           userId: member.userId,
@@ -163,8 +183,10 @@ export const runCleanupSchedulerTick = async (sock: WASocket, config = activeCle
 export const startCleanupScheduler = (
   sock: WASocket,
   config: Config,
+  hooks: CleanupSchedulerHooks = {},
 ): void => {
   activeCleanupConfig = config;
+  activeCleanupHooks = hooks;
   stopCleanupScheduler();
   cleanupSchedulerTimer = setInterval(() => {
     void runCleanupSchedulerTick(sock);
@@ -179,4 +201,5 @@ export const stopCleanupScheduler = (): void => {
 
   clearInterval(cleanupSchedulerTimer);
   cleanupSchedulerTimer = null;
+  activeCleanupHooks = {};
 };

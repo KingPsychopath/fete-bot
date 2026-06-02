@@ -168,8 +168,11 @@ let authBackupRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let startupOwnerAwakeSent = false;
 
 type TrackedOutgoingDirectMessage = {
-  purpose: "startup_owner_awake" | "direct_command_reply";
+  purpose: "startup_owner_awake" | "direct_command_reply" | "cleanup_dm";
   targetJid: string;
+  campaignId?: string;
+  userId?: string;
+  remoteJid?: string | null;
   ownerJid?: string;
   originalJid?: string;
   inboundRemoteJid?: string;
@@ -3529,7 +3532,18 @@ export const startBot = async (): Promise<void> => {
         startTicketMarketplaceRuleReminderScheduler(sock, config);
         startWebsiteTicketExchangeAnnouncementScheduler(sock, config);
         startAnnouncementScheduler(sock, config, () => discoveredGroups);
-        startCleanupScheduler(sock, config);
+        startCleanupScheduler(sock, config, {
+          onDmSendAccepted: (event) => {
+            trackOutgoingDirectMessage(event.messageId, {
+              purpose: "cleanup_dm",
+              targetJid: event.targetJid,
+              campaignId: event.campaignId,
+              userId: event.userId,
+              remoteJid: event.remoteJid,
+              fallback: false,
+            });
+          },
+        });
       })();
       return;
     }
