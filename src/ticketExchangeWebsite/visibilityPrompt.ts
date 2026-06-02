@@ -7,9 +7,10 @@ const WEBSITE_VISIBILITY_PROMPT_STATE_PATH = join(DATA_DIR, "ticket-exchange-vis
 
 type WebsiteVisibilityPromptState = {
   promptedByUserId: Record<string, string>;
+  promptedByGroupJid: Record<string, string>;
 };
 
-const defaultState = (): WebsiteVisibilityPromptState => ({ promptedByUserId: {} });
+const defaultState = (): WebsiteVisibilityPromptState => ({ promptedByUserId: {}, promptedByGroupJid: {} });
 
 const readState = (): WebsiteVisibilityPromptState => {
   if (!existsSync(WEBSITE_VISIBILITY_PROMPT_STATE_PATH)) {
@@ -25,7 +26,14 @@ const readState = (): WebsiteVisibilityPromptState => {
         ),
       )
       : {};
-    return { promptedByUserId };
+    const promptedByGroupJid = parsed.promptedByGroupJid && typeof parsed.promptedByGroupJid === "object"
+      ? Object.fromEntries(
+        Object.entries(parsed.promptedByGroupJid).filter((entry): entry is [string, string] =>
+          typeof entry[0] === "string" && typeof entry[1] === "string",
+        ),
+      )
+      : {};
+    return { promptedByUserId, promptedByGroupJid };
   } catch {
     return defaultState();
   }
@@ -47,6 +55,12 @@ For the best chance of finding someone, you can also list it on Fete Finder Tick
 ${buildTicketExchangeUrl(baseUrl)}
 
 Listings there can be shared by the bot too, and people unlock contact through the site.`;
+
+export const buildSpotlightWebsiteGroupPromptText = (mentionLabel: string, baseUrl: string): string =>
+  `Hey ${mentionLabel} - your ticket post has been queued for extra visibility.
+
+You can also list it on Fete Finder Ticket Exchange:
+${buildTicketExchangeUrl(baseUrl)}`;
 
 export const buildTicketExchangeRedirectText = (
   input: {
@@ -78,6 +92,14 @@ export const shouldSendSpotlightWebsitePrompt = (
   now = new Date(),
 ): boolean => {
   const promptedAt = readState().promptedByUserId[userId];
+  return isPastCooldown(promptedAt, cooldownDays, now);
+};
+
+const isPastCooldown = (
+  promptedAt: string | undefined,
+  cooldownDays: number,
+  now: Date,
+): boolean => {
   if (!promptedAt) {
     return true;
   }
@@ -90,8 +112,20 @@ export const shouldSendSpotlightWebsitePrompt = (
   return now.getTime() - promptedDate.getTime() >= Math.max(0, cooldownDays) * 24 * 60 * 60 * 1000;
 };
 
+export const shouldSendSpotlightWebsiteGroupPrompt = (
+  groupJid: string,
+  cooldownDays: number,
+  now = new Date(),
+): boolean => isPastCooldown(readState().promptedByGroupJid[groupJid], cooldownDays, now);
+
 export const recordSpotlightWebsitePromptSent = (userId: string, now = new Date()): void => {
   const state = readState();
   state.promptedByUserId[userId] = now.toISOString();
+  writeState(state);
+};
+
+export const recordSpotlightWebsiteGroupPromptSent = (groupJid: string, now = new Date()): void => {
+  const state = readState();
+  state.promptedByGroupJid[groupJid] = now.toISOString();
   writeState(state);
 };

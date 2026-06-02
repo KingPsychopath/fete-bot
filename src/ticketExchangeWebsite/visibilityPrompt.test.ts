@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  buildSpotlightWebsiteGroupPromptText,
   buildSpotlightWebsitePromptText,
   buildTicketExchangeRedirectText,
   buildTicketExchangeUrl,
@@ -43,6 +44,14 @@ describe("Ticket Exchange visibility prompts", () => {
     expect(text).toContain("https://fete.outofofficecollective.co.uk/exchange");
   });
 
+  it("builds the spotlight group prompt with a mention", () => {
+    const text = buildSpotlightWebsiteGroupPromptText("@447700900000", "https://fete.outofofficecollective.co.uk");
+
+    expect(text).toContain("Hey @447700900000");
+    expect(text).toContain("your ticket post has been queued for extra visibility");
+    expect(text).toContain("https://fete.outofofficecollective.co.uk/exchange");
+  });
+
   it("builds buying and selling redirect copy", () => {
     expect(
       buildTicketExchangeRedirectText({
@@ -66,7 +75,9 @@ describe("Ticket Exchange visibility prompts", () => {
   it("persists spotlight DM prompt cooldowns by user", async () => {
     vi.resetModules();
     const {
+      recordSpotlightWebsiteGroupPromptSent,
       recordSpotlightWebsitePromptSent,
+      shouldSendSpotlightWebsiteGroupPrompt,
       shouldSendSpotlightWebsitePrompt,
     } = await import("./visibilityPrompt.js");
 
@@ -77,5 +88,10 @@ describe("Ticket Exchange visibility prompts", () => {
     expect(shouldSendSpotlightWebsitePrompt("user-1", 7, new Date("2026-06-09T09:59:59.999Z"))).toBe(false);
     expect(shouldSendSpotlightWebsitePrompt("user-1", 7, new Date("2026-06-09T10:00:00.000Z"))).toBe(true);
     expect(shouldSendSpotlightWebsitePrompt("user-2", 7, sentAt)).toBe(true);
+
+    expect(shouldSendSpotlightWebsiteGroupPrompt("group-1@g.us", 7, sentAt)).toBe(true);
+    recordSpotlightWebsiteGroupPromptSent("group-1@g.us", sentAt);
+    expect(shouldSendSpotlightWebsiteGroupPrompt("group-1@g.us", 7, new Date("2026-06-09T09:59:59.999Z"))).toBe(false);
+    expect(shouldSendSpotlightWebsiteGroupPrompt("group-2@g.us", 7, sentAt)).toBe(true);
   });
 });

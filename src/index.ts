@@ -90,9 +90,11 @@ import {
   stopWebsiteTicketExchangeAnnouncementScheduler,
 } from "./ticketExchangeWebsite/scheduler.js";
 import {
-  buildSpotlightWebsitePromptText,
+  buildSpotlightWebsiteGroupPromptText,
   buildTicketExchangeRedirectText,
+  recordSpotlightWebsiteGroupPromptSent,
   recordSpotlightWebsitePromptSent,
+  shouldSendSpotlightWebsiteGroupPrompt,
   shouldSendSpotlightWebsitePrompt,
 } from "./ticketExchangeWebsite/visibilityPrompt.js";
 import {
@@ -117,7 +119,7 @@ import {
 } from "./identity.js";
 import { extractAllIdentifiers, isProtectedGroupMember, parseToJid } from "./utils.js";
 import { STARTED_AT, VERSION } from "./version.js";
-import { getDirectCommandReplyTargets, getKnownDirectMessageTargets, getStartupOwnerAwakeTargets } from "./directCommandReply.js";
+import { getDirectCommandReplyTargets, getStartupOwnerAwakeTargets } from "./directCommandReply.js";
 import {
   buildDebugParticipantUpdateText,
   buildDebugRedirectText,
@@ -170,7 +172,7 @@ let authBackupRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let startupOwnerAwakeSent = false;
 
 type TrackedOutgoingDirectMessage = {
-  purpose: "startup_owner_awake" | "direct_command_reply" | "cleanup_dm" | "spotlight_website_prompt";
+  purpose: "startup_owner_awake" | "direct_command_reply" | "cleanup_dm";
   targetJid: string;
   pendingId?: string;
   campaignId?: string;
@@ -2240,6 +2242,7 @@ const queueTicketSpotlightIfEligible = async (
   groupJid: string,
   senderUserId: string,
   senderJid: string,
+  phoneJid: string | null,
   text: string,
   ticketDecision: ReturnType<typeof getTicketMarketplaceDecision>,
 ): Promise<void> => {
@@ -2356,83 +2359,37 @@ const queueTicketSpotlightIfEligible = async (
         senderJid,
         senderUserId,
       });
-    } else if (shouldSendSpotlightWebsitePrompt(senderUserId, config.ticketExchangeWebsiteSpotlightPromptCooldownDays)) {
-      const promptTargets = getKnownDirectMessageTargets(
-        senderJid,
-        getUserAliases(senderUserId).map((alias) => alias.alias),
-      );
-      let promptSent = false;
-      let promptTargetJid: string | null = null;
-      let lastPromptError: unknown = null;
+    } else if (
+      shouldSendSpotlightWebsitePrompt(senderUserId, config.ticketExchangeWebsiteSpotlightPromptCooldownDays) &&
+      shouldSendSpotlightWebsiteGroupPrompt(groupJid, config.ticketExchangeWebsiteSpotlightPromptCooldownDays)
+    ) {
+      const mentionTargetJid = getMentionTargetJid(senderJid, phoneJid);
+      const mentionLabel = formatMentionLabel(senderJid, getPushName(msg), phoneJid);
       try {
-        for (const [targetIndex, targetJid] of promptTargets.entries()) {
-          try {
-            log("spotlight.website_prompt.target_attempt", {
-              pendingId: queued.id,
-              groupJid,
-              senderJid,
-              targetJid,
-              targetIndex: targetIndex + 1,
-              targetCount: promptTargets.length,
-              senderUserId,
-            });
-            const sent = await sock.sendMessage(targetJid, {
-              text: buildSpotlightWebsitePromptText(config.ticketExchangeWebsiteBaseUrl),
-            });
-            const messageId = sent?.key.id;
-            if (!messageId) {
-              throw new Error("WhatsApp send returned without a message id");
-            }
-            trackOutgoingDirectMessage(messageId, {
-              purpose: "spotlight_website_prompt",
-              pendingId: queued.id,
-              userId: senderUserId,
-              targetJid,
-              remoteJid: sent.key.remoteJid,
-              fallback: targetIndex > 0,
-            });
-            promptSent = true;
-            promptTargetJid = targetJid;
-            log("spotlight.website_prompt.target_success", {
-              pendingId: queued.id,
-              groupJid,
-              senderJid,
-              targetJid,
-              senderUserId,
-              messageId,
-              remoteJid: sent.key.remoteJid,
-            });
-            break;
-          } catch (targetError) {
-            lastPromptError = targetError;
-            warn("spotlight.website_prompt.target_failed", {
-              pendingId: queued.id,
-              groupJid,
-              senderJid,
-              targetJid,
-              senderUserId,
-              error: targetError,
-            });
-          }
-        }
-
-        if (!promptSent) {
-          throw lastPromptError ?? new Error("No usable spotlight website prompt target");
-        }
+        const sent = await sock.sendMessage(
+          groupJid,
+          {
+            text: buildSpotlightWebsiteGroupPromptText(mentionLabel, config.ticketExchangeWebsiteBaseUrl),
+            mentions: mentionTargetJid ? [mentionTargetJid] : [],
+          },
+          { quoted: msg },
+        );
         recordSpotlightWebsitePromptSent(senderUserId);
+        recordSpotlightWebsiteGroupPromptSent(groupJid);
         log("spotlight.website_prompt.sent", {
           pendingId: queued.id,
           groupJid,
           senderJid,
-          targetJid: promptTargetJid,
           senderUserId,
+          mentionTargetJid: mentionTargetJid || null,
+          messageId: sent?.key.id ?? null,
         });
       } catch (promptError) {
         warn("spotlight.website_prompt.send_failed", {
           pendingId: queued.id,
           groupJid,
           senderJid,
-          targets: promptTargets,
+          mentionTargetJid: mentionTargetJid || null,
           senderUserId,
           error: promptError,
         });
@@ -2443,6 +2400,8 @@ const queueTicketSpotlightIfEligible = async (
         groupJid,
         senderJid,
         senderUserId,
+        groupCooldown: !shouldSendSpotlightWebsiteGroupPrompt(groupJid, config.ticketExchangeWebsiteSpotlightPromptCooldownDays),
+        userCooldown: !shouldSendSpotlightWebsitePrompt(senderUserId, config.ticketExchangeWebsiteSpotlightPromptCooldownDays),
         cooldownDays: config.ticketExchangeWebsiteSpotlightPromptCooldownDays,
       });
     }
@@ -3165,6 +3124,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
         groupJid,
         sender.userId,
         canonicalSenderAlias,
+        phoneJid,
         text,
         ticketDecision,
       );
