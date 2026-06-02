@@ -1,5 +1,5 @@
 export const CLEANUP_DM_RATE_LIMIT = {
-  messagesPerWindow: 5,
+  messagesPerWindow: 8,
   windowMinutes: 30,
   perMessageDelayMs: 10_000,
 } as const;
