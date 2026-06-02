@@ -24,6 +24,7 @@ import {
   findCleanupMemberByUserOrJid,
   findCleanupMessage,
   getOpenCleanupCampaign,
+  markCleanupDmDeliveredByMessageId,
   recordCleanupSignal,
   recordCleanupSignalForOpenCampaign,
 } from "./cleanup/store.js";
@@ -226,6 +227,9 @@ const trackOutgoingDirectMessage = (
     trackedOutgoingDirectMessages.delete(oldestMessageId);
   }
 };
+
+const isDeliveredMessageStatus = (status: unknown): boolean =>
+  typeof status === "number" && status >= 2;
 
 const AUTH_BACKUP_RETRY_DELAYS_MS = [0, 5_000, 30_000, 120_000] as const;
 
@@ -3759,6 +3763,21 @@ Use !unban ${participant.knownAliases[0] ?? participant.userId} ${update.id} to 
         continue;
       }
 
+      const deliveryStatus = messageUpdate.update.status ?? null;
+      if (isDeliveredMessageStatus(deliveryStatus)) {
+        const deliveredCleanup = markCleanupDmDeliveredByMessageId(messageId, Date.now());
+        if (deliveredCleanup) {
+          log("cleanup.dm_delivery_confirmed", {
+            messageId,
+            status: deliveryStatus,
+            remoteJid: messageUpdate.key.remoteJid ?? null,
+            fromMe: messageUpdate.key.fromMe ?? null,
+            participant: messageUpdate.key.participant ?? null,
+            ...deliveredCleanup,
+          });
+        }
+      }
+
       const tracked = trackedOutgoingDirectMessages.get(messageId);
       if (!tracked) {
         continue;
@@ -3769,7 +3788,7 @@ Use !unban ${participant.knownAliases[0] ?? participant.userId} ${update.id} to 
         remoteJid: messageUpdate.key.remoteJid ?? null,
         fromMe: messageUpdate.key.fromMe ?? null,
         participant: messageUpdate.key.participant ?? null,
-        status: messageUpdate.update.status ?? null,
+        status: deliveryStatus,
         tracked,
       });
     }

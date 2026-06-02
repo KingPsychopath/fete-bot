@@ -10,7 +10,6 @@ import {
   listCleanupMembersForDmBatch,
   markCleanupBatchSent,
   markCleanupDmFailed,
-  markCleanupDmSent,
   recordCleanupMessage,
   setCleanupCampaignStatus,
 } from "./store.js";
@@ -163,7 +162,7 @@ export const runCleanupSchedulerTick = async (sock: WASocket, config = activeCle
       perMessageDelayMs: CLEANUP_DM_RATE_LIMIT.perMessageDelayMs,
     });
 
-    let sentCount = 0;
+    let acceptedCount = 0;
     let failedCount = 0;
 
     for (const [index, member] of members.entries()) {
@@ -217,10 +216,9 @@ export const runCleanupSchedulerTick = async (sock: WASocket, config = activeCle
         if (!sent || !targetJid || !messageId) {
           throw lastTargetError ?? new Error("No usable cleanup DM target");
         }
-        const sentAt = Date.now();
-        markCleanupDmSent(campaign.id, member.userId, sentAt);
-        recordCleanupMessage(campaign.id, targetJid, messageId, "dm", member.userId, sentAt);
-        sentCount += 1;
+        const acceptedAt = Date.now();
+        recordCleanupMessage(campaign.id, targetJid, messageId, "dm", member.userId, acceptedAt);
+        acceptedCount += 1;
         activeCleanupHooks.onDmSendAccepted?.({
           campaignId: campaign.id,
           userId: member.userId,
@@ -228,7 +226,7 @@ export const runCleanupSchedulerTick = async (sock: WASocket, config = activeCle
           messageId,
           remoteJid: sent.key.remoteJid,
         });
-        log("cleanup.dm_send_success", {
+        log("cleanup.dm_send_accepted", {
           campaignId: campaign.id,
           userId: member.userId,
           primaryJid: member.primaryJid,
@@ -261,7 +259,7 @@ export const runCleanupSchedulerTick = async (sock: WASocket, config = activeCle
     log("cleanup.dm_batch.finish", {
       campaignId: campaign.id,
       attempted: members.length,
-      sent: sentCount,
+      accepted: acceptedCount,
       failed: failedCount,
       nextBatchNotBefore: Date.now() + CLEANUP_DM_RATE_LIMIT.windowMinutes * 60_000,
     });

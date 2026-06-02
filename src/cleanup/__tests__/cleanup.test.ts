@@ -545,7 +545,9 @@ describe("cleanup campaign", () => {
         { userId: "user-1", displayName: "User One", primaryJid: "447700900001@s.whatsapp.net" },
       ],
     });
-    const sendMessage = vi.fn().mockResolvedValue({ key: { id: "dm-1" } });
+    const sendMessage = vi.fn()
+      .mockResolvedValueOnce({ key: { id: "dm-1" } })
+      .mockResolvedValueOnce({ key: { id: "dm-2" } });
 
     await scheduler.runCleanupSchedulerTick({ sendMessage } as never, { ...config, cleanupDmsEnabled: false });
 
@@ -615,9 +617,45 @@ describe("cleanup campaign", () => {
     expect(sendMessage).toHaveBeenCalledTimes(2);
     expect(sendMessage).toHaveBeenCalledWith("447700900001@s.whatsapp.net", { text: "dm" });
     expect(sendMessage).toHaveBeenCalledWith("447700900002@s.whatsapp.net", { text: "dm" });
-    expect(stats?.dmPending).toBe(0);
-    expect(stats?.dmSent).toBe(2);
+    expect(stats?.dmPending).toBe(2);
+    expect(stats?.dmAwaitingDelivery).toBe(2);
+    expect(stats?.dmSent).toBe(0);
+    expect(store.listCleanupMembersForDmBatch(campaign.id, 5)).toHaveLength(0);
     expect(stats?.campaign.nextBatchNotBefore).toBeGreaterThan(Date.now());
+  });
+
+  it("marks cleanup DMs as sent only after a delivery receipt", async () => {
+    await setupDb();
+    const scheduler = await import("../scheduler.js");
+    const store = await import("../store.js");
+    const campaign = store.createCleanupCampaign({
+      durationMs: 72 * 60 * 60_000,
+      actorUserId: "owner",
+      actorLabel: "owner",
+      channelLink: config.cleanupChannelLink,
+      publicMessage: "public",
+      dmMessage: "dm",
+      batchSize: 5,
+      batchIntervalMinutes: 30,
+      nowMs: Date.now(),
+      members: [
+        { userId: "user-1", displayName: "User One", primaryJid: "447700900001@s.whatsapp.net" },
+      ],
+    });
+    const sendMessage = vi.fn().mockResolvedValue({ key: { id: "dm-1" } });
+    scheduler.setCleanupDmWaitForTests(vi.fn().mockResolvedValue(undefined));
+
+    await scheduler.runCleanupSchedulerTick({ sendMessage } as never, config);
+
+    expect(store.getCleanupStats(campaign.id)?.dmSent).toBe(0);
+    expect(store.markCleanupDmDeliveredByMessageId("dm-1", new Date("2026-06-02T12:00:00.000Z").getTime()))
+      .toEqual({
+        campaignId: campaign.id,
+        destinationJid: "447700900001@s.whatsapp.net",
+        userId: "user-1",
+      });
+    expect(store.getCleanupStats(campaign.id)?.dmSent).toBe(1);
+    expect(store.getCleanupStats(campaign.id)?.dmAwaitingDelivery).toBe(0);
   });
 
   it("prefers a known lid alias when sending cleanup DMs", async () => {
@@ -686,7 +724,8 @@ describe("cleanup campaign", () => {
 
     expect(sendMessage).toHaveBeenNthCalledWith(1, "111222333@lid", { text: "dm" });
     expect(sendMessage).toHaveBeenNthCalledWith(2, "447700900001@s.whatsapp.net", { text: "dm" });
-    expect(store.getCleanupStats(campaign.id)?.dmSent).toBe(1);
+    expect(store.getCleanupStats(campaign.id)?.dmSent).toBe(0);
+    expect(store.getCleanupStats(campaign.id)?.dmAwaitingDelivery).toBe(1);
     expect(store.getCleanupStats(campaign.id)?.dmFailed).toBe(0);
   });
 

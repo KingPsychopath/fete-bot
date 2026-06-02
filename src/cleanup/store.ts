@@ -80,6 +80,7 @@ export type CleanupStats = {
   noSignal: number;
   purgeCandidates: number;
   dmPending: number;
+  dmAwaitingDelivery: number;
   dmSent: number;
   dmFailed: number;
   dmSkipped: number;
@@ -333,6 +334,36 @@ export const findCleanupMessage = (
   return row ? { campaignId: row.campaign_id, messageType: row.message_type, userId: row.user_id } : null;
 };
 
+export const findCleanupMessageByMessageId = (
+  messageId: string | null | undefined,
+): { campaignId: string; destinationJid: string; messageType: "public" | "dm"; userId: string | null } | null => {
+  if (!messageId) {
+    return null;
+  }
+
+  const row = getDb()
+    .prepare<
+      [string],
+      { campaign_id: string; destination_jid: string; message_type: "public" | "dm"; user_id: string | null }
+    >(`
+      SELECT campaign_id, destination_jid, message_type, user_id
+      FROM cleanup_messages
+      WHERE message_id = ?
+      ORDER BY sent_at DESC
+      LIMIT 1
+    `)
+    .get(messageId);
+
+  return row
+    ? {
+        campaignId: row.campaign_id,
+        destinationJid: row.destination_jid,
+        messageType: row.message_type,
+        userId: row.user_id,
+      }
+    : null;
+};
+
 export const recordCleanupSignal = (
   campaignId: string,
   userId: string,
@@ -443,6 +474,13 @@ export const listCleanupMembersForDmBatch = (
       WHERE campaign_id = ?
         AND whitelisted_at IS NULL
         AND dm_status = 'pending'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM cleanup_messages
+          WHERE cleanup_messages.campaign_id = cleanup_members.campaign_id
+            AND cleanup_messages.user_id = cleanup_members.user_id
+            AND cleanup_messages.message_type = 'dm'
+        )
       ORDER BY created_at ASC, user_id ASC
       LIMIT ?
     `)
@@ -461,6 +499,23 @@ export const markCleanupDmSent = (
       WHERE campaign_id = ? AND user_id = ?
     `)
     .run(sentAt, sentAt, campaignId, assertUserWritable(userId));
+};
+
+export const markCleanupDmDeliveredByMessageId = (
+  messageId: string | null | undefined,
+  deliveredAt = Date.now(),
+): { campaignId: string; destinationJid: string; userId: string } | null => {
+  const cleanupMessage = findCleanupMessageByMessageId(messageId);
+  if (!cleanupMessage || cleanupMessage.messageType !== "dm" || !cleanupMessage.userId) {
+    return null;
+  }
+
+  markCleanupDmSent(cleanupMessage.campaignId, cleanupMessage.userId, deliveredAt);
+  return {
+    campaignId: cleanupMessage.campaignId,
+    destinationJid: cleanupMessage.destinationJid,
+    userId: cleanupMessage.userId,
+  };
 };
 
 export const markCleanupDmFailed = (
@@ -579,8 +634,25 @@ export const getCleanupStats = (campaignId: string): CleanupStats | null => {
   const total = counts?.total ?? 0;
   const whitelisted = counts?.whitelisted ?? 0;
   const dmPending = counts?.dm_pending ?? 0;
+  const dmAwaitingDelivery = getDb()
+    .prepare<[string], { count: number }>(`
+      SELECT COUNT(*) AS count
+      FROM cleanup_members
+      WHERE campaign_id = ?
+        AND whitelisted_at IS NULL
+        AND dm_status = 'pending'
+        AND EXISTS (
+          SELECT 1
+          FROM cleanup_messages
+          WHERE cleanup_messages.campaign_id = cleanup_members.campaign_id
+            AND cleanup_messages.user_id = cleanup_members.user_id
+            AND cleanup_messages.message_type = 'dm'
+        )
+    `)
+    .get(campaignId)?.count ?? 0;
+  const dmEligibleForBatch = Math.max(0, dmPending - dmAwaitingDelivery);
   const nextBatchSize = campaign.status === "active"
-    ? Math.min(CLEANUP_DM_RATE_LIMIT.messagesPerWindow, dmPending)
+    ? Math.min(CLEANUP_DM_RATE_LIMIT.messagesPerWindow, dmEligibleForBatch)
     : 0;
 
   return {
@@ -590,6 +662,7 @@ export const getCleanupStats = (campaignId: string): CleanupStats | null => {
     noSignal: Math.max(0, total - whitelisted),
     purgeCandidates: Math.max(0, total - whitelisted),
     dmPending,
+    dmAwaitingDelivery,
     dmSent: counts?.dm_sent ?? 0,
     dmFailed: counts?.dm_failed ?? 0,
     dmSkipped: counts?.dm_skipped ?? 0,

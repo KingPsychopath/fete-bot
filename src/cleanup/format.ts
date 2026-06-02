@@ -26,15 +26,20 @@ const formatTime = (ms: number | null, nowMs = Date.now()): string => {
 };
 
 const getDmBatchEstimate = (stats: CleanupStats, hardPauseDms: boolean, nowMs = Date.now()): string => {
+  const eligiblePending = Math.max(0, stats.dmPending - stats.dmAwaitingDelivery);
   if (stats.dmPending <= 0) {
     return "complete";
+  }
+
+  if (eligiblePending <= 0) {
+    return "waiting on delivery receipts";
   }
 
   if (hardPauseDms) {
     return "hard-paused";
   }
 
-  const batchesRemaining = Math.ceil(stats.dmPending / CLEANUP_DM_RATE_LIMIT.messagesPerWindow);
+  const batchesRemaining = Math.ceil(eligiblePending / CLEANUP_DM_RATE_LIMIT.messagesPerWindow);
   const batchLabel = `${batchesRemaining} batch${batchesRemaining === 1 ? "" : "es"}`;
 
   if (stats.campaign.status === "paused") {
@@ -107,7 +112,7 @@ export const formatCleanupStatus = (
     `No signal: *${stats.noSignal}*`,
     "",
     `Signals: reactions ${stats.signals.public_reaction + stats.signals.dm_reaction}, replies ${stats.signals.public_reply + stats.signals.dm_reply}, activity ${stats.signals.group_activity}, protected ${stats.signals.protected}`,
-    `DMs: sent ${stats.dmSent}, pending ${stats.dmPending}, failed ${stats.dmFailed}, skipped ${stats.dmSkipped}`,
+    `DMs: sent ${stats.dmSent}, pending ${stats.dmPending}, awaiting delivery ${stats.dmAwaitingDelivery}, failed ${stats.dmFailed}, skipped ${stats.dmSkipped}`,
     `Next batch: ${hardPauseDms ? "hard-paused" : stats.nextBatchSize > 0 ? `${stats.nextBatchSize} DM${stats.nextBatchSize === 1 ? "" : "s"} ${formatTime(stats.nextBatchAt, nowMs)}` : "none"}`,
     `DM finish: ${getDmBatchEstimate(stats, hardPauseDms, nowMs)}`,
     "",
