@@ -523,6 +523,37 @@ describe("cleanup campaign", () => {
     expect(stats?.dmSent).toBe(0);
   });
 
+  it("pauses cleanup DMs while debug redirect is enabled", async () => {
+    await setupDb();
+    const scheduler = await import("../scheduler.js");
+    const store = await import("../store.js");
+    const { setDebugRedirectSwitchState } = await import("../../debugRedirectSwitch.js");
+    const campaign = store.createCleanupCampaign({
+      durationMs: 72 * 60 * 60_000,
+      actorUserId: "owner",
+      actorLabel: "owner",
+      channelLink: config.cleanupChannelLink,
+      publicMessage: "public",
+      dmMessage: "dm",
+      batchSize: 8,
+      batchIntervalMinutes: 30,
+      nowMs: Date.now(),
+      members: [
+        { userId: "user-1", displayName: "User One", primaryJid: "447700900001@s.whatsapp.net" },
+      ],
+    });
+    const sendMessage = vi.fn().mockResolvedValue({ key: { id: "dm-1" } });
+    setDebugRedirectSwitchState(true, "debug@g.us", "owner");
+
+    await scheduler.runCleanupSchedulerTick({ sendMessage } as never, config);
+
+    const stats = store.getCleanupStats(campaign.id);
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(stats?.campaign.status).toBe("active");
+    expect(stats?.dmPending).toBe(1);
+    expect(stats?.dmSent).toBe(0);
+  });
+
   it("sends cleanup DMs in small batches when enabled", async () => {
     await setupDb();
     const scheduler = await import("../scheduler.js");

@@ -1,6 +1,7 @@
 import type { WASocket } from "@whiskeysockets/baileys";
 
 import type { Config } from "../config.js";
+import { getDebugRedirectSwitchState } from "../debugRedirectSwitch.js";
 import { error, log, warn } from "../logger.js";
 import {
   getOpenCleanupCampaign,
@@ -69,6 +70,15 @@ export const runCleanupSchedulerTick = async (sock: WASocket, config = activeCle
       return;
     }
 
+    const debugRedirect = getDebugRedirectSwitchState();
+    if (debugRedirect.enabled) {
+      warn("cleanup.dm_debug_redirect_paused", {
+        campaignId: campaign.id,
+        debugJid: debugRedirect.targetJid,
+      });
+      return;
+    }
+
     const members = listCleanupMembersForDmBatch(campaign.id, CLEANUP_DM_RATE_LIMIT.messagesPerWindow);
     if (members.length === 0) {
       markCleanupBatchSent(
@@ -87,12 +97,36 @@ export const runCleanupSchedulerTick = async (sock: WASocket, config = activeCle
       perMessageDelayMs: CLEANUP_DM_RATE_LIMIT.perMessageDelayMs,
     });
 
+    let sentCount = 0;
+    let failedCount = 0;
+
     for (const [index, member] of members.entries()) {
       try {
+        log("cleanup.dm_send_attempt", {
+          campaignId: campaign.id,
+          userId: member.userId,
+          jid: member.primaryJid,
+          index: index + 1,
+          count: members.length,
+        });
         const sent = await sock.sendMessage(member.primaryJid, { text: campaign.dmMessage });
-        markCleanupDmSent(campaign.id, member.userId, Date.now());
-        recordCleanupMessage(campaign.id, member.primaryJid, sent?.key.id, "dm", member.userId);
+        const sentAt = Date.now();
+        const messageId = sent?.key.id;
+        if (!messageId) {
+          throw new Error("WhatsApp send returned without a message id");
+        }
+        markCleanupDmSent(campaign.id, member.userId, sentAt);
+        recordCleanupMessage(campaign.id, member.primaryJid, messageId, "dm", member.userId, sentAt);
+        sentCount += 1;
+        log("cleanup.dm_send_success", {
+          campaignId: campaign.id,
+          userId: member.userId,
+          jid: member.primaryJid,
+          messageId,
+          remoteJid: sent.key.remoteJid,
+        });
       } catch (sendError) {
+        failedCount += 1;
         markCleanupDmFailed(campaign.id, member.userId, describeError(sendError), Date.now());
         warn("cleanup.dm_send_failed", {
           campaignId: campaign.id,
@@ -112,6 +146,13 @@ export const runCleanupSchedulerTick = async (sock: WASocket, config = activeCle
       Date.now() + CLEANUP_DM_RATE_LIMIT.windowMinutes * 60_000,
       Date.now(),
     );
+    log("cleanup.dm_batch.finish", {
+      campaignId: campaign.id,
+      attempted: members.length,
+      sent: sentCount,
+      failed: failedCount,
+      nextBatchNotBefore: Date.now() + CLEANUP_DM_RATE_LIMIT.windowMinutes * 60_000,
+    });
   } catch (batchError) {
     error("cleanup.batch_failed", batchError);
   } finally {
