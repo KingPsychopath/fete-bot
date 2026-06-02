@@ -65,6 +65,16 @@ const parsePositiveInteger = (value: string | undefined, fallback: number): numb
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+const parseNonNegativeInteger = (value: string | undefined, fallback: number): number => {
+  const normalisedValue = normaliseEnvValue(value);
+  if (!normalisedValue) {
+    return fallback;
+  }
+
+  const parsed = Number(normalisedValue);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+};
+
 export type AnnouncementGroupMentionConfig = {
   label: string;
   jid: string;
@@ -134,8 +144,7 @@ const parseLocalTime = (value: string | undefined, fallback: string): string => 
 };
 
 const DEFAULT_TICKET_SPOTLIGHT_TARGET_JIDS = [
-  "120363417253211015@g.us",
-  "120363417797746871@g.us",
+  "120363408658925299@g.us",
   "120363401608823361@g.us",
 ].join(",");
 
@@ -162,6 +171,8 @@ const loadedConfig = {
   defaultPhoneRegion: normaliseEnvValue(process.env.DEFAULT_PHONE_REGION)?.toUpperCase() || null,
   botName: normaliseEnvValue(process.env.BOT_NAME) || "Fete Bot",
   whatsappPairingPhoneNumber: normaliseEnvValue(process.env.WHATSAPP_PAIRING_PHONE_NUMBER) || null,
+  startupOwnerAwakeEnabled: parseBoolean(process.env.STARTUP_OWNER_AWAKE_ENABLED, true),
+  startupOwnerAwakeCooldownMinutes: parseNonNegativeInteger(process.env.STARTUP_OWNER_AWAKE_COOLDOWN_MINUTES, 30),
   groupCallGuardEnabled: parseBoolean(process.env.GROUP_CALL_GUARD_ENABLED, true),
   groupCallGuardGroupJids: parseList(process.env.GROUP_CALL_GUARD_GROUP_JIDS),
   groupCallGuardWarningText:

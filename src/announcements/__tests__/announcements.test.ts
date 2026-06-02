@@ -22,6 +22,8 @@ const config = {
   defaultPhoneRegion: null,
   botName: "Fete Bot",
   whatsappPairingPhoneNumber: null,
+  startupOwnerAwakeEnabled: true,
+  startupOwnerAwakeCooldownMinutes: 30,
   groupCallGuardEnabled: true,
   groupCallGuardGroupJids: [],
   groupCallGuardWarningText: "Hey {mention} - calls aren't allowed in this group. Don't do that again. 🙏🏾",

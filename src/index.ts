@@ -11,7 +11,9 @@ import makeWASocket, {
   type WAMessageKey,
 } from "@whiskeysockets/baileys";
 import { randomUUID } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { join } from "node:path";
 import pino from "pino";
 import QRCode from "qrcode";
 
@@ -148,6 +150,7 @@ const MESSAGE_HANDLER_MAX_QUEUE = 500;
 const CLEANUP_DM_BACKFILL_SHORTCUT = "KEEP";
 const CLEANUP_DM_BACKFILL_MARKER =
   "Hey - we've added you to the OOOC Fete group chat stay list, so you're all good. No need to reply.";
+const STARTUP_OWNER_AWAKE_STATE_PATH = join(DATA_DIR, "startup-owner-awake.json");
 let strikePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let mutePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let callViolationPurgeTimer: ReturnType<typeof setInterval> | null = null;
@@ -174,6 +177,8 @@ type TrackedOutgoingDirectMessage = {
 };
 
 const trackedOutgoingDirectMessages = new Map<string, TrackedOutgoingDirectMessage>();
+
+type StartupOwnerAwakeState = Record<string, { sentAt: string; targetJid: string; messageId: string | null }>;
 
 type QueuedMessage = {
   socketInstanceId: number;
@@ -289,6 +294,64 @@ const runDmDebugSanitySend = async (sock: WASocket): Promise<void> => {
   }
 };
 
+const readStartupOwnerAwakeState = (): StartupOwnerAwakeState => {
+  try {
+    const parsed = JSON.parse(readFileSync(STARTUP_OWNER_AWAKE_STATE_PATH, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
+    const state: StartupOwnerAwakeState = {};
+    for (const [ownerJid, value] of Object.entries(parsed)) {
+      if (!value || typeof value !== "object") {
+        continue;
+      }
+      const entry = value as Partial<StartupOwnerAwakeState[string]>;
+      if (typeof entry.sentAt !== "string" || typeof entry.targetJid !== "string") {
+        continue;
+      }
+      state[ownerJid] = {
+        sentAt: entry.sentAt,
+        targetJid: entry.targetJid,
+        messageId: typeof entry.messageId === "string" ? entry.messageId : null,
+      };
+    }
+    return state;
+  } catch {
+    return {};
+  }
+};
+
+const writeStartupOwnerAwakeState = (state: StartupOwnerAwakeState): void => {
+  try {
+    writeFileSync(STARTUP_OWNER_AWAKE_STATE_PATH, `${JSON.stringify(state, null, 2)}\n`);
+  } catch (stateError) {
+    warn("startup.owner_awake.state_write_failed", { path: STARTUP_OWNER_AWAKE_STATE_PATH, error: stateError });
+  }
+};
+
+const shouldSkipStartupOwnerAwake = (
+  ownerJid: string,
+  state: StartupOwnerAwakeState,
+  now: Date,
+): boolean => {
+  if (config.startupOwnerAwakeCooldownMinutes <= 0) {
+    return false;
+  }
+
+  const sentAt = state[ownerJid]?.sentAt;
+  if (!sentAt) {
+    return false;
+  }
+
+  const sentAtMs = new Date(sentAt).getTime();
+  if (!Number.isFinite(sentAtMs)) {
+    return false;
+  }
+
+  return now.getTime() - sentAtMs < config.startupOwnerAwakeCooldownMinutes * 60_000;
+};
+
 const getOwnerAwakeAliases = (ownerJid: string): string[] => {
   const userIds = findExistingUserIdsByAliases([ownerJid]);
   return Array.from(
@@ -309,7 +372,24 @@ const sendStartupOwnerAwakeMessages = async (sock: WASocket): Promise<void> => {
     return;
   }
 
+  if (!config.startupOwnerAwakeEnabled) {
+    log("startup.owner_awake.skipped", { reason: "disabled" });
+    return;
+  }
+
+  const now = new Date();
+  const awakeState = readStartupOwnerAwakeState();
   for (const ownerJid of config.ownerJids) {
+    if (shouldSkipStartupOwnerAwake(ownerJid, awakeState, now)) {
+      log("startup.owner_awake.skipped", {
+        ownerJid,
+        reason: "cooldown",
+        cooldownMinutes: config.startupOwnerAwakeCooldownMinutes,
+        previous: awakeState[ownerJid],
+      });
+      continue;
+    }
+
     const knownAliases = getOwnerAwakeAliases(ownerJid);
     const targetJids = getStartupOwnerAwakeTargets(ownerJid, knownAliases);
     if (targetJids.length === 0) {
@@ -333,6 +413,13 @@ const sendStartupOwnerAwakeMessages = async (sock: WASocket): Promise<void> => {
           fallback: targetIndex > 0,
           messageId: result?.key?.id ?? null,
         });
+        awakeState[ownerJid] = {
+          sentAt: now.toISOString(),
+          targetJid,
+          messageId: result?.key?.id ?? null,
+        };
+        writeStartupOwnerAwakeState(awakeState);
+        break;
       } catch (awakeError) {
         warn("startup.owner_awake.send_failed", {
           ownerJid,
@@ -683,7 +770,6 @@ const buildDirectCommandReplySocket = (
   ) => {
     const targets = getDirectCommandReplyTargets(jid, inboundRemoteJid);
 
-    let lastResult: Awaited<ReturnType<WASocket["sendMessage"]>> | undefined;
     let lastError: unknown;
     for (const [targetIndex, target] of targets.entries()) {
       try {
@@ -708,7 +794,6 @@ const buildDirectCommandReplySocket = (
           }
         }
         const result = await sock.sendMessage(target, content, directOptions);
-        lastResult = result;
         trackOutgoingDirectMessage(result?.key?.id, {
           purpose: "direct_command_reply",
           targetJid: target,
@@ -724,6 +809,7 @@ const buildDirectCommandReplySocket = (
           quotedInbound: directOptions?.quoted === inboundMessage,
           messageId: result?.key?.id ?? null,
         });
+        return result;
       } catch (sendError) {
         lastError = sendError;
         warn("direct.command.reply.send_failed", {
@@ -735,10 +821,6 @@ const buildDirectCommandReplySocket = (
           error: sendError,
         });
       }
-    }
-
-    if (lastResult) {
-      return lastResult;
     }
 
     throw lastError instanceof Error ? lastError : new Error("direct command reply send failed");

@@ -36,6 +36,8 @@ const config = {
   defaultPhoneRegion: null,
   botName: "Fete Bot",
   whatsappPairingPhoneNumber: null,
+  startupOwnerAwakeEnabled: true,
+  startupOwnerAwakeCooldownMinutes: 30,
   groupCallGuardEnabled: true,
   groupCallGuardGroupJids: [],
   groupCallGuardWarningText: "No calls",
