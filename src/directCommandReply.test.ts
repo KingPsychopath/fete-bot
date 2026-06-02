@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   getDirectCommandReplyTargets,
+  getKnownDirectMessageTargets,
   getStartupOwnerAwakeTarget,
   getStartupOwnerAwakeTargets,
 } from "./directCommandReply.js";
@@ -23,6 +24,21 @@ describe("direct command reply targets", () => {
 
   it("falls back to the inbound LID when no phone JID is known", () => {
     expect(getDirectCommandReplyTargets("111222333@lid", "111222333@lid")).toEqual(["111222333@lid"]);
+  });
+});
+
+describe("known direct message targets", () => {
+  it("prefers known LID aliases before phone aliases and the primary JID", () => {
+    expect(getKnownDirectMessageTargets("447700900000@s.whatsapp.net", [
+      "447700900000@s.whatsapp.net",
+      "111222333@lid",
+    ])).toEqual(["111222333@lid", "447700900000@s.whatsapp.net"]);
+  });
+
+  it("falls back to the primary direct JID when no aliases are known", () => {
+    expect(getKnownDirectMessageTargets("447700900000@s.whatsapp.net", [])).toEqual([
+      "447700900000@s.whatsapp.net",
+    ]);
   });
 });
 

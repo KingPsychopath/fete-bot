@@ -38,6 +38,7 @@ import {
   clearReviewQueueEntry,
   getDeletedMessageLogCount,
   getGlobalBans,
+  getUserAliases,
   initDb,
   isBanned,
   isMuted,
@@ -115,7 +116,7 @@ import {
 } from "./identity.js";
 import { extractAllIdentifiers, isProtectedGroupMember, parseToJid } from "./utils.js";
 import { STARTED_AT, VERSION } from "./version.js";
-import { getDirectCommandReplyTargets, getStartupOwnerAwakeTargets } from "./directCommandReply.js";
+import { getDirectCommandReplyTargets, getKnownDirectMessageTargets, getStartupOwnerAwakeTargets } from "./directCommandReply.js";
 import {
   buildDebugParticipantUpdateText,
   buildDebugRedirectText,
@@ -168,8 +169,9 @@ let authBackupRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let startupOwnerAwakeSent = false;
 
 type TrackedOutgoingDirectMessage = {
-  purpose: "startup_owner_awake" | "direct_command_reply" | "cleanup_dm";
+  purpose: "startup_owner_awake" | "direct_command_reply" | "cleanup_dm" | "spotlight_website_prompt";
   targetJid: string;
+  pendingId?: string;
   campaignId?: string;
   userId?: string;
   remoteJid?: string | null;
@@ -2339,15 +2341,74 @@ const queueTicketSpotlightIfEligible = async (
         senderUserId,
       });
     } else if (shouldSendSpotlightWebsitePrompt(senderUserId, config.ticketExchangeWebsiteSpotlightPromptCooldownDays)) {
+      const promptTargets = getKnownDirectMessageTargets(
+        senderJid,
+        getUserAliases(senderUserId).map((alias) => alias.alias),
+      );
+      let promptSent = false;
+      let promptTargetJid: string | null = null;
+      let lastPromptError: unknown = null;
       try {
-        await sock.sendMessage(senderJid, {
-          text: buildSpotlightWebsitePromptText(config.ticketExchangeWebsiteBaseUrl),
-        });
+        for (const [targetIndex, targetJid] of promptTargets.entries()) {
+          try {
+            log("spotlight.website_prompt.target_attempt", {
+              pendingId: queued.id,
+              groupJid,
+              senderJid,
+              targetJid,
+              targetIndex: targetIndex + 1,
+              targetCount: promptTargets.length,
+              senderUserId,
+            });
+            const sent = await sock.sendMessage(targetJid, {
+              text: buildSpotlightWebsitePromptText(config.ticketExchangeWebsiteBaseUrl),
+            });
+            const messageId = sent?.key.id;
+            if (!messageId) {
+              throw new Error("WhatsApp send returned without a message id");
+            }
+            trackOutgoingDirectMessage(messageId, {
+              purpose: "spotlight_website_prompt",
+              pendingId: queued.id,
+              userId: senderUserId,
+              targetJid,
+              remoteJid: sent.key.remoteJid,
+              fallback: targetIndex > 0,
+            });
+            promptSent = true;
+            promptTargetJid = targetJid;
+            log("spotlight.website_prompt.target_success", {
+              pendingId: queued.id,
+              groupJid,
+              senderJid,
+              targetJid,
+              senderUserId,
+              messageId,
+              remoteJid: sent.key.remoteJid,
+            });
+            break;
+          } catch (targetError) {
+            lastPromptError = targetError;
+            warn("spotlight.website_prompt.target_failed", {
+              pendingId: queued.id,
+              groupJid,
+              senderJid,
+              targetJid,
+              senderUserId,
+              error: targetError,
+            });
+          }
+        }
+
+        if (!promptSent) {
+          throw lastPromptError ?? new Error("No usable spotlight website prompt target");
+        }
         recordSpotlightWebsitePromptSent(senderUserId);
         log("spotlight.website_prompt.sent", {
           pendingId: queued.id,
           groupJid,
           senderJid,
+          targetJid: promptTargetJid,
           senderUserId,
         });
       } catch (promptError) {
@@ -2355,6 +2416,7 @@ const queueTicketSpotlightIfEligible = async (
           pendingId: queued.id,
           groupJid,
           senderJid,
+          targets: promptTargets,
           senderUserId,
           error: promptError,
         });
