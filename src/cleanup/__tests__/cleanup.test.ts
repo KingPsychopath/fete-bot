@@ -652,10 +652,46 @@ describe("cleanup campaign", () => {
       .toEqual({
         campaignId: campaign.id,
         destinationJid: "447700900001@s.whatsapp.net",
+        markedSent: true,
         userId: "user-1",
       });
     expect(store.getCleanupStats(campaign.id)?.dmSent).toBe(1);
     expect(store.getCleanupStats(campaign.id)?.dmAwaitingDelivery).toBe(0);
+  });
+
+  it("does not mark a cleanup DM sent when the user already whitelisted", async () => {
+    await setupDb();
+    const scheduler = await import("../scheduler.js");
+    const store = await import("../store.js");
+    const campaign = store.createCleanupCampaign({
+      durationMs: 72 * 60 * 60_000,
+      actorUserId: "owner",
+      actorLabel: "owner",
+      channelLink: config.cleanupChannelLink,
+      publicMessage: "public",
+      dmMessage: "dm",
+      batchSize: 5,
+      batchIntervalMinutes: 30,
+      nowMs: Date.now(),
+      members: [
+        { userId: "user-1", displayName: "User One", primaryJid: "447700900001@s.whatsapp.net" },
+      ],
+    });
+    const sendMessage = vi.fn().mockResolvedValue({ key: { id: "dm-1" } });
+    scheduler.setCleanupDmWaitForTests(vi.fn().mockResolvedValue(undefined));
+
+    await scheduler.runCleanupSchedulerTick({ sendMessage } as never, config);
+    store.recordCleanupSignal(campaign.id, "user-1", "group_activity", "group@g.us", "group-message-1");
+
+    expect(store.markCleanupDmDeliveredByMessageId("dm-1", new Date("2026-06-02T12:00:00.000Z").getTime()))
+      .toEqual({
+        campaignId: campaign.id,
+        destinationJid: "447700900001@s.whatsapp.net",
+        markedSent: false,
+        userId: "user-1",
+      });
+    expect(store.getCleanupStats(campaign.id)?.dmSent).toBe(0);
+    expect(store.getCleanupStats(campaign.id)?.dmSkipped).toBe(1);
   });
 
   it("prefers a known lid alias when sending cleanup DMs", async () => {

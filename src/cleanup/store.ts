@@ -504,10 +504,31 @@ export const markCleanupDmSent = (
 export const markCleanupDmDeliveredByMessageId = (
   messageId: string | null | undefined,
   deliveredAt = Date.now(),
-): { campaignId: string; destinationJid: string; userId: string } | null => {
+): { campaignId: string; destinationJid: string; userId: string; markedSent: boolean } | null => {
   const cleanupMessage = findCleanupMessageByMessageId(messageId);
   if (!cleanupMessage || cleanupMessage.messageType !== "dm" || !cleanupMessage.userId) {
     return null;
+  }
+
+  const member = getDb()
+    .prepare<[string, string], { whitelisted_at: number | null }>(`
+      SELECT whitelisted_at
+      FROM cleanup_members
+      WHERE campaign_id = ? AND user_id = ?
+      LIMIT 1
+    `)
+    .get(cleanupMessage.campaignId, cleanupMessage.userId);
+  if (!member) {
+    return null;
+  }
+
+  if (member.whitelisted_at !== null) {
+    return {
+      campaignId: cleanupMessage.campaignId,
+      destinationJid: cleanupMessage.destinationJid,
+      userId: cleanupMessage.userId,
+      markedSent: false,
+    };
   }
 
   markCleanupDmSent(cleanupMessage.campaignId, cleanupMessage.userId, deliveredAt);
@@ -515,6 +536,7 @@ export const markCleanupDmDeliveredByMessageId = (
     campaignId: cleanupMessage.campaignId,
     destinationJid: cleanupMessage.destinationJid,
     userId: cleanupMessage.userId,
+    markedSent: true,
   };
 };
 
