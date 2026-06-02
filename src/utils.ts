@@ -20,7 +20,11 @@ export function extractAllIdentifiers(msg: WAMessage): {
     (msg.key as { participantPn?: string | null }).participantPn ??
     (msg as { key?: { participantPn?: string | null } }).key?.participantPn ??
     null;
-  const phoneNumberJid = participantPn ? parseToJid(participantPn) : null;
+  const senderPn =
+    (msg.key as { senderPn?: string | null }).senderPn ??
+    (msg as { key?: { senderPn?: string | null } }).key?.senderPn ??
+    null;
+  const phoneNumberJid = participantPn ? parseToJid(participantPn) : senderPn ? parseToJid(senderPn) : null;
   const phoneNumber =
     phoneNumberJid?.replace(/@s\.whatsapp\.net$/i, "") ??
     (senderJid.endsWith("@s.whatsapp.net")

@@ -73,6 +73,7 @@ Inside that volume:
 
 - `/app/data/bot.db` stores the SQLite database
 - `/app/data/auth` stores the Baileys multi-file WhatsApp session
+- `/app/data/auth-backups/<name>` stores timestamped WhatsApp auth snapshots created after a known-good link
 
 Notes:
 
@@ -80,6 +81,30 @@ Notes:
 - Railway exposes `RAILWAY_VOLUME_NAME` and `RAILWAY_VOLUME_MOUNT_PATH` automatically at runtime
 - The app will prefer `RAILWAY_VOLUME_MOUNT_PATH` automatically when it is present
 - Volumes are mounted at runtime, not during build or pre-deploy steps
+
+### WhatsApp Auth Backups
+
+The bot automatically snapshots WhatsApp auth after every successful connection. Backups are stored as timestamped folders:
+
+```text
+/app/data/auth-backups/<timestamp>-<whatsapp-id>/
+  auth/
+  manifest.json
+```
+
+The app keeps the newest 10 backups. To manually snapshot the current working auth:
+
+```bash
+scripts/backup-whatsapp-auth.sh
+```
+
+Restore a known-good snapshot and redeploy:
+
+```bash
+scripts/restore-whatsapp-auth.sh <backup-name>
+```
+
+The backup contains WhatsApp linked-device credentials. Treat it like a secret.
 
 ## Railway Deploy Contract
 

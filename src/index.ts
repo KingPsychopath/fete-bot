@@ -99,6 +99,7 @@ import {
   describeUser,
   findExistingUserIdsByAliases,
   findParticipantJidForUser,
+  getUserSummary,
   mergeUserAliases,
   normalizeJid,
   resolveUser,
@@ -106,6 +107,8 @@ import {
 } from "./identity.js";
 import { extractAllIdentifiers, isProtectedGroupMember, parseToJid } from "./utils.js";
 import { STARTED_AT, VERSION } from "./version.js";
+import { getDirectCommandReplyTargets, getStartupOwnerAwakeTargets } from "./directCommandReply.js";
+import { createWhatsAppAuthBackup } from "./whatsappAuthBackup.js";
 import { shouldRequestWhatsAppPairingCode } from "./whatsappPairing.js";
 
 const spamDetector = new SpamDetector({
@@ -146,6 +149,20 @@ let reconnectAttempts = 0;
 let socketInstanceCounter = 0;
 let botSelfJids = new Set<string>();
 let pairingCodeRequested = false;
+let authBackupRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let startupOwnerAwakeSent = false;
+
+type TrackedOutgoingDirectMessage = {
+  purpose: "startup_owner_awake" | "direct_command_reply";
+  targetJid: string;
+  ownerJid?: string;
+  originalJid?: string;
+  inboundRemoteJid?: string;
+  fallback: boolean;
+  createdAt: string;
+};
+
+const trackedOutgoingDirectMessages = new Map<string, TrackedOutgoingDirectMessage>();
 
 type QueuedMessage = {
   socketInstanceId: number;
@@ -167,6 +184,156 @@ const getPairingPhoneDigits = (phoneNumber: string | null): string | null => {
 };
 
 const formatPairingCode = (code: string): string => code.replace(/(.{4})/gu, "$1-").replace(/-$/u, "");
+
+const trackOutgoingDirectMessage = (
+  messageId: string | null | undefined,
+  context: Omit<TrackedOutgoingDirectMessage, "createdAt">,
+): void => {
+  if (!messageId) {
+    return;
+  }
+
+  trackedOutgoingDirectMessages.set(messageId, { ...context, createdAt: new Date().toISOString() });
+  if (trackedOutgoingDirectMessages.size <= 200) {
+    return;
+  }
+
+  const oldestMessageId = trackedOutgoingDirectMessages.keys().next().value as string | undefined;
+  if (oldestMessageId) {
+    trackedOutgoingDirectMessages.delete(oldestMessageId);
+  }
+};
+
+const AUTH_BACKUP_RETRY_DELAYS_MS = [0, 5_000, 30_000, 120_000] as const;
+
+const clearAuthBackupRetryTimer = (): void => {
+  if (!authBackupRetryTimer) {
+    return;
+  }
+
+  clearTimeout(authBackupRetryTimer);
+  authBackupRetryTimer = null;
+};
+
+const scheduleWhatsAppAuthBackup = (attempt = 0): void => {
+  const delay = AUTH_BACKUP_RETRY_DELAYS_MS[attempt];
+  if (delay === undefined) {
+    return;
+  }
+
+  if (attempt === 0) {
+    clearAuthBackupRetryTimer();
+  }
+
+  authBackupRetryTimer = setTimeout(() => {
+    authBackupRetryTimer = null;
+
+    let shouldRetry = false;
+    try {
+      const authBackup = createWhatsAppAuthBackup({ dataDir: DATA_DIR, authDir: AUTH_DIR });
+      if (authBackup.created) {
+        log("WhatsApp auth backup created", {
+          backupName: authBackup.backupName,
+          backupPath: authBackup.backupPath,
+          linkedIdentity: authBackup.linkedIdentity,
+          removedBackupNames: authBackup.removedBackupNames,
+          attempt,
+        });
+      } else {
+        shouldRetry =
+          authBackup.reason === "missing-creds" ||
+          authBackup.reason === "creds-not-ready" ||
+          authBackup.reason === "missing-linked-identity";
+        warn("WhatsApp auth backup skipped", { ...authBackup, attempt, willRetry: shouldRetry });
+      }
+    } catch (authBackupError) {
+      shouldRetry = true;
+      error("WhatsApp auth backup failed", authBackupError);
+    }
+
+    if (shouldRetry && activeSocket) {
+      scheduleWhatsAppAuthBackup(attempt + 1);
+    }
+  }, delay);
+  authBackupRetryTimer.unref();
+};
+
+const runDmDebugSanitySend = async (sock: WASocket): Promise<void> => {
+  const targetJid = process.env.DM_DEBUG_SANITY_SEND_JID?.trim() || null;
+  if (!targetJid) {
+    return;
+  }
+
+  try {
+    const digits = targetJid.replace(/@s\.whatsapp\.net$/i, "").replace(/\D/gu, "");
+    const check = await sock.onWhatsApp(digits);
+    log("dm.debug.sanity.onwhatsapp", { targetJid, digits, check });
+    const result = await sock.sendMessage(targetJid, { text: `sanity-${Date.now()}` });
+    log("dm.debug.sanity.send_success", {
+      targetJid,
+      messageId: result?.key?.id ?? null,
+    });
+  } catch (sanityError) {
+    warn("dm.debug.sanity.send_failed", { targetJid, error: sanityError });
+  }
+};
+
+const getOwnerAwakeAliases = (ownerJid: string): string[] => {
+  const userIds = findExistingUserIdsByAliases([ownerJid]);
+  return Array.from(
+    new Set(
+      userIds.flatMap((userId) => getUserSummary(userId)?.aliases.map((alias) => alias.alias) ?? []),
+    ),
+  ).sort();
+};
+
+const sendStartupOwnerAwakeMessages = async (sock: WASocket): Promise<void> => {
+  if (startupOwnerAwakeSent) {
+    return;
+  }
+  startupOwnerAwakeSent = true;
+
+  if (config.ownerJids.length === 0) {
+    warn("startup.owner_awake.skipped", { reason: "no_owner_jids" });
+    return;
+  }
+
+  for (const ownerJid of config.ownerJids) {
+    const knownAliases = getOwnerAwakeAliases(ownerJid);
+    const targetJids = getStartupOwnerAwakeTargets(ownerJid, knownAliases);
+    if (targetJids.length === 0) {
+      warn("startup.owner_awake.skipped", { ownerJid, knownAliases, reason: "no_user_chat_jid" });
+      continue;
+    }
+
+    for (const [targetIndex, targetJid] of targetJids.entries()) {
+      try {
+        const result = await sock.sendMessage(targetJid, { text: "Hi, I'm awake." });
+        trackOutgoingDirectMessage(result?.key?.id, {
+          purpose: "startup_owner_awake",
+          ownerJid,
+          targetJid,
+          fallback: targetIndex > 0,
+        });
+        log("startup.owner_awake.send_success", {
+          ownerJid,
+          targetJid,
+          knownAliases,
+          fallback: targetIndex > 0,
+          messageId: result?.key?.id ?? null,
+        });
+      } catch (awakeError) {
+        warn("startup.owner_awake.send_failed", {
+          ownerJid,
+          targetJid,
+          knownAliases,
+          fallback: targetIndex > 0,
+          error: awakeError,
+        });
+      }
+    }
+  }
+};
 
 const healthPort = Number(process.env.PORT ?? "3000");
 const healthServer = createServer((req, res) => {
@@ -452,34 +619,55 @@ const isDirectCommandCandidate = (remoteJid: string, text: string): boolean =>
 const buildDirectCommandReplySocket = (
   sock: WASocket,
   inboundRemoteJid: string,
+  inboundMessage: WAMessage,
 ): WASocket => Object.assign(Object.create(Object.getPrototypeOf(sock)), sock, {
   sendMessage: async (
     jid: string,
     content: AnyMessageContent,
     options?: MiscMessageGenerationOptions,
   ) => {
-    const targets = [
-      jid,
-      inboundRemoteJid !== jid && isUserChatJid(inboundRemoteJid) ? inboundRemoteJid : null,
-    ].filter((target): target is string => Boolean(target));
+    const targets = getDirectCommandReplyTargets(jid, inboundRemoteJid);
 
     let lastResult: Awaited<ReturnType<WASocket["sendMessage"]>> | undefined;
     let lastError: unknown;
-    for (const target of targets) {
+    for (const [targetIndex, target] of targets.entries()) {
       try {
+        const directOptions =
+          target === inboundRemoteJid && target.endsWith("@s.whatsapp.net") && !options?.quoted
+            ? { ...options, quoted: inboundMessage }
+            : options;
         log("direct.command.reply.send_attempt", {
           targetJid: target,
           originalJid: jid,
           inboundRemoteJid,
-          mirrored: target !== jid,
+          fallback: targetIndex > 0,
+          quotedInbound: directOptions?.quoted === inboundMessage,
         });
-        lastResult = await sock.sendMessage(target, content, options);
+        if (target.endsWith("@s.whatsapp.net")) {
+          const digits = target.replace(/@s\.whatsapp\.net$/i, "").replace(/\D/gu, "");
+          try {
+            const check = await sock.onWhatsApp(digits);
+            log("dm.debug.onwhatsapp", { targetJid: target, digits, check });
+          } catch (lookupError) {
+            warn("dm.debug.onwhatsapp_failed", { targetJid: target, digits, error: lookupError });
+          }
+        }
+        const result = await sock.sendMessage(target, content, directOptions);
+        lastResult = result;
+        trackOutgoingDirectMessage(result?.key?.id, {
+          purpose: "direct_command_reply",
+          targetJid: target,
+          originalJid: jid,
+          inboundRemoteJid,
+          fallback: targetIndex > 0,
+        });
         log("direct.command.reply.send_success", {
           targetJid: target,
           originalJid: jid,
           inboundRemoteJid,
-          mirrored: target !== jid,
-          messageId: lastResult?.key?.id ?? null,
+          fallback: targetIndex > 0,
+          quotedInbound: directOptions?.quoted === inboundMessage,
+          messageId: result?.key?.id ?? null,
         });
       } catch (sendError) {
         lastError = sendError;
@@ -487,7 +675,8 @@ const buildDirectCommandReplySocket = (
           targetJid: target,
           originalJid: jid,
           inboundRemoteJid,
-          mirrored: target !== jid,
+          fallback: targetIndex > 0,
+          quotedInbound: target === inboundRemoteJid && target.endsWith("@s.whatsapp.net") && !options?.quoted,
           error: sendError,
         });
       }
@@ -496,6 +685,7 @@ const buildDirectCommandReplySocket = (
     if (lastResult) {
       return lastResult;
     }
+
     throw lastError instanceof Error ? lastError : new Error("direct command reply send failed");
   },
 });
@@ -2070,6 +2260,8 @@ export const handleMessage = async (
         lidJid,
         participantJid: msg.key.participant ?? null,
         participantPn: (msg.key as { participantPn?: string | null }).participantPn ?? null,
+        senderPn: (msg.key as { senderPn?: string | null }).senderPn ?? null,
+        fromMe: msg.key.fromMe,
         pushName: getPushName(msg),
         hasText: text.length > 0,
         textLength: text.length,
@@ -2133,7 +2325,7 @@ Push name: ${getPushName(msg) ?? "unknown"}`,
       }
       if (text) {
         await handleAuthorisedCommand(
-          isDirectCommand ? buildDirectCommandReplySocket(sock, remoteJid) : sock,
+          isDirectCommand ? buildDirectCommandReplySocket(sock, remoteJid, msg) : sock,
           directSender,
           text,
           getQuotedText(msg.message),
@@ -3085,7 +3277,10 @@ export const startBot = async (): Promise<void> => {
       reconnectAttempts = 0;
       refreshSelfJids(sock);
       log("Bot connected");
+      scheduleWhatsAppAuthBackup();
       void (async () => {
+        await sendStartupOwnerAwakeMessages(sock);
+        await runDmDebugSanitySend(sock);
         await listDiscoveredGroups(sock);
         await enforceGlobalBans(sock);
         await runStartupHealthCheck(sock, config, discoveredGroupMetadata);
@@ -3112,6 +3307,7 @@ export const startBot = async (): Promise<void> => {
       stopWebsiteTicketExchangeAnnouncementScheduler();
       stopAnnouncementScheduler();
       stopCleanupScheduler();
+      clearAuthBackupRetryTimer();
 
       const statusCode = isBoomLike(lastDisconnect?.error)
         ? lastDisconnect.error.output?.statusCode
@@ -3224,6 +3420,29 @@ Use !unban ${participant.knownAliases[0] ?? participant.userId} ${update.id} to 
   sock.ev.on("messages.upsert", ({ messages }) => {
     for (const message of messages) {
       enqueueMessage(socketInstanceId, sock, message);
+    }
+  });
+
+  sock.ev.on("messages.update", (updates) => {
+    for (const messageUpdate of updates) {
+      const messageId = messageUpdate.key.id ?? null;
+      if (!messageId) {
+        continue;
+      }
+
+      const tracked = trackedOutgoingDirectMessages.get(messageId);
+      if (!tracked) {
+        continue;
+      }
+
+      log("direct.dm.delivery_update", {
+        messageId,
+        remoteJid: messageUpdate.key.remoteJid ?? null,
+        fromMe: messageUpdate.key.fromMe ?? null,
+        participant: messageUpdate.key.participant ?? null,
+        status: messageUpdate.update.status ?? null,
+        tracked,
+      });
     }
   });
 

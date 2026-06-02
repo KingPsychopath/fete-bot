@@ -747,9 +747,13 @@ describe("cleanup campaign", () => {
 
     expect(store.getCleanupStats(campaign.id)?.whitelisted).toBe(0);
     expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(sendMessage).toHaveBeenCalledWith("447700900001@s.whatsapp.net", expect.objectContaining({
-      text: expect.stringContaining("You're not authorised to use Fete Bot commands"),
-    }), undefined);
+    expect(sendMessage).toHaveBeenCalledWith(
+      "447700900001@s.whatsapp.net",
+      expect.objectContaining({
+        text: expect.stringContaining("You're not authorised to use Fete Bot commands"),
+      }),
+      expect.objectContaining({ quoted: expect.objectContaining({ key: expect.objectContaining({ id: "command-1" }) }) }),
+    );
   });
 
   it("can manually whitelist many cleanup members from pasted phone numbers", async () => {
