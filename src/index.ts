@@ -91,6 +91,7 @@ import {
 } from "./ticketExchangeWebsite/scheduler.js";
 import {
   buildSpotlightWebsiteGroupPromptText,
+  buildSpotlightWebsitePromptText,
   buildTicketExchangeRedirectText,
   recordSpotlightWebsiteGroupPromptSent,
   recordSpotlightWebsitePromptSent,
@@ -119,7 +120,7 @@ import {
 } from "./identity.js";
 import { extractAllIdentifiers, isProtectedGroupMember, parseToJid } from "./utils.js";
 import { STARTED_AT, VERSION } from "./version.js";
-import { getDirectCommandReplyTargets, getStartupOwnerAwakeTargets } from "./directCommandReply.js";
+import { getDirectCommandReplyTargets, getKnownDirectMessageTargets, getStartupOwnerAwakeTargets } from "./directCommandReply.js";
 import {
   buildDebugParticipantUpdateText,
   buildDebugRedirectText,
@@ -172,7 +173,7 @@ let authBackupRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let startupOwnerAwakeSent = false;
 
 type TrackedOutgoingDirectMessage = {
-  purpose: "startup_owner_awake" | "direct_command_reply" | "cleanup_dm";
+  purpose: "startup_owner_awake" | "direct_command_reply" | "cleanup_dm" | "spotlight_website_prompt";
   targetJid: string;
   pendingId?: string;
   campaignId?: string;
@@ -2359,51 +2360,130 @@ const queueTicketSpotlightIfEligible = async (
         senderJid,
         senderUserId,
       });
-    } else if (
-      shouldSendSpotlightWebsitePrompt(senderUserId, config.ticketExchangeWebsiteSpotlightPromptCooldownDays) &&
-      shouldSendSpotlightWebsiteGroupPrompt(groupJid, config.ticketExchangeWebsiteSpotlightPromptCooldownDays)
-    ) {
+    } else {
+      const userPromptAllowed = shouldSendSpotlightWebsitePrompt(
+        senderUserId,
+        config.ticketExchangeWebsiteSpotlightPromptCooldownDays,
+      );
+      const groupPromptAllowed = shouldSendSpotlightWebsiteGroupPrompt(
+        groupJid,
+        config.ticketExchangeWebsiteSpotlightPromptCooldownDays,
+      );
       const mentionTargetJid = getMentionTargetJid(senderJid, phoneJid);
       const mentionLabel = formatMentionLabel(senderJid, getPushName(msg), phoneJid);
-      try {
-        const sent = await sock.sendMessage(
-          groupJid,
-          {
-            text: buildSpotlightWebsiteGroupPromptText(mentionLabel, config.ticketExchangeWebsiteBaseUrl),
-            mentions: mentionTargetJid ? [mentionTargetJid] : [],
-          },
-          { quoted: msg },
+
+      if (userPromptAllowed) {
+        const promptTargets = getKnownDirectMessageTargets(
+          senderJid,
+          getUserAliases(senderUserId).map((alias) => alias.alias),
         );
-        recordSpotlightWebsitePromptSent(senderUserId);
-        recordSpotlightWebsiteGroupPromptSent(groupJid);
-        log("spotlight.website_prompt.sent", {
+        let promptSent = false;
+        let lastPromptError: unknown = null;
+        for (const [targetIndex, targetJid] of promptTargets.entries()) {
+          try {
+            log("spotlight.website_prompt.dm_target_attempt", {
+              pendingId: queued.id,
+              groupJid,
+              senderJid,
+              targetJid,
+              targetIndex: targetIndex + 1,
+              targetCount: promptTargets.length,
+              senderUserId,
+            });
+            const sent = await sock.sendMessage(targetJid, {
+              text: buildSpotlightWebsitePromptText(config.ticketExchangeWebsiteBaseUrl),
+            });
+            const directMessageId = sent?.key.id;
+            if (!directMessageId) {
+              throw new Error("WhatsApp send returned without a message id");
+            }
+            trackOutgoingDirectMessage(directMessageId, {
+              purpose: "spotlight_website_prompt",
+              pendingId: queued.id,
+              userId: senderUserId,
+              targetJid,
+              remoteJid: sent.key.remoteJid,
+              fallback: targetIndex > 0,
+            });
+            recordSpotlightWebsitePromptSent(senderUserId);
+            promptSent = true;
+            log("spotlight.website_prompt.dm_sent", {
+              pendingId: queued.id,
+              groupJid,
+              senderJid,
+              targetJid,
+              senderUserId,
+              messageId: directMessageId,
+              remoteJid: sent.key.remoteJid,
+            });
+            break;
+          } catch (targetError) {
+            lastPromptError = targetError;
+            warn("spotlight.website_prompt.dm_target_failed", {
+              pendingId: queued.id,
+              groupJid,
+              senderJid,
+              targetJid,
+              senderUserId,
+              error: targetError,
+            });
+          }
+        }
+
+        if (!promptSent) {
+          warn("spotlight.website_prompt.dm_send_failed", {
+            pendingId: queued.id,
+            groupJid,
+            senderJid,
+            targets: promptTargets,
+            senderUserId,
+            error: lastPromptError ?? new Error("No usable spotlight website prompt target"),
+          });
+        }
+      }
+
+      if (groupPromptAllowed) {
+        try {
+          const sent = await sock.sendMessage(
+            groupJid,
+            {
+              text: buildSpotlightWebsiteGroupPromptText(mentionLabel, config.ticketExchangeWebsiteBaseUrl),
+              mentions: mentionTargetJid ? [mentionTargetJid] : [],
+            },
+            { quoted: msg },
+          );
+          recordSpotlightWebsiteGroupPromptSent(groupJid);
+          log("spotlight.website_prompt.group_sent", {
+            pendingId: queued.id,
+            groupJid,
+            senderJid,
+            senderUserId,
+            mentionTargetJid: mentionTargetJid || null,
+            messageId: sent?.key.id ?? null,
+          });
+        } catch (promptError) {
+          warn("spotlight.website_prompt.group_send_failed", {
+            pendingId: queued.id,
+            groupJid,
+            senderJid,
+            mentionTargetJid: mentionTargetJid || null,
+            senderUserId,
+            error: promptError,
+          });
+        }
+      }
+
+      if (!userPromptAllowed || !groupPromptAllowed) {
+        log("spotlight.website_prompt.skipped_cooldown", {
           pendingId: queued.id,
           groupJid,
           senderJid,
           senderUserId,
-          mentionTargetJid: mentionTargetJid || null,
-          messageId: sent?.key.id ?? null,
-        });
-      } catch (promptError) {
-        warn("spotlight.website_prompt.send_failed", {
-          pendingId: queued.id,
-          groupJid,
-          senderJid,
-          mentionTargetJid: mentionTargetJid || null,
-          senderUserId,
-          error: promptError,
+          groupCooldown: !groupPromptAllowed,
+          userCooldown: !userPromptAllowed,
+          cooldownDays: config.ticketExchangeWebsiteSpotlightPromptCooldownDays,
         });
       }
-    } else {
-      log("spotlight.website_prompt.skipped_cooldown", {
-        pendingId: queued.id,
-        groupJid,
-        senderJid,
-        senderUserId,
-        groupCooldown: !shouldSendSpotlightWebsiteGroupPrompt(groupJid, config.ticketExchangeWebsiteSpotlightPromptCooldownDays),
-        userCooldown: !shouldSendSpotlightWebsitePrompt(senderUserId, config.ticketExchangeWebsiteSpotlightPromptCooldownDays),
-        cooldownDays: config.ticketExchangeWebsiteSpotlightPromptCooldownDays,
-      });
     }
   }
 };
