@@ -72,6 +72,10 @@ import {
   setQuietSwitchEnabled,
 } from "./quietSwitch.js";
 import {
+  formatDebugRedirectSwitchStatus,
+  setDebugRedirectSwitchState,
+} from "./debugRedirectSwitch.js";
+import {
   getTicketMarketplaceDeletionState,
   setTicketMarketplaceDeletionEnabled,
 } from "./ticketMarketplaceDeletion.js";
@@ -146,6 +150,7 @@ const OWNER_HELP_BLOCK = `
   !removemod {identifier}
   !mods
   !quiet {on|off|status} — global kill switch for all bot messages
+  !debug {on <jid>|off|status} — reroute bot messages to a debug chat
   !ticketdelete {on|off|status} — delete ticket redirect messages instead of reply-only`;
 
 const INVALID_IDENTIFIER_MESSAGE = `❌ Couldn't parse that as a user identifier.
@@ -199,7 +204,9 @@ const canonicalCommand = (command: string): string =>
 const canonicalOwnerCommand = (command: string): string =>
   ["!quiet", "!silence", "!killswitch"].includes(command)
     ? "!quiet"
-    : ["!ticketdelete", "!ticketdeletion", "!ticketsdelete"].includes(command)
+    : ["!debug", "!debugredirect", "!debugmode"].includes(command)
+      ? "!debug"
+      : ["!ticketdelete", "!ticketdeletion", "!ticketsdelete"].includes(command)
       ? "!ticketdelete"
       : command;
 const isDestructiveCommand = (command: string): boolean =>
@@ -1303,6 +1310,44 @@ const handleQuietSwitchCommand = async (
   return true;
 };
 
+const handleDebugRedirectCommand = async (
+  sock: WASocket,
+  destinationJid: string,
+  actorContext: ActorContext,
+  text: string,
+): Promise<boolean> => {
+  if (actorContext.actorRole !== "owner") {
+    await sock.sendMessage(destinationJid, { text: "❌ Only owners can toggle debug redirect." });
+    return true;
+  }
+
+  const [, rawMode, rawTargetJid] = text.trim().split(/\s+/, 3);
+  const mode = rawMode?.toLowerCase() ?? "status";
+  if (["on", "enable", "enabled", "true", "1"].includes(mode)) {
+    const state = setDebugRedirectSwitchState(true, rawTargetJid ?? null, actorContext.participantJid ?? actorContext.userId);
+    if (!state.targetJid) {
+      setDebugRedirectSwitchState(false, null, actorContext.participantJid ?? actorContext.userId);
+      await sock.sendMessage(destinationJid, { text: "Usage: !debug on {debugGroupJid}" });
+      return true;
+    }
+    await sock.sendMessage(destinationJid, {
+      text: `Debug redirect is ON. Bot messages will be sent to ${state.targetJid}.`,
+    });
+    return true;
+  }
+
+  if (["off", "disable", "disabled", "false", "0"].includes(mode)) {
+    setDebugRedirectSwitchState(false, null, actorContext.participantJid ?? actorContext.userId);
+    await sock.sendMessage(destinationJid, {
+      text: "Debug redirect is OFF. Bot messages will go to their real chats again.",
+    });
+    return true;
+  }
+
+  await sock.sendMessage(destinationJid, { text: formatDebugRedirectSwitchStatus() });
+  return true;
+};
+
 const formatTicketMarketplaceDeletionStatus = (): string => {
   const state = getTicketMarketplaceDeletionState();
   const status = state.enabled ? "ON - ticket redirect messages are deleted" : "OFF - ticket redirects reply only";
@@ -1472,6 +1517,12 @@ export async function handleGroupCommand(
 
   if (command === "!quiet") {
     await handleQuietSwitchCommand(sock, actorContext.participantJid ?? groupJid, actorContext, text);
+    logAudit(actorContext, command, null, null, groupJid, text, "success");
+    return true;
+  }
+
+  if (command === "!debug") {
+    await handleDebugRedirectCommand(sock, actorContext.participantJid ?? groupJid, actorContext, text);
     logAudit(actorContext, command, null, null, groupJid, text, "success");
     return true;
   }
@@ -1911,6 +1962,12 @@ ${buildIdentityDebugText(actor)}`,
     return;
   }
 
+  if (command === "!debug") {
+    await handleDebugRedirectCommand(sock, replyJid, actorContext, text);
+    logAudit(actorContext, "!debug", null, null, null, text, "success");
+    return;
+  }
+
   if (command === "!ticketdelete") {
     await handleTicketMarketplaceDeletionCommand(sock, replyJid, actorContext, text);
     logAudit(actorContext, "!ticketdelete", null, null, null, text, "success");
@@ -1985,6 +2042,7 @@ Version: ${VERSION}
 Started: ${STARTED_AT}
 Mode: ${config.dryRun ? "DRY RUN (not deleting)" : "LIVE (deleting messages)"}
 ${formatQuietSwitchStatus()}
+${formatDebugRedirectSwitchStatus()}
 ${formatTicketMarketplaceDeletionStatus()}
 ${formatEnabledGroupShhSummary(groups)}
 

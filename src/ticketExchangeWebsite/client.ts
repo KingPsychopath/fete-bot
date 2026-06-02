@@ -3,6 +3,7 @@ export type WebsiteTicketExchangeListing = {
   eventKey: string;
   eventSlug: string;
   eventName: string;
+  eventDateLabel?: string;
   listingType: "selling" | "looking";
   quantityLabel: string;
   priceLabel: string;

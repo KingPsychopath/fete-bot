@@ -86,6 +86,12 @@ import {
   stopWebsiteTicketExchangeAnnouncementScheduler,
 } from "./ticketExchangeWebsite/scheduler.js";
 import {
+  buildSpotlightWebsitePromptText,
+  buildTicketExchangeRedirectText,
+  recordSpotlightWebsitePromptSent,
+  shouldSendSpotlightWebsitePrompt,
+} from "./ticketExchangeWebsite/visibilityPrompt.js";
+import {
   AUTH_DIR,
   DATABASE_PATH,
   DATA_DIR,
@@ -108,6 +114,11 @@ import {
 import { extractAllIdentifiers, isProtectedGroupMember, parseToJid } from "./utils.js";
 import { STARTED_AT, VERSION } from "./version.js";
 import { getDirectCommandReplyTargets, getStartupOwnerAwakeTargets } from "./directCommandReply.js";
+import {
+  buildDebugParticipantUpdateText,
+  buildDebugRedirectText,
+  getDebugRedirectSwitchState,
+} from "./debugRedirectSwitch.js";
 import { createWhatsAppAuthBackup } from "./whatsappAuthBackup.js";
 import { shouldRequestWhatsAppPairingCode } from "./whatsappPairing.js";
 
@@ -481,6 +492,7 @@ const hasHandledCallOfferId = (callId: string, nowMs = Date.now()): boolean => {
 
 const installQuietSwitchSendGuard = (sock: WASocket): void => {
   const originalSendMessage = sock.sendMessage.bind(sock);
+  const originalGroupParticipantsUpdate = sock.groupParticipantsUpdate.bind(sock);
   sock.sendMessage = (async (
     jid: string,
     content: AnyMessageContent,
@@ -494,8 +506,51 @@ const installQuietSwitchSendGuard = (sock: WASocket): void => {
       return undefined;
     }
 
+    const debugRedirect = getDebugRedirectSwitchState();
+    if (debugRedirect.enabled && debugRedirect.targetJid && jid !== debugRedirect.targetJid) {
+      warn("Debug redirect rerouted outgoing bot message", {
+        originalJid: jid,
+        debugJid: debugRedirect.targetJid,
+        keys: typeof content === "object" && content !== null ? Object.keys(content) : [],
+      });
+      return originalSendMessage(debugRedirect.targetJid, {
+        text: buildDebugRedirectText(jid, content),
+      });
+    }
+
     return originalSendMessage(jid, content, options);
   }) as WASocket["sendMessage"];
+
+  sock.groupParticipantsUpdate = (async (
+    jid: string,
+    participants: string[],
+    action: Parameters<WASocket["groupParticipantsUpdate"]>[2],
+  ) => {
+    if (isQuietSwitchEnabled()) {
+      warn("Quiet switch blocked group participant update", {
+        jid,
+        participants,
+        action,
+      });
+      return [];
+    }
+
+    const debugRedirect = getDebugRedirectSwitchState();
+    if (debugRedirect.enabled && debugRedirect.targetJid) {
+      warn("Debug redirect blocked group participant update", {
+        originalJid: jid,
+        debugJid: debugRedirect.targetJid,
+        participants,
+        action,
+      });
+      await originalSendMessage(debugRedirect.targetJid, {
+        text: buildDebugParticipantUpdateText(jid, participants, action),
+      });
+      return [];
+    }
+
+    return originalGroupParticipantsUpdate(jid, participants, action);
+  }) as WASocket["groupParticipantsUpdate"];
 };
 
 type MessageContextInfo = {
@@ -2145,6 +2200,45 @@ const queueTicketSpotlightIfEligible = async (
         error: reactionError,
       });
     }
+
+    const websitePromptSuppressed = isQuietSwitchEnabled() || getDebugRedirectSwitchState().enabled;
+    if (websitePromptSuppressed) {
+      log("spotlight.website_prompt.skipped_suppressed", {
+        pendingId: queued.id,
+        groupJid,
+        senderJid,
+        senderUserId,
+      });
+    } else if (shouldSendSpotlightWebsitePrompt(senderUserId, config.ticketExchangeWebsiteSpotlightPromptCooldownDays)) {
+      try {
+        await sock.sendMessage(senderJid, {
+          text: buildSpotlightWebsitePromptText(config.ticketExchangeWebsiteBaseUrl),
+        });
+        recordSpotlightWebsitePromptSent(senderUserId);
+        log("spotlight.website_prompt.sent", {
+          pendingId: queued.id,
+          groupJid,
+          senderJid,
+          senderUserId,
+        });
+      } catch (promptError) {
+        warn("spotlight.website_prompt.send_failed", {
+          pendingId: queued.id,
+          groupJid,
+          senderJid,
+          senderUserId,
+          error: promptError,
+        });
+      }
+    } else {
+      log("spotlight.website_prompt.skipped_cooldown", {
+        pendingId: queued.id,
+        groupJid,
+        senderJid,
+        senderUserId,
+        cooldownDays: config.ticketExchangeWebsiteSpotlightPromptCooldownDays,
+      });
+    }
   }
 };
 
@@ -2711,12 +2805,27 @@ They have been banned and removed after repeatedly trying to post while muted.`,
         const mentionLabel = formatMentionLabel(senderJid, getPushName(msg), phoneJid);
         const marketplaceName = config.ticketMarketplaceGroupName;
         const replyText = ticketDecision.action === "redirect_buying"
-          ? `Hey ${mentionLabel} - looking to buy tickets? Please post in ${marketplaceName}.`
+          ? buildTicketExchangeRedirectText({
+            action: "redirect_buying",
+            mentionLabel,
+            marketplaceName,
+            baseUrl: config.ticketExchangeWebsiteBaseUrl,
+          })
           : ticketDecision.action === "redirect_selling"
-            ? `Hey ${mentionLabel} - ticket sales belong in ${marketplaceName}. Please repost there.`
+            ? buildTicketExchangeRedirectText({
+              action: "redirect_selling",
+              mentionLabel,
+              marketplaceName,
+              baseUrl: config.ticketExchangeWebsiteBaseUrl,
+            })
             : ticketDecision.action === "require_price"
               ? `Hey ${mentionLabel} - ticket sale posts must include a price, or say face value / FV.`
-              : `Hey ${mentionLabel} - this looks ambiguous and is under manual review. If this is a valid ticket post, repost it with clearer details in ${marketplaceName}.`;
+              : buildTicketExchangeRedirectText({
+                action: "review",
+                mentionLabel,
+                marketplaceName,
+                baseUrl: config.ticketExchangeWebsiteBaseUrl,
+              });
         const logEntry = {
           timestamp: new Date().toISOString(),
           group_jid: groupJid,

@@ -1,7 +1,9 @@
 import type { WASocket } from "@whiskeysockets/baileys";
 
 import type { Config } from "../config.js";
+import { getDebugRedirectSwitchState } from "../debugRedirectSwitch.js";
 import { log, warn } from "../logger.js";
+import { isQuietSwitchEnabled } from "../quietSwitch.js";
 import {
   fetchWebsiteTicketExchangeListings,
   isWebsiteTicketExchangeListingAnnounceable,
@@ -29,6 +31,19 @@ const hasRequiredConfig = (config: Config): boolean =>
       getEnabledTargetJids(config).length > 0,
   );
 
+export const isWebsiteTicketExchangeListingPastAnnounceDelay = (
+  createdAt: string,
+  delayMinutes: number,
+  now = new Date(),
+): boolean => {
+  const createdAtDate = new Date(createdAt);
+  if (!Number.isFinite(createdAtDate.getTime())) {
+    return true;
+  }
+
+  return now.getTime() - createdAtDate.getTime() >= Math.max(0, delayMinutes) * 60 * 1000;
+};
+
 export const runWebsiteTicketExchangeAnnouncementTick = async (
   sock: WASocket,
   config: Config,
@@ -37,9 +52,15 @@ export const runWebsiteTicketExchangeAnnouncementTick = async (
     return;
   }
 
+  if (isQuietSwitchEnabled()) {
+    log("ticket_exchange.website_announcement.skipped_quiet_switch");
+    return;
+  }
+
   schedulerRunning = true;
   try {
     const targetJids = getEnabledTargetJids(config);
+    const debugRedirectEnabled = getDebugRedirectSwitchState().enabled;
     const listings = await fetchWebsiteTicketExchangeListings({
       baseUrl: config.ticketExchangeWebsiteBaseUrl,
       secret: config.ticketExchangeWebsiteBotSecret,
@@ -47,6 +68,18 @@ export const runWebsiteTicketExchangeAnnouncementTick = async (
     });
 
     for (const listing of listings) {
+      if (!isWebsiteTicketExchangeListingPastAnnounceDelay(
+        listing.createdAt,
+        config.ticketExchangeWebsiteAnnounceDelayMinutes,
+      )) {
+        log("ticket_exchange.website_announcement.skipped_delay", {
+          listingId: listing.id,
+          createdAt: listing.createdAt,
+          delayMinutes: config.ticketExchangeWebsiteAnnounceDelayMinutes,
+        });
+        continue;
+      }
+
       try {
         const announceable = await isWebsiteTicketExchangeListingAnnounceable({
           baseUrl: config.ticketExchangeWebsiteBaseUrl,
@@ -100,6 +133,13 @@ export const runWebsiteTicketExchangeAnnouncementTick = async (
       }
 
       if (sentCount > 0) {
+        if (debugRedirectEnabled) {
+          log("ticket_exchange.website_announcement.debug_preview_not_marked", {
+            listingId: listing.id,
+          });
+          continue;
+        }
+
         try {
           await markWebsiteTicketExchangeListingAnnounced({
             baseUrl: config.ticketExchangeWebsiteBaseUrl,

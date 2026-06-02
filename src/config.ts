@@ -226,7 +226,10 @@ const loadedConfig = {
   ticketExchangeWebsiteBotSecret: normaliseEnvValue(process.env.TICKET_EXCHANGE_BOT_SECRET) || "",
   ticketExchangeWebsiteTargetJids: parseList(
     process.env.TICKET_EXCHANGE_WEBSITE_TARGET_JIDS ||
-      process.env.TICKET_SPOTLIGHT_TARGET_JIDS ||
+      [
+        process.env.TICKET_SPOTLIGHT_TARGET_JIDS || DEFAULT_TICKET_SPOTLIGHT_TARGET_JIDS,
+        process.env.TICKET_MARKETPLACE_GROUP_JIDS || "120363418331899807@g.us",
+      ].join(",") ||
       DEFAULT_TICKET_SPOTLIGHT_TARGET_JIDS,
   ),
   ticketExchangeWebsitePollSeconds: parsePositiveInteger(
@@ -236,6 +239,14 @@ const loadedConfig = {
   ticketExchangeWebsiteBatchSize: parsePositiveInteger(
     process.env.TICKET_EXCHANGE_WEBSITE_BATCH_SIZE,
     5,
+  ),
+  ticketExchangeWebsiteAnnounceDelayMinutes: parsePositiveInteger(
+    process.env.TICKET_EXCHANGE_WEBSITE_ANNOUNCE_DELAY_MINUTES,
+    5,
+  ),
+  ticketExchangeWebsiteSpotlightPromptCooldownDays: parsePositiveInteger(
+    process.env.TICKET_EXCHANGE_WEBSITE_SPOTLIGHT_PROMPT_COOLDOWN_DAYS,
+    7,
   ),
   announcementsEnabled: parseBoolean(process.env.ANNOUNCEMENTS_ENABLED, false),
   announcementsTargetGroupJid:

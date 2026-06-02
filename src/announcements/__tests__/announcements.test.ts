@@ -67,6 +67,8 @@ const config = {
   ticketExchangeWebsiteTargetJids: [],
   ticketExchangeWebsitePollSeconds: 120,
   ticketExchangeWebsiteBatchSize: 5,
+  ticketExchangeWebsiteAnnounceDelayMinutes: 5,
+  ticketExchangeWebsiteSpotlightPromptCooldownDays: 7,
   announcementsEnabled: true,
   announcementsTargetGroupJid: "announcements@g.us",
   announcementsStartDate: "2026-04-24",

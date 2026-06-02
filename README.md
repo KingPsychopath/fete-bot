@@ -123,7 +123,7 @@ The backup contains WhatsApp linked-device credentials. Treat it like a secret.
 - `TICKET_MARKETPLACE_GROUP_JIDS` is comma-separated and defaults to `120363418331899807@g.us`
 - `TICKET_MARKETPLACE_RULE_REMINDER_ENABLED=true` sends a daily marketplace rules reminder after `TICKET_MARKETPLACE_RULE_REMINDER_TIME` in `TICKET_MARKETPLACE_RULE_REMINDER_TIMEZONE`; after a reminder, it waits for `TICKET_MARKETPLACE_RULE_REMINDER_MIN_ACTIVITY_MESSAGES` observed chat messages before sending another
 - `TICKET_SPOTLIGHT_ENABLED=true` by default; seller spotlights are enabled, buying spotlights are off by default for the first rollout
-- `TICKET_EXCHANGE_WEBSITE_ANNOUNCEMENTS_ENABLED=false` by default; when enabled, the bot polls Fete Finder for new Ticket Exchange listings and posts website links only, never user contact details
+- `TICKET_EXCHANGE_WEBSITE_ANNOUNCEMENTS_ENABLED=false` by default; when enabled, the bot polls Fete Finder for new Ticket Exchange listings and posts website links only, never user contact details. Listings wait `TICKET_EXCHANGE_WEBSITE_ANNOUNCE_DELAY_MINUTES` before posting. When a marketplace post is queued for spotlight, the bot can DM the poster a Fete Finder nudge, cooled down by `TICKET_EXCHANGE_WEBSITE_SPOTLIGHT_PROMPT_COOLDOWN_DAYS`.
 - `ANNOUNCEMENTS_ENABLED=false` by default; when enabled, announcements are sent to `ANNOUNCEMENTS_TARGET_GROUP_JID` on a local wall-clock schedule
 - `TICKET_SPOTLIGHT_TARGET_JIDS` defaults to FDLM General 2, FDLM General, and FDLM Parties & Events
 - `OWNER_JIDS`, database moderators, and WhatsApp group admins are never moderated
@@ -589,6 +589,8 @@ Notes:
 - `TICKET_EXCHANGE_WEBSITE_TARGET_JIDS=120363...@g.us,120363...@g.us`
 - `TICKET_EXCHANGE_WEBSITE_POLL_SECONDS=120`
 - `TICKET_EXCHANGE_WEBSITE_BATCH_SIZE=5`
+- `TICKET_EXCHANGE_WEBSITE_ANNOUNCE_DELAY_MINUTES=5`
+- `TICKET_EXCHANGE_WEBSITE_SPOTLIGHT_PROMPT_COOLDOWN_DAYS=7`
 - `ANNOUNCEMENTS_ENABLED=false`
 - `ANNOUNCEMENTS_TARGET_GROUP_JID=120363...@g.us` (optional while the code default is correct)
 - `ANNOUNCEMENTS_START_DATE=2026-04-30`
