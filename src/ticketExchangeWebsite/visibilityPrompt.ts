@@ -92,12 +92,12 @@ export const shouldSendSpotlightWebsitePrompt = (
   now = new Date(),
 ): boolean => {
   const promptedAt = readState().promptedByUserId[userId];
-  return isPastCooldown(promptedAt, cooldownDays, now);
+  return isPastCooldownMs(promptedAt, Math.max(0, cooldownDays) * 24 * 60 * 60 * 1000, now);
 };
 
-const isPastCooldown = (
+const isPastCooldownMs = (
   promptedAt: string | undefined,
-  cooldownDays: number,
+  cooldownMs: number,
   now: Date,
 ): boolean => {
   if (!promptedAt) {
@@ -109,14 +109,18 @@ const isPastCooldown = (
     return true;
   }
 
-  return now.getTime() - promptedDate.getTime() >= Math.max(0, cooldownDays) * 24 * 60 * 60 * 1000;
+  return now.getTime() - promptedDate.getTime() >= cooldownMs;
 };
 
 export const shouldSendSpotlightWebsiteGroupPrompt = (
   groupJid: string,
-  cooldownDays: number,
+  cooldownHours: number,
   now = new Date(),
-): boolean => isPastCooldown(readState().promptedByGroupJid[groupJid], cooldownDays, now);
+): boolean => isPastCooldownMs(
+  readState().promptedByGroupJid[groupJid],
+  Math.max(0, cooldownHours) * 60 * 60 * 1000,
+  now,
+);
 
 export const recordSpotlightWebsitePromptSent = (userId: string, now = new Date()): void => {
   const state = readState();

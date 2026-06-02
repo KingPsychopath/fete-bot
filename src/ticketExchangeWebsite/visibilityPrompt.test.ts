@@ -89,9 +89,10 @@ describe("Ticket Exchange visibility prompts", () => {
     expect(shouldSendSpotlightWebsitePrompt("user-1", 7, new Date("2026-06-09T10:00:00.000Z"))).toBe(true);
     expect(shouldSendSpotlightWebsitePrompt("user-2", 7, sentAt)).toBe(true);
 
-    expect(shouldSendSpotlightWebsiteGroupPrompt("group-1@g.us", 7, sentAt)).toBe(true);
+    expect(shouldSendSpotlightWebsiteGroupPrompt("group-1@g.us", 6, sentAt)).toBe(true);
     recordSpotlightWebsiteGroupPromptSent("group-1@g.us", sentAt);
-    expect(shouldSendSpotlightWebsiteGroupPrompt("group-1@g.us", 7, new Date("2026-06-09T09:59:59.999Z"))).toBe(false);
-    expect(shouldSendSpotlightWebsiteGroupPrompt("group-2@g.us", 7, sentAt)).toBe(true);
+    expect(shouldSendSpotlightWebsiteGroupPrompt("group-1@g.us", 6, new Date("2026-06-02T15:59:59.999Z"))).toBe(false);
+    expect(shouldSendSpotlightWebsiteGroupPrompt("group-1@g.us", 6, new Date("2026-06-02T16:00:00.000Z"))).toBe(true);
+    expect(shouldSendSpotlightWebsiteGroupPrompt("group-2@g.us", 6, sentAt)).toBe(true);
   });
 });

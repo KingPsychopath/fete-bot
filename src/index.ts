@@ -157,6 +157,7 @@ const CLEANUP_DM_BACKFILL_MARKER =
   "Hey - we've added you to the OOOC Fete group chat stay list, so you're all good. No need to reply.";
 const STARTUP_OWNER_AWAKE_STATE_PATH = join(DATA_DIR, "startup-owner-awake.json");
 const DIRECT_CHAT_AUTORESPONSE_STATE_PATH = join(DATA_DIR, "direct-chat-autoresponse.json");
+const SPOTLIGHT_WEBSITE_GROUP_PROMPT_COOLDOWN_HOURS = 6;
 let strikePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let mutePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let callViolationPurgeTimer: ReturnType<typeof setInterval> | null = null;
@@ -2367,7 +2368,7 @@ const queueTicketSpotlightIfEligible = async (
       );
       const groupPromptAllowed = shouldSendSpotlightWebsiteGroupPrompt(
         groupJid,
-        config.ticketExchangeWebsiteSpotlightPromptCooldownDays,
+        SPOTLIGHT_WEBSITE_GROUP_PROMPT_COOLDOWN_HOURS,
       );
       const mentionTargetJid = getMentionTargetJid(senderJid, phoneJid);
       const mentionLabel = formatMentionLabel(senderJid, getPushName(msg), phoneJid);
@@ -2481,7 +2482,8 @@ const queueTicketSpotlightIfEligible = async (
           senderUserId,
           groupCooldown: !groupPromptAllowed,
           userCooldown: !userPromptAllowed,
-          cooldownDays: config.ticketExchangeWebsiteSpotlightPromptCooldownDays,
+          groupCooldownHours: SPOTLIGHT_WEBSITE_GROUP_PROMPT_COOLDOWN_HOURS,
+          userCooldownDays: config.ticketExchangeWebsiteSpotlightPromptCooldownDays,
         });
       }
     }
