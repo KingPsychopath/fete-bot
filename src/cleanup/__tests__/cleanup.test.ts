@@ -963,7 +963,7 @@ describe("cleanup campaign", () => {
     });
   });
 
-  it("reacts with a question mark when the outgoing natural backfill marker cannot match cleanup", async () => {
+  it("does not visibly react when the outgoing natural backfill marker cannot match cleanup", async () => {
     await setupDb();
     const { handleMessage } = await import("../../index.js");
     const sendMessage = vi.fn().mockResolvedValue({ key: { id: "react-1" } });
@@ -979,12 +979,53 @@ describe("cleanup campaign", () => {
         message: {
           conversation: cleanupBackfillMessage,
         },
+        } as never,
+      );
+
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("matches outgoing backfill markers through known lid aliases", async () => {
+    const db = await setupDb();
+    const { handleMessage } = await import("../../index.js");
+    const store = await import("../store.js");
+    const campaign = store.createCleanupCampaign({
+      durationMs: 72 * 60 * 60_000,
+      actorUserId: "owner",
+      actorLabel: "owner",
+      channelLink: config.cleanupChannelLink,
+      publicMessage: "public",
+      dmMessage: "dm",
+      batchSize: 25,
+      batchIntervalMinutes: 30,
+      nowMs: Date.now(),
+      members: [
+        { userId: "user-1", displayName: "User One", primaryJid: "447700900001@s.whatsapp.net" },
+      ],
+    });
+    db.getDb()
+      .prepare("INSERT INTO user_aliases (alias, alias_type, user_id, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?)")
+      .run("111222333@lid", "lid", "user-1", 1, 1);
+    const sendMessage = vi.fn().mockResolvedValue({ key: { id: "react-1" } });
+
+    await handleMessage(
+      { sendMessage } as never,
+      {
+        key: {
+          id: "marker-1",
+          remoteJid: "111222333@lid",
+          fromMe: true,
+        },
+        message: {
+          conversation: cleanupBackfillMessage,
+        },
       } as never,
     );
 
-    expect(sendMessage).toHaveBeenCalledWith("447700900001@s.whatsapp.net", {
+    expect(store.getCleanupStats(campaign.id)?.whitelisted).toBe(1);
+    expect(sendMessage).toHaveBeenCalledWith("111222333@lid", {
       react: {
-        text: "❓",
+        text: "✅",
         key: expect.objectContaining({ id: "marker-1" }),
       },
     });

@@ -903,6 +903,17 @@ const maybeEditCleanupDmBackfillShortcut = async (
   }
 };
 
+const getCleanupBackfillMatchIdentifiers = (remoteJid: string): string[] => {
+  const identifiers = new Set<string>([remoteJid]);
+  for (const userId of findExistingUserIdsByAliases([remoteJid])) {
+    identifiers.add(userId);
+    for (const alias of getUserAliases(userId)) {
+      identifiers.add(alias.alias);
+    }
+  }
+  return Array.from(identifiers);
+};
+
 const handleCleanupDmBackfillMarker = async (
   sock: WASocket,
   remoteJid: string,
@@ -916,13 +927,14 @@ const handleCleanupDmBackfillMarker = async (
   await maybeEditCleanupDmBackfillShortcut(sock, remoteJid, msg, text);
 
   const campaign = getOpenCleanupCampaign();
-  const member = campaign ? findCleanupMemberByUserOrJid(campaign.id, [remoteJid]) : null;
+  const identifiers = getCleanupBackfillMatchIdentifiers(remoteJid);
+  const member = campaign ? findCleanupMemberByUserOrJid(campaign.id, identifiers) : null;
   if (!campaign || !member) {
-    await sock.sendMessage(remoteJid, {
-      react: {
-        text: "❓",
-        key: msg.key,
-      },
+    log("cleanup.dm_backfill_marker_unmatched", {
+      jid: remoteJid,
+      messageId: msg.key.id ?? null,
+      hasCampaign: Boolean(campaign),
+      identifiers,
     });
     return true;
   }
