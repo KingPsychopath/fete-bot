@@ -216,6 +216,25 @@ const loadedConfig = {
   ticketSpotlightBlocklistJids: parseList(process.env.TICKET_SPOTLIGHT_BLOCKLIST_JIDS),
   ticketSpotlightClaimStaleMinutes: parsePositiveInteger(process.env.TICKET_SPOTLIGHT_CLAIM_STALE_MINUTES, 5),
   ticketSpotlightReactionEmoji: normaliseEnvValue(process.env.TICKET_SPOTLIGHT_REACTION_EMOJI) || "⭐",
+  ticketExchangeWebsiteAnnouncementsEnabled: parseBoolean(
+    process.env.TICKET_EXCHANGE_WEBSITE_ANNOUNCEMENTS_ENABLED,
+    false,
+  ),
+  ticketExchangeWebsiteBaseUrl:
+    normaliseEnvValue(process.env.TICKET_EXCHANGE_WEBSITE_BASE_URL) ||
+    "https://fete.outofofficecollective.co.uk",
+  ticketExchangeWebsiteBotSecret: normaliseEnvValue(process.env.TICKET_EXCHANGE_BOT_SECRET) || "",
+  ticketExchangeWebsiteTargetJids: parseList(
+    process.env.TICKET_EXCHANGE_WEBSITE_TARGET_JIDS || process.env.TICKET_SPOTLIGHT_TARGET_JIDS || "",
+  ),
+  ticketExchangeWebsitePollSeconds: parsePositiveInteger(
+    process.env.TICKET_EXCHANGE_WEBSITE_POLL_SECONDS,
+    120,
+  ),
+  ticketExchangeWebsiteBatchSize: parsePositiveInteger(
+    process.env.TICKET_EXCHANGE_WEBSITE_BATCH_SIZE,
+    5,
+  ),
   announcementsEnabled: parseBoolean(process.env.ANNOUNCEMENTS_ENABLED, false),
   announcementsTargetGroupJid:
     normaliseEnvValue(process.env.ANNOUNCEMENTS_TARGET_GROUP_JID) || DEFAULT_ANNOUNCEMENTS_TARGET_GROUP_JID,

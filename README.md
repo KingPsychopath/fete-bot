@@ -98,6 +98,7 @@ Notes:
 - `TICKET_MARKETPLACE_GROUP_JIDS` is comma-separated and defaults to `120363418331899807@g.us`
 - `TICKET_MARKETPLACE_RULE_REMINDER_ENABLED=true` sends a daily marketplace rules reminder after `TICKET_MARKETPLACE_RULE_REMINDER_TIME` in `TICKET_MARKETPLACE_RULE_REMINDER_TIMEZONE`; after a reminder, it waits for `TICKET_MARKETPLACE_RULE_REMINDER_MIN_ACTIVITY_MESSAGES` observed chat messages before sending another
 - `TICKET_SPOTLIGHT_ENABLED=true` by default; seller spotlights are enabled, buying spotlights are off by default for the first rollout
+- `TICKET_EXCHANGE_WEBSITE_ANNOUNCEMENTS_ENABLED=false` by default; when enabled, the bot polls Fete Finder for new Ticket Exchange listings and posts website links only, never user contact details
 - `ANNOUNCEMENTS_ENABLED=false` by default; when enabled, announcements are sent to `ANNOUNCEMENTS_TARGET_GROUP_JID` on a local wall-clock schedule
 - `TICKET_SPOTLIGHT_TARGET_JIDS` defaults to FDLM General 2, FDLM General, and FDLM Parties & Events
 - `OWNER_JIDS`, database moderators, and WhatsApp group admins are never moderated
@@ -557,6 +558,12 @@ Notes:
 - `GROUP_CALL_GUARD_WINDOW_HOURS=24`
 - `GROUP_CALL_GUARD_WARNING_COOLDOWN_SECONDS=30`
 - `GROUP_CALL_GUARD_RECENT_ACTIVITY_TTL_MINUTES=10`
+- `TICKET_EXCHANGE_WEBSITE_ANNOUNCEMENTS_ENABLED=false`
+- `TICKET_EXCHANGE_WEBSITE_BASE_URL=https://fete.outofofficecollective.co.uk`
+- `TICKET_EXCHANGE_BOT_SECRET=shared-secret-from-fete-finder`
+- `TICKET_EXCHANGE_WEBSITE_TARGET_JIDS=120363...@g.us,120363...@g.us`
+- `TICKET_EXCHANGE_WEBSITE_POLL_SECONDS=120`
+- `TICKET_EXCHANGE_WEBSITE_BATCH_SIZE=5`
 - `ANNOUNCEMENTS_ENABLED=false`
 - `ANNOUNCEMENTS_TARGET_GROUP_JID=120363...@g.us` (optional while the code default is correct)
 - `ANNOUNCEMENTS_START_DATE=2026-04-30`

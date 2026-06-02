@@ -82,6 +82,10 @@ import { error, log, warn } from "./logger.js";
 import { consumeQuietSwitchSendBypass, isQuietSwitchEnabled } from "./quietSwitch.js";
 import { isTicketMarketplaceDeletionEnabled } from "./ticketMarketplaceDeletion.js";
 import {
+  startWebsiteTicketExchangeAnnouncementScheduler,
+  stopWebsiteTicketExchangeAnnouncementScheduler,
+} from "./ticketExchangeWebsite/scheduler.js";
+import {
   AUTH_DIR,
   DATABASE_PATH,
   DATA_DIR,
@@ -3084,6 +3088,7 @@ export const startBot = async (): Promise<void> => {
         await runStartupHealthCheck(sock, config, discoveredGroupMetadata);
         startSpotlightScheduler(sock, config, getEffectiveTicketSpotlightTargetJids);
         startTicketMarketplaceRuleReminderScheduler(sock, config);
+        startWebsiteTicketExchangeAnnouncementScheduler(sock, config);
         startAnnouncementScheduler(sock, config, () => discoveredGroups);
         startCleanupScheduler(sock, config);
       })();
@@ -3101,6 +3106,7 @@ export const startBot = async (): Promise<void> => {
       messageQueue.splice(0, messageQueue.length);
       stopSpotlightScheduler();
       stopTicketMarketplaceRuleReminderScheduler();
+      stopWebsiteTicketExchangeAnnouncementScheduler();
       stopAnnouncementScheduler();
       stopCleanupScheduler();
 
@@ -3277,6 +3283,7 @@ const shutdown = async (signal: string): Promise<void> => {
 
     stopSpotlightScheduler();
     stopTicketMarketplaceRuleReminderScheduler();
+    stopWebsiteTicketExchangeAnnouncementScheduler();
     stopAnnouncementScheduler();
     stopCleanupScheduler();
 
