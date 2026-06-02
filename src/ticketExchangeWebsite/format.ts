@@ -8,22 +8,71 @@ const trimText = (value: string, maxLength: number): string => {
   return `${trimmed.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 };
 
-const PROFANITY_PATTERNS = [
-  /\bf+u+c+k+(?:e[drs]?|i+n+g+)?\b/giu,
-  /\bs+h+i+t+(?:t+y+|s+)?\b/giu,
-  /\bc+u+n+t+s?\b/giu,
-  /\bb+i+t+c+h+(?:e[ds])?\b/giu,
-  /\bb+a+s+t+a+r+d+s?\b/giu,
+const NOTE_REMOVED_TEXT = "[removed for language]";
+
+const COMPACT_NOTE_BLOCKLIST = [
+  "fuck",
+  "fucker",
+  "fucked",
+  "fucking",
+  "shit",
+  "shitty",
+  "cunt",
+  "bitch",
+  "bitches",
+  "bastard",
+  "nigger",
+  "nigga",
+  "kike",
+  "faggot",
+  "fag",
+  "tranny",
+  "retard",
+  "spastic",
+  "paki",
+  "chink",
+  "gook",
+  "coon",
+  "dyke",
+  "nazi",
 ] as const;
 
-const maskProfanity = (value: string): string =>
-  PROFANITY_PATTERNS.reduce(
-    (next, pattern) => next.replace(pattern, (match) => "*".repeat(match.length)),
-    value,
-  );
+const leetspeakMap: Record<string, string> = {
+  "0": "o",
+  "1": "i",
+  "3": "e",
+  "4": "a",
+  "5": "s",
+  "7": "t",
+  "8": "b",
+  "@": "a",
+  "$": "s",
+  "!": "i",
+};
+
+const normaliseAbuseScanText = (value: string): string =>
+  value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/gu, "")
+    .toLowerCase()
+    .replace(/[0134578@$!]/gu, (match) => leetspeakMap[match] ?? match)
+    .replace(/(.)\1{2,}/gu, "$1$1");
+
+const getCompactScanText = (value: string): string =>
+  normaliseAbuseScanText(value).replace(/[^a-z0-9]+/gu, "");
+
+const hasBlockedNoteLanguage = (value: string): boolean => {
+  const compact = getCompactScanText(value);
+  if (COMPACT_NOTE_BLOCKLIST.some((term) => compact.includes(term))) {
+    return true;
+  }
+
+  const normalised = normaliseAbuseScanText(value);
+  return /\b(?:kill\s+yourself|gas\s+(?:the\s+)?(?:jews|black|blacks|muslims|gays)|white\s+power|heil\s+hitler)\b/iu.test(normalised);
+};
 
 const formatNote = (value: string): string => {
-  const note = trimText(maskProfanity(value), 140);
+  const note = hasBlockedNoteLanguage(value) ? NOTE_REMOVED_TEXT : trimText(value, 140);
   return note ? `\nNote: ${note}` : "";
 };
 

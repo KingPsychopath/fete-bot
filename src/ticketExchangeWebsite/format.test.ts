@@ -51,7 +51,7 @@ describe("website Ticket Exchange announcements", () => {
     expect(message).toContain("Got one? Open the link to contact them.");
   });
 
-  it("masks obvious profanity in notes", () => {
+  it("removes notes with obvious profanity", () => {
     const message = buildWebsiteTicketExchangeAnnouncement(
       "https://fete.outofofficecollective.co.uk",
       {
@@ -60,7 +60,20 @@ describe("website Ticket Exchange announcements", () => {
       },
     );
 
-    expect(message).toContain("Note: need this badly, no **** offers");
+    expect(message).toContain("Note: [removed for language]");
     expect(message).not.toContain("shit");
+  });
+
+  it("removes notes with creative spacing and hate language", () => {
+    const message = buildWebsiteTicketExchangeAnnouncement(
+      "https://fete.outofofficecollective.co.uk",
+      {
+        ...listing,
+        note: "no f u c k i n g timewasters, heil hitler",
+      },
+    );
+
+    expect(message).toContain("Note: [removed for language]");
+    expect(message).not.toContain("heil");
   });
 });
