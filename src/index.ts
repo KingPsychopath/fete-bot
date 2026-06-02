@@ -948,7 +948,10 @@ Reply with:
 };
 
 const logConfig = (): void => {
-  log("Loaded config", config);
+  log("Loaded config", {
+    ...config,
+    ticketExchangeWebsiteBotSecret: config.ticketExchangeWebsiteBotSecret ? "[redacted]" : "",
+  });
   log("Storage paths", {
     dataDir: DATA_DIR,
     databasePath: DATABASE_PATH,

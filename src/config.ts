@@ -225,7 +225,9 @@ const loadedConfig = {
     "https://fete.outofofficecollective.co.uk",
   ticketExchangeWebsiteBotSecret: normaliseEnvValue(process.env.TICKET_EXCHANGE_BOT_SECRET) || "",
   ticketExchangeWebsiteTargetJids: parseList(
-    process.env.TICKET_EXCHANGE_WEBSITE_TARGET_JIDS || process.env.TICKET_SPOTLIGHT_TARGET_JIDS || "",
+    process.env.TICKET_EXCHANGE_WEBSITE_TARGET_JIDS ||
+      process.env.TICKET_SPOTLIGHT_TARGET_JIDS ||
+      DEFAULT_TICKET_SPOTLIGHT_TARGET_JIDS,
   ),
   ticketExchangeWebsitePollSeconds: parsePositiveInteger(
     process.env.TICKET_EXCHANGE_WEBSITE_POLL_SECONDS,
