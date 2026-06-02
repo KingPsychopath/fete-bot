@@ -2,6 +2,8 @@ import type { WASocket } from "@whiskeysockets/baileys";
 
 import type { Config } from "../config.js";
 import { getDebugRedirectSwitchState } from "../debugRedirectSwitch.js";
+import { getUserAliases } from "../db.js";
+import { expandKnownAliases } from "../lidMap.js";
 import { error, log, warn } from "../logger.js";
 import {
   getOpenCleanupCampaign,
@@ -37,6 +39,57 @@ let activeCleanupHooks: CleanupSchedulerHooks = {};
 
 const describeError = (value: unknown): string =>
   value instanceof Error ? value.message : String(value);
+
+const isUserChatJid = (jid: string): boolean => jid.endsWith("@s.whatsapp.net") || jid.endsWith("@lid");
+const isLidJid = (jid: string): boolean => jid.endsWith("@lid");
+const isPhoneJid = (jid: string): boolean => jid.endsWith("@s.whatsapp.net");
+
+const getCleanupDmTargets = (member: { userId: string; primaryJid: string }): string[] => {
+  const aliases = expandKnownAliases([
+    member.primaryJid,
+    ...getUserAliases(member.userId).map((alias) => alias.alias),
+  ]).filter(isUserChatJid);
+
+  return Array.from(new Set([
+    ...aliases.filter(isLidJid),
+    ...aliases.filter(isPhoneJid),
+    member.primaryJid,
+  ].filter(isUserChatJid)));
+};
+
+const getPhoneDigitsFromJid = (jid: string): string | null => {
+  if (!isPhoneJid(jid)) {
+    return null;
+  }
+
+  const digits = jid.replace(/@s\.whatsapp\.net$/iu, "").replace(/\D/gu, "");
+  return digits.length > 0 ? digits : null;
+};
+
+const assertPhoneTargetExists = async (sock: WASocket, targetJid: string): Promise<void> => {
+  const digits = getPhoneDigitsFromJid(targetJid);
+  if (!digits) {
+    return;
+  }
+
+  const onWhatsApp = (sock as Partial<Pick<WASocket, "onWhatsApp">>).onWhatsApp;
+  if (typeof onWhatsApp !== "function") {
+    return;
+  }
+
+  const results = await onWhatsApp(digits) ?? [];
+  const exists = results.some((result) => result.exists !== false);
+  log("cleanup.dm_target_onwhatsapp", {
+    targetJid,
+    digits,
+    exists,
+    resultCount: results.length,
+  });
+
+  if (!exists) {
+    throw new Error("Target phone JID is not registered on WhatsApp");
+  }
+};
 
 let cleanupDmWait = (delayMs: number): Promise<void> => new Promise((resolve) => {
   setTimeout(resolve, delayMs);
@@ -114,34 +167,72 @@ export const runCleanupSchedulerTick = async (sock: WASocket, config = activeCle
     let failedCount = 0;
 
     for (const [index, member] of members.entries()) {
+      const targets = getCleanupDmTargets(member);
+      let lastTargetError: unknown = null;
+
       try {
         log("cleanup.dm_send_attempt", {
           campaignId: campaign.id,
           userId: member.userId,
-          jid: member.primaryJid,
+          primaryJid: member.primaryJid,
+          targets,
           index: index + 1,
           count: members.length,
         });
-        const sent = await sock.sendMessage(member.primaryJid, { text: campaign.dmMessage });
-        const sentAt = Date.now();
-        const messageId = sent?.key.id;
-        if (!messageId) {
-          throw new Error("WhatsApp send returned without a message id");
+
+        let sent: Awaited<ReturnType<WASocket["sendMessage"]>> | null = null;
+        let targetJid: string | null = null;
+        for (const [targetIndex, target] of targets.entries()) {
+          try {
+            log("cleanup.dm_target_attempt", {
+              campaignId: campaign.id,
+              userId: member.userId,
+              primaryJid: member.primaryJid,
+              targetJid: target,
+              targetIndex: targetIndex + 1,
+              targetCount: targets.length,
+            });
+            await assertPhoneTargetExists(sock, target);
+            const targetSent = await sock.sendMessage(target, { text: campaign.dmMessage });
+            const targetMessageId = targetSent?.key.id;
+            if (!targetMessageId) {
+              throw new Error("WhatsApp send returned without a message id");
+            }
+            sent = targetSent;
+            targetJid = target;
+            break;
+          } catch (targetError) {
+            lastTargetError = targetError;
+            warn("cleanup.dm_target_failed", {
+              campaignId: campaign.id,
+              userId: member.userId,
+              primaryJid: member.primaryJid,
+              targetJid: target,
+              error: targetError,
+            });
+          }
         }
+
+        const messageId = sent?.key.id;
+        if (!sent || !targetJid || !messageId) {
+          throw lastTargetError ?? new Error("No usable cleanup DM target");
+        }
+        const sentAt = Date.now();
         markCleanupDmSent(campaign.id, member.userId, sentAt);
-        recordCleanupMessage(campaign.id, member.primaryJid, messageId, "dm", member.userId, sentAt);
+        recordCleanupMessage(campaign.id, targetJid, messageId, "dm", member.userId, sentAt);
         sentCount += 1;
         activeCleanupHooks.onDmSendAccepted?.({
           campaignId: campaign.id,
           userId: member.userId,
-          targetJid: member.primaryJid,
+          targetJid,
           messageId,
           remoteJid: sent.key.remoteJid,
         });
         log("cleanup.dm_send_success", {
           campaignId: campaign.id,
           userId: member.userId,
-          jid: member.primaryJid,
+          primaryJid: member.primaryJid,
+          targetJid,
           messageId,
           remoteJid: sent.key.remoteJid,
         });
@@ -151,7 +242,8 @@ export const runCleanupSchedulerTick = async (sock: WASocket, config = activeCle
         warn("cleanup.dm_send_failed", {
           campaignId: campaign.id,
           userId: member.userId,
-          jid: member.primaryJid,
+          primaryJid: member.primaryJid,
+          targets,
           error: sendError,
         });
       }

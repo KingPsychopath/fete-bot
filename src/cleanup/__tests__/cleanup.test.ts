@@ -316,6 +316,39 @@ describe("cleanup campaign", () => {
     }));
   });
 
+  it("stores the lid chat identity as the cleanup primary jid when metadata provides one", async () => {
+    await setupDb();
+    const { handleCleanupCommand } = await import("../commands.js");
+    const store = await import("../store.js");
+    const sendMessage = vi.fn().mockResolvedValue({ key: { id: "admin-reply" } });
+
+    await handleCleanupCommand(
+      { sendMessage } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "447700900000@s.whatsapp.net",
+      "!cleanup start 72h public=off",
+      config,
+      new Map([["group@g.us", "Fete Group"]]),
+      new Map([
+        [
+          "group@g.us",
+          {
+            id: "group@g.us",
+            subject: "Fete Group",
+            participants: [
+              { id: "447700900001@s.whatsapp.net", lid: "111222333@lid", phoneNumber: "447700900001" },
+            ],
+          },
+        ],
+      ]) as never,
+      new Set(["bot@s.whatsapp.net"]),
+    );
+
+    const campaign = store.getOpenCleanupCampaign();
+    expect(campaign).not.toBeNull();
+    expect(store.listCleanupCandidateMembers(campaign!.id, 10)[0]?.primaryJid).toBe("111222333@lid");
+  });
+
   it("rejects disabled DM batch options", async () => {
     await setupDb();
     const { handleCleanupCommand } = await import("../commands.js");
@@ -585,6 +618,76 @@ describe("cleanup campaign", () => {
     expect(stats?.dmPending).toBe(0);
     expect(stats?.dmSent).toBe(2);
     expect(stats?.campaign.nextBatchNotBefore).toBeGreaterThan(Date.now());
+  });
+
+  it("prefers a known lid alias when sending cleanup DMs", async () => {
+    const db = await setupDb();
+    const scheduler = await import("../scheduler.js");
+    const store = await import("../store.js");
+    db.getDb()
+      .prepare("INSERT INTO user_aliases (alias, alias_type, user_id, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?)")
+      .run("111222333@lid", "lid", "user-1", 1, 1);
+    db.getDb()
+      .prepare("INSERT INTO user_aliases (alias, alias_type, user_id, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?)")
+      .run("447700900001@s.whatsapp.net", "phone", "user-1", 1, 1);
+    store.createCleanupCampaign({
+      durationMs: 72 * 60 * 60_000,
+      actorUserId: "owner",
+      actorLabel: "owner",
+      channelLink: config.cleanupChannelLink,
+      publicMessage: "public",
+      dmMessage: "dm",
+      batchSize: 8,
+      batchIntervalMinutes: 30,
+      nowMs: Date.now(),
+      members: [
+        { userId: "user-1", displayName: "User One", primaryJid: "447700900001@s.whatsapp.net" },
+      ],
+    });
+    const sendMessage = vi.fn().mockResolvedValue({ key: { id: "dm-1", remoteJid: "111222333@lid" } });
+    scheduler.setCleanupDmWaitForTests(vi.fn().mockResolvedValue(undefined));
+
+    await scheduler.runCleanupSchedulerTick({ sendMessage } as never, config);
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledWith("111222333@lid", { text: "dm" });
+  });
+
+  it("falls back to a phone alias when a lid cleanup DM target fails", async () => {
+    const db = await setupDb();
+    const scheduler = await import("../scheduler.js");
+    const store = await import("../store.js");
+    const campaign = store.createCleanupCampaign({
+      durationMs: 72 * 60 * 60_000,
+      actorUserId: "owner",
+      actorLabel: "owner",
+      channelLink: config.cleanupChannelLink,
+      publicMessage: "public",
+      dmMessage: "dm",
+      batchSize: 8,
+      batchIntervalMinutes: 30,
+      nowMs: Date.now(),
+      members: [
+        { userId: "user-1", displayName: "User One", primaryJid: "447700900001@s.whatsapp.net" },
+      ],
+    });
+    db.getDb()
+      .prepare("INSERT INTO user_aliases (alias, alias_type, user_id, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?)")
+      .run("111222333@lid", "lid", "user-1", 1, 1);
+    db.getDb()
+      .prepare("INSERT INTO user_aliases (alias, alias_type, user_id, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?)")
+      .run("447700900001@s.whatsapp.net", "phone", "user-1", 1, 1);
+    const sendMessage = vi.fn()
+      .mockRejectedValueOnce(new Error("lid failed"))
+      .mockResolvedValueOnce({ key: { id: "dm-1", remoteJid: "447700900001@s.whatsapp.net" } });
+    scheduler.setCleanupDmWaitForTests(vi.fn().mockResolvedValue(undefined));
+
+    await scheduler.runCleanupSchedulerTick({ sendMessage } as never, config);
+
+    expect(sendMessage).toHaveBeenNthCalledWith(1, "111222333@lid", { text: "dm" });
+    expect(sendMessage).toHaveBeenNthCalledWith(2, "447700900001@s.whatsapp.net", { text: "dm" });
+    expect(store.getCleanupStats(campaign.id)?.dmSent).toBe(1);
+    expect(store.getCleanupStats(campaign.id)?.dmFailed).toBe(0);
   });
 
   it("lists recently sent cleanup DMs", async () => {

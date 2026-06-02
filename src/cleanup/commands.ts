@@ -233,9 +233,10 @@ const primaryJidForParticipant = (participant: {
   lid?: string | null;
   phoneNumber?: string | null;
 }): string | null =>
-  parseToJid(participant.phoneNumber ?? "") ??
-  (participant.id.endsWith("@s.whatsapp.net") || participant.id.endsWith("@lid") ? participant.id : null) ??
+  (participant.id.endsWith("@lid") ? participant.id : null) ??
   participant.lid ??
+  (participant.id.endsWith("@s.whatsapp.net") ? participant.id : null) ??
+  parseToJid(participant.phoneNumber ?? "") ??
   null;
 
 const collectCleanupMembers = async (
