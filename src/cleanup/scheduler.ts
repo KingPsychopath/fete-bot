@@ -14,21 +14,30 @@ import {
 import { CLEANUP_DM_RATE_LIMIT } from "./policy.js";
 
 const CLEANUP_SCHEDULER_INTERVAL_MS = 30_000;
-const CLEANUP_DM_HARD_PAUSED = true;
 
-export const isCleanupDmHardPaused = (): boolean => CLEANUP_DM_HARD_PAUSED;
+export const isCleanupDmHardPaused = (config: Config): boolean => !config.cleanupDmsEnabled;
 
 let cleanupSchedulerTimer: ReturnType<typeof setInterval> | null = null;
 let cleanupBatchInFlight = false;
+let activeCleanupConfig: Config | null = null;
 
 const describeError = (value: unknown): string =>
   value instanceof Error ? value.message : String(value);
 
-const wait = (delayMs: number): Promise<void> => new Promise((resolve) => {
+let cleanupDmWait = (delayMs: number): Promise<void> => new Promise((resolve) => {
   setTimeout(resolve, delayMs);
 });
 
-export const runCleanupSchedulerTick = async (sock: WASocket): Promise<void> => {
+export const setCleanupDmWaitForTests = (waitForTests: typeof cleanupDmWait): void => {
+  cleanupDmWait = waitForTests;
+};
+
+export const runCleanupSchedulerTick = async (sock: WASocket, config = activeCleanupConfig): Promise<void> => {
+  if (!config) {
+    warn("Cleanup scheduler tick skipped without config");
+    return;
+  }
+
   if (cleanupBatchInFlight) {
     return;
   }
@@ -55,7 +64,7 @@ export const runCleanupSchedulerTick = async (sock: WASocket): Promise<void> => 
       return;
     }
 
-    if (CLEANUP_DM_HARD_PAUSED) {
+    if (!config.cleanupDmsEnabled) {
       log("cleanup.dm_hard_paused", { campaignId: campaign.id });
       return;
     }
@@ -94,7 +103,7 @@ export const runCleanupSchedulerTick = async (sock: WASocket): Promise<void> => 
       }
 
       if (index < members.length - 1) {
-        await wait(CLEANUP_DM_RATE_LIMIT.perMessageDelayMs);
+        await cleanupDmWait(CLEANUP_DM_RATE_LIMIT.perMessageDelayMs);
       }
     }
 
@@ -112,8 +121,9 @@ export const runCleanupSchedulerTick = async (sock: WASocket): Promise<void> => 
 
 export const startCleanupScheduler = (
   sock: WASocket,
-  _config: Config,
+  config: Config,
 ): void => {
+  activeCleanupConfig = config;
   stopCleanupScheduler();
   cleanupSchedulerTimer = setInterval(() => {
     void runCleanupSchedulerTick(sock);

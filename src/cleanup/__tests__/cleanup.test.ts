@@ -84,6 +84,7 @@ const config = {
   announcementsGroupMentions: [],
   cleanupChannelLink: "https://whatsapp.com/channel/example",
   cleanupPublicTargetJids: [],
+  cleanupDmsEnabled: true,
   logAllowedMessages: true,
   logMessageText: false,
 } satisfies Config;
@@ -249,6 +250,70 @@ describe("cleanup campaign", () => {
       text: expect.stringContaining("cleanup never removes members"),
     }));
     expect(groupParticipantsUpdate).not.toHaveBeenCalled();
+  });
+
+  it("starts without public notices and carries the previous cleanup whitelist by default", async () => {
+    await setupDb();
+    const { handleCleanupCommand } = await import("../commands.js");
+    const { resolveUser } = await import("../../identity.js");
+    const store = await import("../store.js");
+    const resolved = await resolveUser({
+      participantJid: "447700900001@s.whatsapp.net",
+      phoneJid: "447700900001@s.whatsapp.net",
+      pushName: "User One",
+      selfJids: new Set(["bot@s.whatsapp.net"]),
+    });
+    expect(resolved).not.toBeNull();
+    const previous = store.createCleanupCampaign({
+      durationMs: 72 * 60 * 60_000,
+      actorUserId: "owner",
+      actorLabel: "owner",
+      channelLink: config.cleanupChannelLink,
+      publicMessage: "public",
+      dmMessage: "dm",
+      batchSize: 25,
+      batchIntervalMinutes: 30,
+      nowMs: Date.now(),
+      members: [
+        { userId: resolved!.userId, displayName: "User One", primaryJid: "447700900001@s.whatsapp.net" },
+      ],
+    });
+    store.recordCleanupSignal(previous.id, resolved!.userId, "manual", "447700900001@s.whatsapp.net", "manual-1");
+    store.setCleanupCampaignStatus(previous.id, "stopped");
+
+    const sendMessage = vi.fn().mockResolvedValue({ key: { id: "admin-reply" } });
+
+    await handleCleanupCommand(
+      { sendMessage } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "447700900000@s.whatsapp.net",
+      "!cleanup start 72h public=off",
+      config,
+      new Map([["group@g.us", "Fete Group"]]),
+      new Map([
+        [
+          "group@g.us",
+          {
+            id: "group@g.us",
+            subject: "Fete Group",
+            participants: [
+              { id: "447700900001@s.whatsapp.net" },
+              { id: "447700900002@s.whatsapp.net" },
+            ],
+          },
+        ],
+      ]) as never,
+      new Set(["bot@s.whatsapp.net"]),
+    );
+
+    const campaign = store.getOpenCleanupCampaign();
+    expect(campaign).not.toBeNull();
+    expect(store.getCleanupStats(campaign!.id)?.whitelisted).toBe(1);
+    expect(store.listCleanupWhitelistedMembers(campaign!.id, 10)[0]?.userId).toBe(resolved!.userId);
+    expect(sendMessage).not.toHaveBeenCalledWith("group@g.us", expect.anything());
+    expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", expect.objectContaining({
+      text: expect.stringContaining("Public notices sent: 0"),
+    }));
   });
 
   it("rejects disabled DM batch options", async () => {
@@ -429,7 +494,7 @@ describe("cleanup campaign", () => {
     }));
   });
 
-  it("hard-pauses cleanup DMs while leaving the campaign active", async () => {
+  it("can disable cleanup DMs while leaving the campaign active", async () => {
     await setupDb();
     const scheduler = await import("../scheduler.js");
     const store = await import("../store.js");
@@ -449,7 +514,7 @@ describe("cleanup campaign", () => {
     });
     const sendMessage = vi.fn().mockResolvedValue({ key: { id: "dm-1" } });
 
-    await scheduler.runCleanupSchedulerTick({ sendMessage } as never);
+    await scheduler.runCleanupSchedulerTick({ sendMessage } as never, { ...config, cleanupDmsEnabled: false });
 
     const stats = store.getCleanupStats(campaign.id);
     expect(sendMessage).not.toHaveBeenCalled();
@@ -458,7 +523,40 @@ describe("cleanup campaign", () => {
     expect(stats?.dmSent).toBe(0);
   });
 
-  it("shows the hard DM pause in cleanup status", async () => {
+  it("sends cleanup DMs in small batches when enabled", async () => {
+    await setupDb();
+    const scheduler = await import("../scheduler.js");
+    const store = await import("../store.js");
+    const campaign = store.createCleanupCampaign({
+      durationMs: 72 * 60 * 60_000,
+      actorUserId: "owner",
+      actorLabel: "owner",
+      channelLink: config.cleanupChannelLink,
+      publicMessage: "public",
+      dmMessage: "dm",
+      batchSize: 5,
+      batchIntervalMinutes: 30,
+      nowMs: Date.now(),
+      members: [
+        { userId: "user-1", displayName: "User One", primaryJid: "447700900001@s.whatsapp.net" },
+        { userId: "user-2", displayName: "User Two", primaryJid: "447700900002@s.whatsapp.net" },
+      ],
+    });
+    const sendMessage = vi.fn().mockResolvedValue({ key: { id: "dm-1" } });
+    scheduler.setCleanupDmWaitForTests(vi.fn().mockResolvedValue(undefined));
+
+    await scheduler.runCleanupSchedulerTick({ sendMessage } as never, config);
+
+    const stats = store.getCleanupStats(campaign.id);
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(sendMessage).toHaveBeenCalledWith("447700900001@s.whatsapp.net", { text: "dm" });
+    expect(sendMessage).toHaveBeenCalledWith("447700900002@s.whatsapp.net", { text: "dm" });
+    expect(stats?.dmPending).toBe(0);
+    expect(stats?.dmSent).toBe(2);
+    expect(stats?.campaign.nextBatchNotBefore).toBeGreaterThan(Date.now());
+  });
+
+  it("shows disabled cleanup DMs in cleanup status", async () => {
     await setupDb();
     const { handleCleanupCommand } = await import("../commands.js");
     const store = await import("../store.js");
@@ -483,7 +581,7 @@ describe("cleanup campaign", () => {
       { userId: "owner", label: "owner", role: "owner" },
       "447700900000@s.whatsapp.net",
       "!cleanup status",
-      config,
+      { ...config, cleanupDmsEnabled: false },
       new Map([["group@g.us", "Fete Group"]]),
       new Map() as never,
       new Set(["bot@s.whatsapp.net"]),

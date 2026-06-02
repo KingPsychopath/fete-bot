@@ -56,6 +56,8 @@ export type CleanupMemberSeed = {
   primaryJid: string;
   firstSeenGroupJid?: string | null;
   protected?: boolean;
+  whitelisted?: boolean;
+  whitelistReason?: CleanupSignalType;
 };
 
 export type CleanupCampaignCreateInput = {
@@ -257,22 +259,24 @@ export const createCleanupCampaign = (input: CleanupCampaignCreateInput): Cleanu
 
     for (const member of uniqueMembers.values()) {
       const isProtected = Boolean(member.protected);
+      const isWhitelisted = isProtected || Boolean(member.whitelisted);
+      const whitelistReason = isProtected ? "protected" : member.whitelistReason ?? "manual";
       insertMember.run(
         id,
         member.userId,
         member.displayName ?? null,
         member.primaryJid,
         member.firstSeenGroupJid ?? null,
-        isProtected ? nowMs : null,
-        isProtected ? "protected" : null,
-        isProtected ? nowMs : null,
-        isProtected ? "skipped" : "pending",
+        isWhitelisted ? nowMs : null,
+        isWhitelisted ? whitelistReason : null,
+        isWhitelisted ? nowMs : null,
+        isWhitelisted ? "skipped" : "pending",
         nowMs,
         nowMs,
       );
 
-      if (isProtected) {
-        recordCleanupSignal(id, member.userId, "protected", member.firstSeenGroupJid ?? null, null, nowMs);
+      if (isWhitelisted) {
+        recordCleanupSignal(id, member.userId, whitelistReason, member.firstSeenGroupJid ?? null, null, nowMs);
       }
     }
 

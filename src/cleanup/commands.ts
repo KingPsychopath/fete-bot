@@ -38,7 +38,7 @@ export type CleanupActor = {
 
 const CLEANUP_HELP = `*Cleanup commands*
 
-!cleanup start {duration?} [channel=https://...]
+!cleanup start {duration?} [channel=https://...] [public=off] [carry=off]
 !cleanup status
 !cleanup whitelist {limit?}
 !cleanup candidates {limit?}
@@ -92,6 +92,26 @@ const parseChannelOption = (tokens: readonly string[], fallback: string | null):
     return null;
   }
   return value;
+};
+
+const parseBooleanOption = (
+  tokens: readonly string[],
+  names: readonly string[],
+  fallback: boolean,
+): boolean => {
+  const token = tokens.find((candidate) => names.some((name) => candidate.startsWith(`${name}=`)));
+  if (!token) {
+    return fallback;
+  }
+
+  const value = token.slice(token.indexOf("=") + 1).trim().toLowerCase();
+  if (["0", "false", "no", "off", "none"].includes(value)) {
+    return false;
+  }
+  if (["1", "true", "yes", "on"].includes(value)) {
+    return true;
+  }
+  return fallback;
 };
 
 const getCommandParts = (text: string): string[] => text.trim().split(/\s+/).filter(Boolean);
@@ -232,6 +252,28 @@ const collectCleanupMembers = async (
   return Array.from(members.values());
 };
 
+const carryPreviousCleanupWhitelist = (
+  members: CleanupMemberSeed[],
+  previousCampaignId: string | null,
+): CleanupMemberSeed[] => {
+  if (!previousCampaignId) {
+    return members;
+  }
+
+  const previousWhitelistedUserIds = new Set(
+    listCleanupWhitelistedMembers(previousCampaignId, 5_000).map((member) => member.userId),
+  );
+  if (previousWhitelistedUserIds.size === 0) {
+    return members;
+  }
+
+  return members.map((member) =>
+    previousWhitelistedUserIds.has(member.userId)
+      ? { ...member, whitelisted: true, whitelistReason: "manual" }
+      : member
+  );
+};
+
 const sendPublicNotices = async (
   sock: WASocket,
   campaignId: string,
@@ -313,8 +355,9 @@ export const handleCleanupCommand = async (
       return true;
     }
 
+    const supportedOptionPrefixes = ["channel=", "public=", "notice=", "notices=", "carry="];
     const unsupportedOption = optionTokens.find((token) =>
-      token.includes("=") && !token.startsWith("channel=")
+      token.includes("=") && !supportedOptionPrefixes.some((prefix) => token.startsWith(prefix))
     );
     if (unsupportedOption) {
       await sock.sendMessage(replyJid, {
@@ -324,11 +367,15 @@ export const handleCleanupCommand = async (
     }
 
     const channelLink = parseChannelOption(optionTokens, config.cleanupChannelLink);
+    const publicNoticesEnabled = parseBooleanOption(optionTokens, ["public", "notice", "notices"], true);
+    const carryPreviousWhitelist = parseBooleanOption(optionTokens, ["carry"], true);
     const label = durationLabel(durationMs);
     const publicMessage = buildCleanupPublicMessage(label, channelLink);
     const dmMessage = buildCleanupDmMessage(label, channelLink);
-    const publicTargets = getPublicTargetJids(config, groups);
-    const members = await collectCleanupMembers(config, groupMetadataByJid, selfJids, getManagedGroupJids(config, groups));
+    const publicTargets = publicNoticesEnabled ? getPublicTargetJids(config, groups) : [];
+    const previousCampaign = carryPreviousWhitelist ? getLatestCleanupCampaign() : null;
+    const collectedMembers = await collectCleanupMembers(config, groupMetadataByJid, selfJids, getManagedGroupJids(config, groups));
+    const members = carryPreviousCleanupWhitelist(collectedMembers, previousCampaign?.id ?? null);
 
     if (members.length === 0) {
       await sock.sendMessage(replyJid, {
@@ -365,7 +412,7 @@ export const handleCleanupCommand = async (
 
     const stats = getCleanupStats(campaign.id);
     await sock.sendMessage(replyJid, {
-      text: stats ? formatCleanupStatus(stats, Date.now(), { hardPauseDms: isCleanupDmHardPaused() }) : "Couldn't load cleanup status.",
+      text: stats ? formatCleanupStatus(stats, Date.now(), { hardPauseDms: isCleanupDmHardPaused(config) }) : "Couldn't load cleanup status.",
     });
     return true;
   }

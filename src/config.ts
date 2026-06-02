@@ -274,6 +274,7 @@ const loadedConfig = {
   announcementsGroupMentions: parseAnnouncementGroupMentions(process.env.ANNOUNCEMENTS_GROUP_MENTIONS_JSON),
   cleanupChannelLink: normaliseEnvValue(process.env.CLEANUP_CHANNEL_LINK) || null,
   cleanupPublicTargetJids: parseList(process.env.CLEANUP_PUBLIC_TARGET_JIDS),
+  cleanupDmsEnabled: parseBoolean(process.env.CLEANUP_DMS_ENABLED, true),
   logAllowedMessages: parseBoolean(process.env.LOG_ALLOWED_MESSAGES, true),
   logMessageText: parseBoolean(process.env.LOG_MESSAGE_TEXT, false),
 } as const;

@@ -83,6 +83,7 @@ const config = {
   announcementsGroupMentions: [{ label: "FDLM General", jid: "general@g.us" }],
   cleanupChannelLink: null,
   cleanupPublicTargetJids: [],
+  cleanupDmsEnabled: true,
   logAllowedMessages: true,
   logMessageText: false,
 } satisfies Config;

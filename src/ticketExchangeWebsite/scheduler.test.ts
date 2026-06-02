@@ -97,6 +97,7 @@ const config = {
   announcementsGroupMentions: [],
   cleanupChannelLink: null,
   cleanupPublicTargetJids: [],
+  cleanupDmsEnabled: true,
   logAllowedMessages: true,
   logMessageText: false,
 } satisfies Config;
