@@ -39,7 +39,7 @@ const writeState = (state: WebsiteVisibilityPromptState): void => {
 };
 
 export const buildTicketExchangeUrl = (baseUrl: string): string =>
-  `${baseUrl.replace(/\/+$/u, "")}/tickets`;
+  `${baseUrl.replace(/\/+$/u, "")}/exchange`;
 
 export const buildSpotlightWebsitePromptText = (baseUrl: string): string => `Hey - we've queued your ticket post for extra visibility in the wider Fete chats.
 

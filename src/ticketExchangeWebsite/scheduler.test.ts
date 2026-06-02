@@ -113,7 +113,7 @@ const listing = {
   note: "",
   expiresAt: "2026-06-02T12:00:00.000Z",
   createdAt: "2026-06-02T09:00:00.000Z",
-  url: "/tickets/listing_1",
+  url: "/exchange/listing_1",
 } satisfies WebsiteTicketExchangeListing;
 
 describe("website Ticket Exchange scheduler", () => {

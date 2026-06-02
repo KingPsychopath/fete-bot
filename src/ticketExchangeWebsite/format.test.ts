@@ -15,7 +15,7 @@ const listing = {
   note: "need garn",
   expiresAt: "2026-06-02T11:49:00.000Z",
   createdAt: "2026-06-02T08:50:00.000Z",
-  url: "/tickets/evt_fb92305ee56b7b95",
+  url: "/exchange/evt_fb92305ee56b7b95",
 } satisfies WebsiteTicketExchangeListing;
 
 describe("website Ticket Exchange announcements", () => {
@@ -31,7 +31,7 @@ describe("website Ticket Exchange announcements", () => {
     expect(message).toContain("Visible until today, 12:49");
     expect(message).toContain("Note: need garn");
     expect(message).toContain("Interested? Open the link to contact them.");
-    expect(message).toContain("https://fete.outofofficecollective.co.uk/tickets/evt_fb92305ee56b7b95");
+    expect(message).toContain("https://fete.outofofficecollective.co.uk/exchange/evt_fb92305ee56b7b95");
     expect(message).toContain("OOOC only connects people - please check details before paying.");
   });
 

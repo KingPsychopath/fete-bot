@@ -31,7 +31,7 @@ afterEach(() => {
 describe("Ticket Exchange visibility prompts", () => {
   it("builds the public Ticket Exchange URL", () => {
     expect(buildTicketExchangeUrl("https://fete.outofofficecollective.co.uk/")).toBe(
-      "https://fete.outofofficecollective.co.uk/tickets",
+      "https://fete.outofofficecollective.co.uk/exchange",
     );
   });
 
@@ -40,7 +40,7 @@ describe("Ticket Exchange visibility prompts", () => {
 
     expect(text).toContain("we've queued your ticket post for extra visibility");
     expect(text).toContain("Fete Finder Ticket Exchange");
-    expect(text).toContain("https://fete.outofofficecollective.co.uk/tickets");
+    expect(text).toContain("https://fete.outofofficecollective.co.uk/exchange");
   });
 
   it("builds buying and selling redirect copy", () => {
