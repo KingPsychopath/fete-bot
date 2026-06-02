@@ -105,6 +105,7 @@ export const runWebsiteTicketExchangeAnnouncementTick = async (
         listing,
       );
       let sentCount = 0;
+      let failedCount = 0;
 
       for (const targetJid of targetJids) {
         if (config.dryRun) {
@@ -124,6 +125,7 @@ export const runWebsiteTicketExchangeAnnouncementTick = async (
             targetJid,
           });
         } catch (sendError) {
+          failedCount += 1;
           warn("ticket_exchange.website_announcement.send_failed", {
             listingId: listing.id,
             targetJid,
@@ -133,6 +135,16 @@ export const runWebsiteTicketExchangeAnnouncementTick = async (
       }
 
       if (sentCount > 0) {
+        if (failedCount > 0) {
+          warn("ticket_exchange.website_announcement.not_marked_partial_send", {
+            listingId: listing.id,
+            sentCount,
+            failedCount,
+            targetCount: targetJids.length,
+          });
+          continue;
+        }
+
         if (debugRedirectEnabled) {
           log("ticket_exchange.website_announcement.debug_preview_not_marked", {
             listingId: listing.id,

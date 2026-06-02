@@ -169,4 +169,23 @@ describe("website Ticket Exchange scheduler", () => {
       listingId: "listing_1",
     }));
   });
+
+  it("does not mark listings announced when only some targets receive them", async () => {
+    const { runWebsiteTicketExchangeAnnouncementTick } = await import("./scheduler.js");
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ key: { id: "sent-1" } })
+      .mockRejectedValueOnce(new Error("not in group"));
+    mocks.fetchWebsiteTicketExchangeListings.mockResolvedValue([
+      {
+        ...listing,
+        createdAt: new Date(Date.now() - 6 * 60 * 1000).toISOString(),
+      },
+    ]);
+
+    await runWebsiteTicketExchangeAnnouncementTick({ sendMessage } as never, config);
+
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(mocks.markWebsiteTicketExchangeListingAnnounced).not.toHaveBeenCalled();
+  });
 });
