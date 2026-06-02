@@ -34,8 +34,18 @@ type CreateWhatsAppAuthBackupOptions = {
   maxBackups?: number;
 };
 
-const DEFAULT_MAX_BACKUPS = 10;
 const BACKUP_ROOT_NAME = "auth-backups";
+
+const parseMaxBackups = (value: string | undefined, fallback: number): number => {
+  if (!value?.trim()) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const DEFAULT_MAX_BACKUPS = parseMaxBackups(process.env.WHATSAPP_AUTH_MAX_BACKUPS, 1);
 
 const formatTimestamp = (date: Date): string =>
   date
@@ -63,9 +73,25 @@ const getBackupNames = (backupRoot: string): string[] => {
   }
 
   return readdirSync(backupRoot).filter((name) => {
+    if (name.includes(".tmp-")) {
+      return false;
+    }
+
     const backupPath = path.join(backupRoot, name);
     return statSync(backupPath).isDirectory();
   });
+};
+
+const removeStaleTmpBackups = (backupRoot: string): void => {
+  if (!existsSync(backupRoot)) {
+    return;
+  }
+
+  for (const name of readdirSync(backupRoot)) {
+    if (name.includes(".tmp-")) {
+      rmSync(path.join(backupRoot, name), { recursive: true, force: true });
+    }
+  }
 };
 
 const pruneBackups = (backupRoot: string, maxBackups: number): string[] => {
@@ -106,6 +132,7 @@ export const createWhatsAppAuthBackup = ({
 
   const backupRoot = path.join(dataDir, BACKUP_ROOT_NAME);
   mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
+  removeStaleTmpBackups(backupRoot);
 
   const name = backupName ?? `${formatTimestamp(now)}-${sanitiseBackupPart(linkedIdentity)}`;
   const backupPath = path.join(backupRoot, name);

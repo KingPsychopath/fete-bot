@@ -5,9 +5,10 @@ PROJECT_ID="${RAILWAY_PROJECT_ID:-bdd395a6-c411-4a8f-bb82-0a3303f54f85}"
 ENVIRONMENT="${RAILWAY_ENVIRONMENT:-production}"
 SERVICE="${RAILWAY_SERVICE:-fete-bot}"
 BACKUP_NAME="${1:-}"
+MAX_BACKUPS="${WHATSAPP_AUTH_MAX_BACKUPS:-1}"
 
 railway ssh -p "$PROJECT_ID" -e "$ENVIRONMENT" -s "$SERVICE" \
-  "BACKUP_NAME='$BACKUP_NAME' sh -s" <<'REMOTE'
+  "BACKUP_NAME='$BACKUP_NAME' MAX_BACKUPS='$MAX_BACKUPS' sh -s" <<'REMOTE'
 set -eu
 
 DATA_DIR="${RAILWAY_VOLUME_MOUNT_PATH:-/app/data}"
@@ -25,6 +26,7 @@ AUTH_ID="$(node -e 'const c=require(process.argv[1]); const id=c.me?.id || c.me?
 }
 
 mkdir -p "$BACKUP_ROOT"
+find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -name "*.tmp-*" -exec rm -rf {} + 2>/dev/null || true
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 NAME="${BACKUP_NAME:-$STAMP-$AUTH_ID}"
 case "$NAME" in
@@ -61,4 +63,19 @@ mv "$TMP" "$DEST"
 
 echo "WhatsApp auth backup created: $DEST"
 cat "$DEST/manifest.json"
+
+case "$MAX_BACKUPS" in
+  ''|*[!0-9]*)
+    echo "WHATSAPP_AUTH_MAX_BACKUPS must be a positive integer."
+    exit 1
+    ;;
+esac
+
+if [ "$MAX_BACKUPS" -gt 0 ]; then
+  find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name "*.tmp-*" -printf "%T@ %p\n" |
+    sort -rn |
+    tail -n +"$((MAX_BACKUPS + 1))" |
+    cut -d" " -f2- |
+    xargs -r rm -rf
+fi
 REMOTE

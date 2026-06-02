@@ -92,7 +92,7 @@ The bot automatically snapshots WhatsApp auth after every successful connection.
   manifest.json
 ```
 
-The app keeps the newest 10 backups. To manually snapshot the current working auth:
+The app keeps the newest 1 backup by default. Set `WHATSAPP_AUTH_MAX_BACKUPS` if you need a larger restore window. To manually snapshot the current working auth:
 
 ```bash
 scripts/backup-whatsapp-auth.sh
