@@ -20,6 +20,7 @@ import {
   getLatestCleanupCampaign,
   getOpenCleanupCampaign,
   listCleanupCandidateMembers,
+  listCleanupDmMembers,
   listCleanupMembers,
   listCleanupWhitelistedMembers,
   recordCleanupMessage,
@@ -42,6 +43,7 @@ const CLEANUP_HELP = `*Cleanup commands*
 !cleanup status
 !cleanup whitelist {limit?}
 !cleanup candidates {limit?}
+!cleanup dms {sent|failed|pending|all?} {limit?}
 !cleanup pause
 !cleanup resume
 !cleanup extend {duration}
@@ -170,6 +172,45 @@ const extractKeepManyIdentifiers = (text: string): string[] => {
     .split(/\r?\n/u)
     .flatMap((line) => line.match(/[+]?\d[\d ().-]{6,}\d|[0-9a-f]{8}-[0-9a-f-]{27,}|[0-9]{7,15}@s\.whatsapp\.net/giu) ?? []);
   return Array.from(new Set(candidates.map((candidate) => candidate.trim()).filter(Boolean)));
+};
+
+const parsePositiveLimit = (value: string | undefined, fallback: number, max: number): number => {
+  const limit = Number(value ?? `${fallback}`);
+  return Number.isInteger(limit) && limit > 0 ? Math.min(limit, max) : fallback;
+};
+
+const formatTimestamp = (timestampMs: number | null): string => {
+  if (!timestampMs) {
+    return "not sent";
+  }
+  return new Date(timestampMs).toLocaleString("en-GB", {
+    dateStyle: "short",
+    timeStyle: "short",
+    timeZone: "Europe/London",
+  });
+};
+
+const formatCleanupDmMembers = (
+  title: string,
+  members: ReturnType<typeof listCleanupDmMembers>,
+): string => {
+  if (members.length === 0) {
+    return `${title}\n\nNo matching cleanup DMs.`;
+  }
+
+  return [
+    title,
+    "",
+    ...members.map((member, index) => {
+      const label = member.displayName?.trim() || member.primaryJid;
+      const details = [
+        `status ${member.dmStatus}`,
+        member.dmStatus === "sent" ? `sent ${formatTimestamp(member.dmSentAt)}` : null,
+        member.dmStatus === "failed" && member.dmError ? `error ${member.dmError}` : null,
+      ].filter(Boolean);
+      return `${index + 1}. ${label} (${formatJidForDisplay(member.primaryJid)}) — ${details.join(", ")}`;
+    }),
+  ].join("\n");
 };
 
 const getManagedGroupJids = (
@@ -456,8 +497,7 @@ export const handleCleanupCommand = async (
       return true;
     }
 
-    const limit = Number(parts[2] ?? "50");
-    const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 200) : 50;
+    const safeLimit = parsePositiveLimit(parts[2], 50, 200);
     const members = subcommand === "whitelist"
       ? listCleanupWhitelistedMembers(campaign.id, safeLimit)
       : listCleanupCandidateMembers(campaign.id, safeLimit);
@@ -466,6 +506,28 @@ export const handleCleanupCommand = async (
         subcommand === "whitelist" ? `Whitelisted members (${members.length})` : `Purge candidates (${members.length})`,
         members,
         subcommand === "whitelist" ? "Nobody is whitelisted yet." : "No purge candidates right now.",
+      ),
+    });
+    return true;
+  }
+
+  if (subcommand === "dms" || subcommand === "dm") {
+    const campaign = await getLatestOrReply(sock, replyJid);
+    if (!campaign) {
+      return true;
+    }
+
+    const maybeStatus = parts[2]?.toLowerCase();
+    const status = ["sent", "failed", "pending", "all"].includes(maybeStatus ?? "")
+      ? maybeStatus as "sent" | "failed" | "pending" | "all"
+      : "sent";
+    const limitToken = status === maybeStatus ? parts[3] : parts[2];
+    const safeLimit = parsePositiveLimit(limitToken, 25, 200);
+    const members = listCleanupDmMembers(campaign.id, status, safeLimit);
+    await sock.sendMessage(replyJid, {
+      text: formatCleanupDmMembers(
+        `Cleanup DMs (${status}, ${members.length}${members.length === safeLimit ? "+" : ""})`,
+        members,
       ),
     });
     return true;

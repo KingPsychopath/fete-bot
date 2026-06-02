@@ -644,6 +644,33 @@ export const listCleanupMembers = (
     .all(campaignId, Math.min(Math.max(Math.trunc(limit), 1), 5_000))
     .map(toMember);
 
+export const listCleanupDmMembers = (
+  campaignId: string,
+  status: CleanupDmStatus | "all",
+  limit = 25,
+): CleanupMember[] => {
+  const safeLimit = Math.min(Math.max(Math.trunc(limit), 1), 200);
+  const statusFilter = status === "all" ? "" : "AND dm_status = ?";
+  const orderBy = status === "pending"
+    ? "created_at ASC, user_id ASC"
+    : status === "sent"
+      ? "dm_sent_at DESC, updated_at DESC"
+      : "updated_at DESC";
+  const params = status === "all" ? [campaignId, safeLimit] : [campaignId, status, safeLimit];
+
+  return getDb()
+    .prepare<(string | number)[], MemberRow>(`
+      SELECT *
+      FROM cleanup_members
+      WHERE campaign_id = ?
+        ${statusFilter}
+      ORDER BY ${orderBy}
+      LIMIT ?
+    `)
+    .all(...params)
+    .map(toMember);
+};
+
 export const findCleanupMemberByUserOrJid = (
   campaignId: string,
   identifiers: readonly string[],
