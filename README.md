@@ -126,9 +126,10 @@ The backup contains WhatsApp linked-device credentials. Treat it like a secret.
 - `TICKET_EXCHANGE_WEBSITE_ANNOUNCEMENTS_ENABLED=false` by default; when enabled, the bot polls Fete Finder for new Ticket Exchange listings and posts website links only, never user contact details. Listings wait `TICKET_EXCHANGE_WEBSITE_ANNOUNCE_DELAY_MINUTES` before posting. When a marketplace post is queued for spotlight, the bot can DM the poster a Fete Finder nudge, cooled down by `TICKET_EXCHANGE_WEBSITE_SPOTLIGHT_PROMPT_COOLDOWN_DAYS`.
 - `ANNOUNCEMENTS_ENABLED=false` by default; when enabled, announcements are sent to `ANNOUNCEMENTS_TARGET_GROUP_JID` on a local wall-clock schedule
 - `STARTUP_OWNER_AWAKE_ENABLED=true` sends owners a warm-up DM on startup; `STARTUP_OWNER_AWAKE_COOLDOWN_MINUTES=30` suppresses repeats across rapid restarts, and setting enabled to `false` disables the warm-up DM entirely
+- `DIRECT_CHAT_AUTORESPONSE_ENABLED=true` sends ordinary 1:1 messages a short "contact admins" reply; `DIRECT_CHAT_AUTORESPONSE_COOLDOWN_DAYS=365` keeps it effectively one-and-done per chat, and cleanup DM replies stay separate
 - `TICKET_SPOTLIGHT_TARGET_JIDS` defaults to FDLM Parties & Events PT.2 and FDLM Parties & Events; website ticket exchange announcements also include the ticket marketplace by default
 - `OWNER_JIDS`, database moderators, and WhatsApp group admins are never moderated
-- The bot never responds in 1:1 chats unless the sender is an owner or moderator using a command
+- The bot only responds in 1:1 chats for the direct-chat autoresponse, cleanup replies, or authorised owner/moderator commands
 - The bot never acts on its own messages, with an extra self-ID check as defence in depth
 
 ## Link Policy

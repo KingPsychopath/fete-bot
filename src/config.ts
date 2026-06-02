@@ -173,6 +173,11 @@ const loadedConfig = {
   whatsappPairingPhoneNumber: normaliseEnvValue(process.env.WHATSAPP_PAIRING_PHONE_NUMBER) || null,
   startupOwnerAwakeEnabled: parseBoolean(process.env.STARTUP_OWNER_AWAKE_ENABLED, true),
   startupOwnerAwakeCooldownMinutes: parseNonNegativeInteger(process.env.STARTUP_OWNER_AWAKE_COOLDOWN_MINUTES, 30),
+  directChatAutoresponseEnabled: parseBoolean(process.env.DIRECT_CHAT_AUTORESPONSE_ENABLED, true),
+  directChatAutoresponseCooldownDays: parsePositiveInteger(process.env.DIRECT_CHAT_AUTORESPONSE_COOLDOWN_DAYS, 365),
+  directChatAutoresponseText:
+    normaliseEnvValue(process.env.DIRECT_CHAT_AUTORESPONSE_TEXT) ||
+    "Sorry, I can't respond to direct messages. Please contact one of the other admins in the chat.",
   groupCallGuardEnabled: parseBoolean(process.env.GROUP_CALL_GUARD_ENABLED, true),
   groupCallGuardGroupJids: parseList(process.env.GROUP_CALL_GUARD_GROUP_JIDS),
   groupCallGuardWarningText:

@@ -11,9 +11,9 @@ import makeWASocket, {
   type WAMessageKey,
 } from "@whiskeysockets/baileys";
 import { randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import pino from "pino";
 import QRCode from "qrcode";
 
@@ -151,6 +151,7 @@ const CLEANUP_DM_BACKFILL_SHORTCUT = "KEEP";
 const CLEANUP_DM_BACKFILL_MARKER =
   "Hey - we've added you to the OOOC Fete group chat stay list, so you're all good. No need to reply.";
 const STARTUP_OWNER_AWAKE_STATE_PATH = join(DATA_DIR, "startup-owner-awake.json");
+const DIRECT_CHAT_AUTORESPONSE_STATE_PATH = join(DATA_DIR, "direct-chat-autoresponse.json");
 let strikePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let mutePurgeTimer: ReturnType<typeof setInterval> | null = null;
 let callViolationPurgeTimer: ReturnType<typeof setInterval> | null = null;
@@ -179,6 +180,7 @@ type TrackedOutgoingDirectMessage = {
 const trackedOutgoingDirectMessages = new Map<string, TrackedOutgoingDirectMessage>();
 
 type StartupOwnerAwakeState = Record<string, { sentAt: string; targetJid: string; messageId: string | null }>;
+type DirectChatAutoresponseState = Record<string, { sentAt: string }>;
 
 type QueuedMessage = {
   socketInstanceId: number;
@@ -320,6 +322,46 @@ const readStartupOwnerAwakeState = (): StartupOwnerAwakeState => {
   } catch {
     return {};
   }
+};
+
+const readDirectChatAutoresponseState = (): DirectChatAutoresponseState => {
+  try {
+    return JSON.parse(readFileSync(DIRECT_CHAT_AUTORESPONSE_STATE_PATH, "utf8")) as DirectChatAutoresponseState;
+  } catch {
+    return {};
+  }
+};
+
+const writeDirectChatAutoresponseState = (state: DirectChatAutoresponseState): void => {
+  try {
+    mkdirSync(dirname(DIRECT_CHAT_AUTORESPONSE_STATE_PATH), { recursive: true });
+    writeFileSync(DIRECT_CHAT_AUTORESPONSE_STATE_PATH, JSON.stringify(state, null, 2));
+  } catch (writeError) {
+    warn("Failed to write direct chat autoresponse state", writeError);
+  }
+};
+
+const maybeSendDirectChatAutoresponse = async (
+  sock: WASocket,
+  remoteJid: string,
+  msg: WAMessage,
+  text: string,
+): Promise<void> => {
+  if (!config.directChatAutoresponseEnabled || !text.trim() || !config.directChatAutoresponseText.trim()) {
+    return;
+  }
+
+  const nowMs = Date.now();
+  const cooldownMs = config.directChatAutoresponseCooldownDays * 24 * 60 * 60 * 1000;
+  const state = readDirectChatAutoresponseState();
+  const previousSentAt = state[remoteJid]?.sentAt ? Date.parse(state[remoteJid].sentAt) : NaN;
+  if (Number.isFinite(previousSentAt) && nowMs - previousSentAt < cooldownMs) {
+    return;
+  }
+
+  await sock.sendMessage(remoteJid, { text: config.directChatAutoresponseText }, { quoted: msg });
+  state[remoteJid] = { sentAt: new Date(nowMs).toISOString() };
+  writeDirectChatAutoresponseState(state);
 };
 
 const writeStartupOwnerAwakeState = (state: StartupOwnerAwakeState): void => {
@@ -934,7 +976,7 @@ const recordCleanupInteraction = async (
   msg: WAMessage,
   text: string,
   isDirectChat: boolean,
-): Promise<void> => {
+): Promise<boolean> => {
   const reactionInfo = getReactionInfo(msg.message);
   const reactionTarget = reactionInfo
     ? findCleanupMessage(reactionInfo.targetKey.remoteJid ?? remoteJid, reactionInfo.targetKey.id)
@@ -947,15 +989,16 @@ const recordCleanupInteraction = async (
       remoteJid,
       reactionInfo?.targetKey.id ?? msg.key.id ?? null,
     );
-    return;
+    return true;
   }
 
   if (isDirectChat) {
     if (text.trim()) {
       const signal = recordCleanupSignalForOpenCampaign(sender.userId, "dm_reply", remoteJid, msg.key.id ?? null);
       await maybeAcknowledgeCleanupSignal(sock, signal, "dm_reply", remoteJid, msg);
+      return Boolean(signal.campaign);
     }
-    return;
+    return false;
   }
 
   const quotedMessageKey = getQuotedMessageKey(msg.message, remoteJid);
@@ -975,6 +1018,7 @@ const recordCleanupInteraction = async (
     remoteJid,
     msg,
   );
+  return Boolean(signal.campaign);
 };
 
 const refreshSelfJids = (sock: WASocket): ReadonlySet<string> => {
@@ -2479,6 +2523,8 @@ Phone number: ${phoneNumber ?? "unknown"}
 LID JID: ${lidJid ?? "unknown"}
 Push name: ${getPushName(msg) ?? "unknown"}`,
         });
+      } else if (isDirectChat) {
+        await maybeSendDirectChatAutoresponse(sock, remoteJid, msg, text);
       }
       return;
     }
@@ -2496,8 +2542,9 @@ Push name: ${getPushName(msg) ?? "unknown"}`,
     if (isDirectCommand || isDirectChat) {
       const directSenderFromGroups = await resolveDirectSenderFromKnownGroups(sender, remoteJid, getPushName(msg), sock);
       const directSender = await resolveDirectSenderFromOwnerAliases(directSenderFromGroups, selfJids);
+      let cleanupHandled = false;
       if (!isDirectCommand) {
-        await recordCleanupInteraction(sock, directSender, remoteJid, msg, text, true);
+        cleanupHandled = await recordCleanupInteraction(sock, directSender, remoteJid, msg, text, true);
       }
       if (text) {
         await handleAuthorisedCommand(
@@ -2510,6 +2557,9 @@ Push name: ${getPushName(msg) ?? "unknown"}`,
           discoveredGroupMetadata,
           selfJids,
         );
+      }
+      if (!isDirectCommand && !cleanupHandled) {
+        await maybeSendDirectChatAutoresponse(sock, remoteJid, msg, text);
       }
       return;
     }

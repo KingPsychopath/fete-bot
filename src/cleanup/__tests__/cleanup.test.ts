@@ -8,6 +8,7 @@ import type { Config } from "../../config.js";
 let tempDir: string;
 let previousDbPath: string | undefined;
 let previousResetDb: string | undefined;
+let previousRailwayVolumeMountPath: string | undefined;
 const cleanupBackfillMessage =
   "Hey - we've added you to the OOOC Fete group chat stay list, so you're all good. No need to reply.";
 
@@ -24,6 +25,9 @@ const config = {
   whatsappPairingPhoneNumber: null,
   startupOwnerAwakeEnabled: true,
   startupOwnerAwakeCooldownMinutes: 30,
+  directChatAutoresponseEnabled: true,
+  directChatAutoresponseCooldownDays: 365,
+  directChatAutoresponseText: "Sorry, I can't respond to direct messages. Please contact one of the other admins in the chat.",
   groupCallGuardEnabled: true,
   groupCallGuardGroupJids: [],
   groupCallGuardWarningText: "No calls",
@@ -89,8 +93,10 @@ beforeEach(() => {
   tempDir = mkdtempSync(path.join(os.tmpdir(), "fete-bot-cleanup-"));
   previousDbPath = process.env.DB_PATH;
   previousResetDb = process.env.RESET_DB;
+  previousRailwayVolumeMountPath = process.env.RAILWAY_VOLUME_MOUNT_PATH;
   process.env.DB_PATH = path.join(tempDir, "bot.db");
   process.env.RESET_DB = "1";
+  process.env.RAILWAY_VOLUME_MOUNT_PATH = tempDir;
 });
 
 afterEach(async () => {
@@ -105,6 +111,11 @@ afterEach(async () => {
     delete process.env.RESET_DB;
   } else {
     process.env.RESET_DB = previousResetDb;
+  }
+  if (previousRailwayVolumeMountPath === undefined) {
+    delete process.env.RAILWAY_VOLUME_MOUNT_PATH;
+  } else {
+    process.env.RAILWAY_VOLUME_MOUNT_PATH = previousRailwayVolumeMountPath;
   }
   rmSync(tempDir, { recursive: true, force: true });
 });
@@ -704,6 +715,91 @@ describe("cleanup campaign", () => {
         key: expect.objectContaining({ id: "marker-1" }),
       },
     });
+  });
+
+  it("sends the direct-chat autoresponse once per long cooldown", async () => {
+    await setupDb();
+    const { handleMessage } = await import("../../index.js");
+    const sendMessage = vi.fn().mockResolvedValue({ key: { id: "autoreply-1" } });
+
+    for (const messageId of ["dm-1", "dm-2"]) {
+      await handleMessage(
+        { sendMessage, user: { id: "bot@s.whatsapp.net" } } as never,
+        {
+          key: {
+            id: messageId,
+            remoteJid: "447700900001@s.whatsapp.net",
+            fromMe: false,
+          },
+          pushName: "User One",
+          message: {
+            conversation: "hello?",
+          },
+        } as never,
+      );
+    }
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledWith(
+      "447700900001@s.whatsapp.net",
+      expect.objectContaining({
+        text: expect.stringContaining("Please contact one of the other admins in the chat."),
+      }),
+      expect.objectContaining({ quoted: expect.objectContaining({ key: expect.objectContaining({ id: "dm-1" }) }) }),
+    );
+  });
+
+  it("keeps cleanup DM replies separate from the direct-chat autoresponse", async () => {
+    await setupDb();
+    const { handleMessage } = await import("../../index.js");
+    const { resolveUser } = await import("../../identity.js");
+    const store = await import("../store.js");
+    const resolved = await resolveUser({
+      participantJid: "447700900001@s.whatsapp.net",
+      phoneJid: "447700900001@s.whatsapp.net",
+      pushName: "User One",
+      selfJids: new Set(["bot@s.whatsapp.net"]),
+    });
+    expect(resolved).not.toBeNull();
+    const campaign = store.createCleanupCampaign({
+      durationMs: 72 * 60 * 60_000,
+      actorUserId: "owner",
+      actorLabel: "owner",
+      channelLink: config.cleanupChannelLink,
+      publicMessage: "public",
+      dmMessage: "dm",
+      batchSize: 25,
+      batchIntervalMinutes: 30,
+      nowMs: Date.now(),
+      members: [
+        { userId: resolved!.userId, displayName: "User One", primaryJid: "447700900001@s.whatsapp.net" },
+      ],
+    });
+    const sendMessage = vi.fn().mockResolvedValue({ key: { id: "cleanup-reply-1" } });
+
+    await handleMessage(
+      { sendMessage, user: { id: "bot@s.whatsapp.net" } } as never,
+      {
+        key: {
+          id: "dm-cleanup-1",
+          remoteJid: "447700900001@s.whatsapp.net",
+          fromMe: false,
+        },
+        pushName: "User One",
+        message: {
+          conversation: "keep me in please",
+        },
+      } as never,
+    );
+
+    expect(store.getCleanupStats(campaign.id)?.whitelisted).toBe(1);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledWith(
+      "447700900001@s.whatsapp.net",
+      expect.objectContaining({
+        text: expect.stringContaining("you're on the stay list"),
+      }),
+    );
   });
 
   it("does not treat unauthorized direct commands as cleanup opt-ins", async () => {
