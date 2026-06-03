@@ -6,10 +6,8 @@ export type WhatsAppPairingCreds = {
   } | null;
 };
 
-const hasText = (value: string | null | undefined): boolean => Boolean(value?.trim());
-
 export const hasLinkedWhatsAppIdentity = (creds: WhatsAppPairingCreds): boolean =>
-  creds.registered === true || hasText(creds.me?.id) || hasText(creds.me?.lid);
+  creds.registered === true;
 
 export const shouldRequestWhatsAppPairingCode = (
   creds: WhatsAppPairingCreds,

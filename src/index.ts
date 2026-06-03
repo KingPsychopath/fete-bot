@@ -11,7 +11,7 @@ import makeWASocket, {
   type WAMessageKey,
 } from "@whiskeysockets/baileys";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import pino from "pino";
@@ -3734,6 +3734,28 @@ export const startBot = async (): Promise<void> => {
 
       if (isLoggedOut) {
         cleanupSocket(sock);
+        pairingCodeRequested = false;
+
+        if (pairingPhoneDigits) {
+          warn("WhatsApp logged the bot out. Clearing auth folder and restarting pairing.", {
+            authFolder,
+            statusCode,
+          });
+          try {
+            rmSync(authFolder, { recursive: true, force: true });
+            mkdirSync(authFolder, { recursive: true });
+          } catch (authCleanupError) {
+            error("Failed to clear WhatsApp auth folder after logout.", authCleanupError);
+            warn("Bot is staying online for health/SSH while waiting for WhatsApp re-pair.");
+            return;
+          }
+
+          setTimeout(() => {
+            void startBot();
+          }, 1_000);
+          return;
+        }
+
         error(`WhatsApp logged the bot out. Remove the auth folder (${authFolder}) and pair again.`, { statusCode });
         warn("Bot is staying online for health/SSH while waiting for WhatsApp re-pair.");
         return;

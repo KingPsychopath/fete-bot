@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { hasLinkedWhatsAppIdentity, shouldRequestWhatsAppPairingCode } from "./whatsappPairing.js";
 
 describe("WhatsApp pairing", () => {
-  it("treats a Baileys Business linked identity as paired even when registered is false", () => {
+  it("does not treat a stale Baileys identity as paired when registered is false", () => {
     const creds = {
       registered: false,
       me: {
@@ -12,8 +12,13 @@ describe("WhatsApp pairing", () => {
       },
     };
 
-    expect(hasLinkedWhatsAppIdentity(creds)).toBe(true);
-    expect(shouldRequestWhatsAppPairingCode(creds, "447343073599")).toBe(false);
+    expect(hasLinkedWhatsAppIdentity(creds)).toBe(false);
+    expect(shouldRequestWhatsAppPairingCode(creds, "447343073599")).toBe(true);
+  });
+
+  it("treats a registered auth state as paired", () => {
+    expect(hasLinkedWhatsAppIdentity({ registered: true })).toBe(true);
+    expect(shouldRequestWhatsAppPairingCode({ registered: true }, "447343073599")).toBe(false);
   });
 
   it("requests a pairing code for a fresh unlinked auth state", () => {
