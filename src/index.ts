@@ -170,6 +170,8 @@ let reconnectAttempts = 0;
 let socketInstanceCounter = 0;
 let botSelfJids = new Set<string>();
 let pairingCodeRequested = false;
+let qrEventsSeen = 0;
+let qrLimitShutdownScheduled = false;
 let authBackupRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let startupOwnerAwakeSent = false;
 
@@ -3614,6 +3616,24 @@ export const startBot = async (): Promise<void> => {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
+      qrEventsSeen += 1;
+      const maxQrEvents = config.whatsappQrMaxEvents;
+      const qrLimitEnabled = maxQrEvents > 0;
+
+      if (qrLimitEnabled && qrEventsSeen > maxQrEvents) {
+        if (!qrLimitShutdownScheduled) {
+          qrLimitShutdownScheduled = true;
+          warn("WhatsApp QR event limit exceeded; shutting down to avoid repeated link-device attempts.", {
+            qrEventsSeen,
+            maxQrEvents,
+          });
+          setTimeout(() => {
+            void shutdown("WHATSAPP_QR_MAX_EVENTS");
+          }, 500);
+        }
+        return;
+      }
+
       log("QR received. Scan it with the WhatsApp Business account you want to use.");
       log("=== QR RAW STRING (paste into any QR generator) ===");
       process.stdout.write(`${qr}\n`);
@@ -3634,11 +3654,24 @@ export const startBot = async (): Promise<void> => {
           .join("\n");
         process.stdout.write(`\n${paddedCode}\n`);
       });
+
+      if (qrLimitEnabled && qrEventsSeen >= maxQrEvents && !qrLimitShutdownScheduled) {
+        qrLimitShutdownScheduled = true;
+        warn("WhatsApp QR event limit reached; shutting down after this QR to avoid repeated link-device attempts.", {
+          qrEventsSeen,
+          maxQrEvents,
+        });
+        setTimeout(() => {
+          void shutdown("WHATSAPP_QR_MAX_EVENTS");
+        }, 2_000);
+      }
     }
 
     if (connection === "open") {
       reconnecting = false;
       reconnectAttempts = 0;
+      qrEventsSeen = 0;
+      qrLimitShutdownScheduled = false;
       refreshSelfJids(sock);
       log("Bot connected");
       scheduleWhatsAppAuthBackup();

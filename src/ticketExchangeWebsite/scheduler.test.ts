@@ -36,6 +36,7 @@ const config = {
   defaultPhoneRegion: null,
   botName: "Fete Bot",
   whatsappPairingPhoneNumber: null,
+  whatsappQrMaxEvents: 3,
   startupOwnerAwakeEnabled: true,
   startupOwnerAwakeCooldownMinutes: 30,
   directChatAutoresponseEnabled: true,
@@ -86,6 +87,7 @@ const config = {
   ticketExchangeWebsiteTargetJids: ["target@g.us", "market@g.us"],
   ticketExchangeWebsitePollSeconds: 120,
   ticketExchangeWebsiteBatchSize: 5,
+  ticketExchangeWebsiteMaxAnnouncementsPerTick: 1,
   ticketExchangeWebsiteAnnounceDelayMinutes: 5,
   ticketExchangeWebsiteSpotlightPromptCooldownDays: 7,
   announcementsEnabled: false,
@@ -166,6 +168,35 @@ describe("website Ticket Exchange scheduler", () => {
       listingId: "listing_1",
     }));
     expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(mocks.markWebsiteTicketExchangeListingAnnounced).toHaveBeenCalledWith(expect.objectContaining({
+      listingId: "listing_1",
+    }));
+  });
+
+  it("limits successful listing announcements per tick", async () => {
+    const { runWebsiteTicketExchangeAnnouncementTick } = await import("./scheduler.js");
+    const sendMessage = vi.fn().mockResolvedValue({ key: { id: "sent-1" } });
+    mocks.fetchWebsiteTicketExchangeListings.mockResolvedValue([
+      {
+        ...listing,
+        id: "listing_1",
+        createdAt: new Date(Date.now() - 6 * 60 * 1000).toISOString(),
+      },
+      {
+        ...listing,
+        id: "listing_2",
+        createdAt: new Date(Date.now() - 6 * 60 * 1000).toISOString(),
+      },
+    ]);
+
+    await runWebsiteTicketExchangeAnnouncementTick({ sendMessage } as never, {
+      ...config,
+      ticketExchangeWebsiteMaxAnnouncementsPerTick: 1,
+    });
+
+    expect(mocks.isWebsiteTicketExchangeListingAnnounceable).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(mocks.markWebsiteTicketExchangeListingAnnounced).toHaveBeenCalledTimes(1);
     expect(mocks.markWebsiteTicketExchangeListingAnnounced).toHaveBeenCalledWith(expect.objectContaining({
       listingId: "listing_1",
     }));

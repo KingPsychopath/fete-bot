@@ -171,6 +171,7 @@ const loadedConfig = {
   defaultPhoneRegion: normaliseEnvValue(process.env.DEFAULT_PHONE_REGION)?.toUpperCase() || null,
   botName: normaliseEnvValue(process.env.BOT_NAME) || "Fete Bot",
   whatsappPairingPhoneNumber: normaliseEnvValue(process.env.WHATSAPP_PAIRING_PHONE_NUMBER) || null,
+  whatsappQrMaxEvents: parseNonNegativeInteger(process.env.WHATSAPP_QR_MAX_EVENTS, 3),
   startupOwnerAwakeEnabled: parseBoolean(process.env.STARTUP_OWNER_AWAKE_ENABLED, true),
   startupOwnerAwakeCooldownMinutes: parseNonNegativeInteger(process.env.STARTUP_OWNER_AWAKE_COOLDOWN_MINUTES, 30),
   directChatAutoresponseEnabled: parseBoolean(process.env.DIRECT_CHAT_AUTORESPONSE_ENABLED, true),
@@ -255,6 +256,10 @@ const loadedConfig = {
   ticketExchangeWebsiteBatchSize: parsePositiveInteger(
     process.env.TICKET_EXCHANGE_WEBSITE_BATCH_SIZE,
     5,
+  ),
+  ticketExchangeWebsiteMaxAnnouncementsPerTick: parsePositiveInteger(
+    process.env.TICKET_EXCHANGE_WEBSITE_MAX_ANNOUNCEMENTS_PER_TICK,
+    1,
   ),
   ticketExchangeWebsiteAnnounceDelayMinutes: parsePositiveInteger(
     process.env.TICKET_EXCHANGE_WEBSITE_ANNOUNCE_DELAY_MINUTES,

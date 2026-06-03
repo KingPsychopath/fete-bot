@@ -119,11 +119,12 @@ The backup contains WhatsApp linked-device credentials. Treat it like a secret.
 - `ALLOWED_GROUP_JIDS` is optional; when empty, the bot acts in all joined groups
 - `GROUP_CALL_GUARD_ENABLED=true` rejects incoming group calls where possible and enforces against repeat callers
 - `GROUP_CALL_GUARD_GROUP_JIDS` is optional; when empty, call guarding applies to all managed groups
+- `WHATSAPP_QR_MAX_EVENTS=3` stops the bot after a short unpaired QR window, preventing repeated link-device QR churn; set it to `0` only for local debugging
 - `TICKET_MARKETPLACE_MANAGEMENT=true` by default
 - `TICKET_MARKETPLACE_GROUP_JIDS` is comma-separated and defaults to `120363418331899807@g.us`
 - `TICKET_MARKETPLACE_RULE_REMINDER_ENABLED=true` sends a daily marketplace rules reminder after `TICKET_MARKETPLACE_RULE_REMINDER_TIME` in `TICKET_MARKETPLACE_RULE_REMINDER_TIMEZONE`; after a reminder, it waits for `TICKET_MARKETPLACE_RULE_REMINDER_MIN_ACTIVITY_MESSAGES` observed chat messages before sending another
 - `TICKET_SPOTLIGHT_ENABLED=true` by default; seller spotlights are enabled, buying spotlights are off by default for the first rollout
-- `TICKET_EXCHANGE_WEBSITE_ANNOUNCEMENTS_ENABLED=false` by default; when enabled, the bot polls Fete Finder for new Ticket Exchange listings and posts website links only, never user contact details. Listings wait `TICKET_EXCHANGE_WEBSITE_ANNOUNCE_DELAY_MINUTES` before posting. When a marketplace post is queued for spotlight, the bot can DM the poster a Fete Finder nudge, cooled down by `TICKET_EXCHANGE_WEBSITE_SPOTLIGHT_PROMPT_COOLDOWN_DAYS`.
+- `TICKET_EXCHANGE_WEBSITE_ANNOUNCEMENTS_ENABLED=false` by default; when enabled, the bot polls Fete Finder for new Ticket Exchange listings and posts website links only, never user contact details. Listings wait `TICKET_EXCHANGE_WEBSITE_ANNOUNCE_DELAY_MINUTES` before posting, and `TICKET_EXCHANGE_WEBSITE_MAX_ANNOUNCEMENTS_PER_TICK=1` limits catch-up bursts after downtime. When a marketplace post is queued for spotlight, the bot can DM the poster a Fete Finder nudge, cooled down by `TICKET_EXCHANGE_WEBSITE_SPOTLIGHT_PROMPT_COOLDOWN_DAYS`.
 - `ANNOUNCEMENTS_ENABLED=false` by default; when enabled, announcements are sent to `ANNOUNCEMENTS_TARGET_GROUP_JID` on a local wall-clock schedule
 - `STARTUP_OWNER_AWAKE_ENABLED=true` sends owners a warm-up DM on startup; `STARTUP_OWNER_AWAKE_COOLDOWN_MINUTES=30` suppresses repeats across rapid restarts, and setting enabled to `false` disables the warm-up DM entirely
 - `DIRECT_CHAT_AUTORESPONSE_ENABLED=true` sends ordinary 1:1 messages a short "contact admins" reply; `DIRECT_CHAT_AUTORESPONSE_COOLDOWN_DAYS=365` keeps it effectively one-and-done per chat, and cleanup DM replies stay separate

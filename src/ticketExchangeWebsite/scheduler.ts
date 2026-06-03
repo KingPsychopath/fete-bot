@@ -66,8 +66,18 @@ export const runWebsiteTicketExchangeAnnouncementTick = async (
       secret: config.ticketExchangeWebsiteBotSecret,
       limit: config.ticketExchangeWebsiteBatchSize,
     });
+    let announcedThisTick = 0;
+    const maxAnnouncementsThisTick = Math.max(1, config.ticketExchangeWebsiteMaxAnnouncementsPerTick);
 
     for (const listing of listings) {
+      if (announcedThisTick >= maxAnnouncementsThisTick) {
+        log("ticket_exchange.website_announcement.tick_limit_reached", {
+          announcedThisTick,
+          maxAnnouncementsThisTick,
+        });
+        break;
+      }
+
       if (!isWebsiteTicketExchangeListingPastAnnounceDelay(
         listing.createdAt,
         config.ticketExchangeWebsiteAnnounceDelayMinutes,
@@ -149,6 +159,7 @@ export const runWebsiteTicketExchangeAnnouncementTick = async (
           log("ticket_exchange.website_announcement.debug_preview_not_marked", {
             listingId: listing.id,
           });
+          announcedThisTick += 1;
           continue;
         }
 
@@ -158,6 +169,7 @@ export const runWebsiteTicketExchangeAnnouncementTick = async (
             secret: config.ticketExchangeWebsiteBotSecret,
             listingId: listing.id,
           });
+          announcedThisTick += 1;
         } catch (callbackError) {
           warn("ticket_exchange.website_announcement.callback_failed", {
             listingId: listing.id,
