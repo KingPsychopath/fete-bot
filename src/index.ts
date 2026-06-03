@@ -3584,8 +3584,9 @@ export const startBot = async (): Promise<void> => {
       void (async () => {
         try {
           const code = await sock.requestPairingCode(pairingDigits);
-          log("WhatsApp pairing code requested. In WhatsApp, choose Link with phone number instead.", {
-            pairingCode: formatPairingCode(code),
+          const formattedCode = formatPairingCode(code);
+          log(`WhatsApp pairing code requested: ${formattedCode}. In WhatsApp, choose Link with phone number instead.`, {
+            pairingCode: formattedCode,
           });
         } catch (pairingError) {
           pairingCodeRequested = false;
