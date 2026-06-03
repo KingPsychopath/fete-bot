@@ -118,6 +118,8 @@ const WEAK_BUY_TERMS = [
 ] as const;
 
 const WEAK_SELL_TERMS = [
+  "reselling",
+  "resell",
   "selling",
   "sell",
   "available",
@@ -154,7 +156,7 @@ const STRONG_SELL_PHRASES = ["for sale", "à vendre", "a vendre", "en venta", "f
 const STRONG_SELL_REGEXES = [
   /\bfv\b/iu,
   new RegExp(
-    String.raw`\b(?:selling|sell|spare|available|have|got|can't\s+go|cant\s+go|cannot\s+go|can't\s+make\s+it|cant\s+make\s+it|can\s+no\s+longer\s+go)\b(?=.{0,100}\b${saleQuantityPattern}\b)(?=.{0,100}\b${eventAccessPattern}\b)(?=.{0,100}(?:${explicitPriceCuePattern}|\b(?:interested|dm|pm|message)\b))`,
+    String.raw`\b(?:reselling|resell|selling|sell|spare|available|have|got|can't\s+go|cant\s+go|cannot\s+go|can't\s+make\s+it|cant\s+make\s+it|can\s+no\s+longer\s+go)\b(?=.{0,100}\b${saleQuantityPattern}\b)(?=.{0,100}\b${eventAccessPattern}\b)(?=.{0,100}(?:${explicitPriceCuePattern}|\b(?:interested|dm|pm|message)\b))`,
     "iu",
   ),
 ];
@@ -163,22 +165,22 @@ const CANT_GO_REGEX = /\b(?:can't\s+go|cant\s+go|cannot\s+go|can't\s+make\s+it|c
 const STRONG_BUY_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   {
     label: "anyone selling",
-    regex: /\b(?:hey\s+)?(?:if\s+)?(?:anyone|anybody|any1|someone|somebody)\s+(?:is\s+)?selling(?:\s+(?:please\s+dm\s+me|please|pls|lmk|dm\s+me|let\s+me\s+know|looking\s+for\s+(?:one|1|two|2)))*$/iu,
+    regex: /\b(?:hey\s+)?(?:if\s+)?(?:anyone|anybody|any1|someone|somebody)\s+(?:is\s+)?(?:reselling|selling)(?:\s+(?:please\s+dm\s+me|please|pls|lmk|dm\s+me|let\s+me\s+know|looking\s+for\s+(?:one|1|two|2)))*$/iu,
   },
   {
     label: "anyone selling ticket",
     regex: new RegExp(
-      String.raw`\b(?:if\s+)?(?:anyone|anybody|any1|someone|somebody)\s+(?:is\s+)?selling\s+(?:[\p{L}\p{N}]+\s+){0,8}${ticketTermPattern}\b`,
+      String.raw`\b(?:if\s+)?(?:anyone|anybody|any1|someone|somebody)\s+(?:is\s+)?(?:reselling|selling)\s+(?:[\p{L}\p{N}]+\s+){0,8}${ticketTermPattern}\b`,
       "iu",
     ),
   },
   {
     label: "is anyone selling",
-    regex: /\bis\s+(?:anyone|anybody|any1|someone|somebody)\s+selling\b/iu,
+    regex: /\bis\s+(?:anyone|anybody|any1|someone|somebody)\s+(?:reselling|selling)\b/iu,
   },
   {
     label: "lmk if anyone selling",
-    regex: /\blmk\s+if\s+(?:anyone|anybody|any1|someone|somebody)\s+(?:is\s+)?selling\b/iu,
+    regex: /\blmk\s+if\s+(?:anyone|anybody|any1|someone|somebody)\s+(?:is\s+)?(?:reselling|selling)\b/iu,
   },
   {
     label: "anyone got spare",
@@ -693,7 +695,9 @@ export const classify = (text: string): TicketMarketplaceClassification => {
   const pricePresentBeforeIntent = hasExplicitPrice(normalisedText);
   const hasAvailabilityCue = availabilityMatches.length > 0;
   const hasDirectSellVerb = weakSellMatches.some((match) =>
-    ["selling", "sell", "vends", "vend", "vendo", "verkaufe", "te koop"].includes(match.token),
+    ["reselling", "resell", "selling", "sell", "vends", "vend", "vendo", "verkaufe", "te koop"].includes(
+      match.token,
+    ),
   );
 
   const buySignals: string[] = [];
@@ -783,7 +787,11 @@ export const classify = (text: string): TicketMarketplaceClassification => {
   if (buySignals.length > 0 && hasDirectSellVerb) {
     sellSignals.push(
       ...weakSellMatches
-        .filter((match) => ["selling", "sell", "vends", "vend", "vendo", "verkaufe", "te koop"].includes(match.token))
+        .filter((match) =>
+          ["reselling", "resell", "selling", "sell", "vends", "vend", "vendo", "verkaufe", "te koop"].includes(
+            match.token,
+          ),
+        )
         .map((match) => match.token),
     );
   }

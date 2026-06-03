@@ -21,6 +21,7 @@ export const TRUE_POSITIVES_BUYING = [
   "Any spare ticket going?",
   "if anyone is selling two tickets for saturday please lmk",
   "if anyone is selling two sixtion tickets for saturday please lmk",
+  "Hello! Is anyone reselling 3 tickets for SIXTION (PT.1) on June 20th, as part of the Fête de la Musique in Paris? I would be interested if anyone has any.",
   "Heyy, anyone selling 4 Zsongo all white party tickets?",
   "if anyone selling a ticket lmk",
   "lmk if anyone is selling",
