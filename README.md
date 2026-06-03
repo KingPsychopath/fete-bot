@@ -175,6 +175,10 @@ Special rules:
 
 ## Spam and Moderation Rules
 
+### Member conduct
+
+- No unsolicited private messages to people from the group. Do not contact members privately unless they have invited it, you already know each other, or there is a clear practical reason. Unwanted or uncomfortable messages may result in a warning or removal at admin discretion.
+
 ### Spam detection
 
 - WhatsApp invite links are removed
@@ -226,6 +230,7 @@ Special rules:
 - In `DRY_RUN=true`, scheduled and forced real sends do not post or advance the schedule; `!announce test` still DMs the requesting mod
 - Optional group mentions use JSON, for example `ANNOUNCEMENTS_GROUP_MENTIONS_JSON=[{"label":"FDLM General","jid":"120363...@g.us"}]`
 - Mention labels are matched case-insensitively when message text contains `@FDLM General`; the bot also tries known group subjects and exact `@120363...@g.us` group JID tokens
+- Owners can send urgent one-off messages with `!announce post {text}` to the announcements chat, or `!announce blast {text}` to every managed chat plus the announcements chat. Both commands also accept replied-to text and require confirmation.
 
 ### Strike system
 
@@ -313,6 +318,8 @@ Owners and moderators can control the bot in two ways:
 - `!announce pause` / `!announce resume`
 - `!announce test`
 - `!announce test-group {groupJid|target}` owner-only, sends a test to a real group without advancing the schedule
+- `!announce post {text}` owner-only, sends once to the announcements chat after confirmation
+- `!announce blast {text}` owner-only, sends once to every managed chat plus the announcements chat after confirmation
 - `!announce send-now` owner-only
 - `!ban {jid or number} {groupJid?} {reason?}`
 - `!unban {jid or number} {groupJid}`

@@ -74,6 +74,7 @@ Use this in DM with the bot for queue management. Queue positions are the number
 - In groups, only help/list/show/raw/preview/next/check/test are allowed. Add, edit, publish, remove, schedule, and send-now must be done in DM.
 - To mention group chats, type a configured label like @FDLM General. The bot also understands known group names and exact @120...@g.us group JIDs when it can resolve them.
 - The automatic schedule only runs when announcements are enabled in config.
+- For urgent manual sends, owners can use !announce post {text} for the announcements chat or !announce blast {text} for all managed chats. You can also reply to text with those commands.
 
 *Queue commands*
 !announce list
@@ -99,6 +100,8 @@ Schedule format is local 24-hour time in the configured timezone.
 Example: !announce schedule 2026-04-30 10:00
 
 *Owner only*
+!announce post {text} — send once to the announcements chat
+!announce blast {text} — send once to all managed chats
 !announce send-now
 !announce test-group {groupJid}
 
@@ -246,6 +249,63 @@ ${itemLines}`;
 
 const sleep = (delayMs: number): Promise<void> =>
   delayMs > 0 ? new Promise((resolve) => setTimeout(resolve, delayMs)) : Promise.resolve();
+
+const getManualAnnouncementText = (tokens: readonly string[], quotedText: string | null): string | null => {
+  const inlineText = tokens.slice(2).join(" ").trim();
+  return inlineText || quotedText?.trim() || null;
+};
+
+const getBroadcastGroupJids = (
+  config: Config,
+  groups: ReadonlyMap<string, string>,
+): string[] => {
+  const source = config.allowedGroupJids.length > 0 ? config.allowedGroupJids : Array.from(groups.keys());
+  return Array.from(new Set([...source, config.announcementsTargetGroupJid].filter((jid) => jid.endsWith("@g.us"))));
+};
+
+const sendManualAnnouncementToGroups = async (
+  sock: Pick<WASocket, "sendMessage">,
+  body: string,
+  targetGroupJids: readonly string[],
+  candidates: readonly AnnouncementMentionCandidate[],
+): Promise<{ sent: string[]; failed: Array<{ groupJid: string; error: string }> }> => {
+  const sent: string[] = [];
+  const failed: Array<{ groupJid: string; error: string }> = [];
+  const contextInfo = buildGroupMentionContext(body, candidates);
+  const content = contextInfo ? { text: body, contextInfo } : { text: body };
+
+  for (const [index, groupJid] of targetGroupJids.entries()) {
+    if (index > 0) {
+      await sleep(1_500);
+    }
+
+    try {
+      await sock.sendMessage(groupJid, content);
+      sent.push(groupJid);
+    } catch (error) {
+      failed.push({ groupJid, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  return { sent, failed };
+};
+
+const formatManualAnnouncementResult = (
+  result: { sent: readonly string[]; failed: ReadonlyArray<{ groupJid: string; error: string }> },
+  groups: ReadonlyMap<string, string>,
+): string => {
+  const sentLine = `Sent to ${result.sent.length} chat(s).`;
+  if (result.failed.length === 0) {
+    return sentLine;
+  }
+
+  const failures = result.failed
+    .map((failure) => `- ${groups.get(failure.groupJid) ?? failure.groupJid}: ${failure.error}`)
+    .join("\n");
+  return `${sentLine}
+Failed to send to ${result.failed.length} chat(s):
+${failures}`;
+};
 
 const sendActiveBundleToGroup = async (
   sock: Pick<WASocket, "sendMessage">,
@@ -510,6 +570,74 @@ export const handleAnnouncementCommand = async (
     return true;
   }
 
+  if (subcommand === "post" || subcommand === "send") {
+    if (actor.role !== "owner") {
+      await sock.sendMessage(replyJid, { text: "Only owners can use !announce post." });
+      return true;
+    }
+
+    const body = getManualAnnouncementText(tokens, quotedText);
+    if (!body) {
+      await sock.sendMessage(replyJid, { text: "Usage: !announce post {text}\nOr reply to text with !announce post." });
+      return true;
+    }
+
+    if (!config.announcementsTargetGroupJid.endsWith("@g.us")) {
+      await sock.sendMessage(replyJid, { text: "No announcements target group is configured." });
+      return true;
+    }
+
+    const targetLabel = groups.get(config.announcementsTargetGroupJid) ?? config.announcementsTargetGroupJid;
+    await requestConfirmation(
+      sock,
+      replyJid,
+      actor.userId ?? actor.label,
+      `Send this message once to ${targetLabel} (${config.announcementsTargetGroupJid})?`,
+      async () => {
+        const result = await sendManualAnnouncementToGroups(
+          sock,
+          body,
+          [config.announcementsTargetGroupJid],
+          mentionCandidates,
+        );
+        return formatManualAnnouncementResult(result, groups);
+      },
+    );
+    return true;
+  }
+
+  if (subcommand === "blast" || subcommand === "broadcast") {
+    if (actor.role !== "owner") {
+      await sock.sendMessage(replyJid, { text: "Only owners can use !announce blast." });
+      return true;
+    }
+
+    const body = getManualAnnouncementText(tokens, quotedText);
+    if (!body) {
+      await sock.sendMessage(replyJid, { text: "Usage: !announce blast {text}\nOr reply to text with !announce blast." });
+      return true;
+    }
+
+    const targetGroupJids = getBroadcastGroupJids(config, groups);
+    if (targetGroupJids.length === 0) {
+      await sock.sendMessage(replyJid, { text: "No managed group chats found for blast." });
+      return true;
+    }
+
+    const targetPreview = targetGroupJids.map((jid) => `- ${groups.get(jid) ?? jid} (${jid})`).join("\n");
+    await requestConfirmation(
+      sock,
+      replyJid,
+      actor.userId ?? actor.label,
+      `Blast this message once to ${targetGroupJids.length} chat(s)?\n${targetPreview}`,
+      async () => {
+        const result = await sendManualAnnouncementToGroups(sock, body, targetGroupJids, mentionCandidates);
+        return formatManualAnnouncementResult(result, groups);
+      },
+    );
+    return true;
+  }
+
   if (subcommand === "send-now") {
     if (actor.role !== "owner") {
       await sock.sendMessage(replyJid, { text: "Only owners can use !announce send-now." });
@@ -529,7 +657,7 @@ export const handleAnnouncementCommand = async (
   }
 
   await sock.sendMessage(replyJid, {
-    text: "Usage: !announce help | list | show | raw | preview | next | check | add | edit | publish | on | off | move | remove | schedule | pause | resume | test | test-group | send-now",
+    text: "Usage: !announce help | list | show | raw | preview | next | check | add | edit | publish | on | off | move | remove | schedule | pause | resume | test | test-group | post | blast | send-now",
   });
   return true;
 };

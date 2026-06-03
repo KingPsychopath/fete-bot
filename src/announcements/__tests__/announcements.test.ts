@@ -336,6 +336,90 @@ describe("announcements", () => {
     expect(store.getAnnouncementState()?.nextLocalDate).toBe("2026-04-24");
   });
 
+  it("can send an owner-confirmed one-off post to the announcements chat", async () => {
+    await setup();
+    const { handleAnnouncementCommand } = await import("../commands.js");
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+
+    await handleAnnouncementCommand(
+      { sendMessage } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "owner@s.whatsapp.net",
+      "!announce post Please do not DM strangers from the group.",
+      null,
+      config,
+      new Map([["announcements@g.us", "Announcements"]]),
+    );
+
+    const confirmation = sendMessage.mock.calls[0]?.[1]?.text.match(/confirm [a-z0-9]+/u)?.[0];
+    expect(confirmation).toBeTruthy();
+
+    await handleAnnouncementCommand(
+      { sendMessage } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "owner@s.whatsapp.net",
+      confirmation!,
+      null,
+      config,
+      new Map([["announcements@g.us", "Announcements"]]),
+    );
+
+    expect(sendMessage).toHaveBeenCalledWith("announcements@g.us", {
+      text: "Please do not DM strangers from the group.",
+    });
+    expect(sendMessage).toHaveBeenCalledWith("owner@s.whatsapp.net", {
+      text: "Sent to 1 chat(s).",
+    });
+  });
+
+  it("can blast an owner-confirmed replied message to every managed chat", async () => {
+    await setup();
+    const { handleAnnouncementCommand } = await import("../commands.js");
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const blastConfig = {
+      ...config,
+      allowedGroupJids: ["general@g.us", "market@g.us"],
+    } satisfies Config;
+
+    await handleAnnouncementCommand(
+      { sendMessage } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "owner@s.whatsapp.net",
+      "!announce blast",
+      "Please keep group contact respectful.",
+      blastConfig,
+      new Map([
+        ["announcements@g.us", "Announcements"],
+        ["general@g.us", "General"],
+        ["market@g.us", "Marketplace"],
+      ]),
+    );
+
+    const confirmation = sendMessage.mock.calls[0]?.[1]?.text.match(/confirm [a-z0-9]+/u)?.[0];
+    expect(confirmation).toBeTruthy();
+
+    await handleAnnouncementCommand(
+      { sendMessage } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "owner@s.whatsapp.net",
+      confirmation!,
+      null,
+      blastConfig,
+      new Map([
+        ["announcements@g.us", "Announcements"],
+        ["general@g.us", "General"],
+        ["market@g.us", "Marketplace"],
+      ]),
+    );
+
+    expect(sendMessage).toHaveBeenCalledWith("general@g.us", { text: "Please keep group contact respectful." });
+    expect(sendMessage).toHaveBeenCalledWith("market@g.us", { text: "Please keep group contact respectful." });
+    expect(sendMessage).toHaveBeenCalledWith("announcements@g.us", { text: "Please keep group contact respectful." });
+    expect(sendMessage).toHaveBeenCalledWith("owner@s.whatsapp.net", {
+      text: "Sent to 3 chat(s).",
+    });
+  });
+
   it("allows test in restricted group mode but blocks write commands", async () => {
     const { store } = await setup();
     const item = store.addAnnouncementItem("Hey @FDLM General", actor);

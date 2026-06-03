@@ -117,7 +117,7 @@ const HELP_MESSAGE = `*Fete Bot — Admin Help*
   !spotlight-history {limit?}
   !spotlight-requeue {messageId|rowId} {minutes?}
   !spotlight-cancel {messageId|rowId} {reason?} — reply only or DM
-  !announce     help|list|show|raw|preview|next|check|add|edit|publish|on|off|move|remove|schedule|pause|resume|test|test-group|send-now
+  !announce     help|list|show|raw|preview|next|check|add|edit|publish|on|off|move|remove|schedule|pause|resume|test|test-group|post|blast|send-now
   !cleanup      start|status|whitelist|candidates|pause|resume|extend|stop
   !deleted      {limit?} {reason?} — DM only
   !bans         {groupJid?}

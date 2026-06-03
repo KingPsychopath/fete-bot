@@ -132,7 +132,9 @@ export const buildTicketMarketplaceRuleReminderMessage = (
     return configuredText;
   }
 
-  const reminder = `📌 Daily reminder: please make sure you follow the rules of ${config.ticketMarketplaceGroupName}. You can refer to them by reading the pinned message and group description in this chat.`;
+  const reminder = `📌 Daily reminder: please make sure you follow the rules of ${config.ticketMarketplaceGroupName}. You can refer to them by reading the pinned message and group description in this chat.
+
+No unsolicited private messages to people from the group. Do not contact members privately unless they've invited it, you already know each other, or there's a clear practical reason. Unwanted or uncomfortable messages may result in a warning or removal at admin discretion.`;
   const descriptionText = groupDescription?.trim();
 
   return descriptionText ? `${reminder}\n\n${descriptionText}` : reminder;

@@ -108,6 +108,7 @@ describe("ticket marketplace rule reminder", () => {
     const { buildTicketMarketplaceRuleReminderMessage } = await import("../ruleReminder.js");
 
     expect(buildTicketMarketplaceRuleReminderMessage(config)).toContain("pinned message and group description");
+    expect(buildTicketMarketplaceRuleReminderMessage(config)).toContain("No unsolicited private messages");
     expect(buildTicketMarketplaceRuleReminderMessage(config, "Rule 1\nRule 2")).toContain("\n\nRule 1\nRule 2");
     expect(buildTicketMarketplaceRuleReminderMessage(config, "Rule 1\nRule 2")).not.toContain("Group description:");
   });
