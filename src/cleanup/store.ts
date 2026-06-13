@@ -181,6 +181,37 @@ export const getCleanupCampaign = (id: string): CleanupCampaign | null => {
   return row ? toCampaign(row) : null;
 };
 
+export const continueLatestCleanupCampaignPaused = (
+  durationMs: number,
+  nowMs = Date.now(),
+): CleanupCampaign | null => withImmediateTransaction(() => {
+  const existingOpen = getOpenCleanupCampaign();
+  if (existingOpen) {
+    return existingOpen;
+  }
+
+  const latest = getLatestCleanupCampaign();
+  if (!latest) {
+    return null;
+  }
+
+  getDb()
+    .prepare(`
+      UPDATE cleanup_campaigns
+      SET
+        status = 'paused',
+        ends_at = ?,
+        next_batch_not_before = ?,
+        completed_at = NULL,
+        stopped_at = NULL,
+        updated_at = ?
+      WHERE id = ?
+    `)
+    .run(nowMs + durationMs, nowMs, nowMs, latest.id);
+
+  return getCleanupCampaign(latest.id);
+});
+
 export const getLatestCleanupCampaign = (): CleanupCampaign | null => {
   const row = getDb()
     .prepare<[], CampaignRow>(`

@@ -181,6 +181,37 @@ describe("cleanup campaign", () => {
     expect(store.listCleanupCandidateMembers(campaign.id, 10).map((member) => member.userId)).toEqual(["user-2"]);
   });
 
+  it("can reopen the latest completed cleanup campaign paused without resetting pending DMs", async () => {
+    await setupDb();
+    const store = await import("../store.js");
+    const campaign = store.createCleanupCampaign({
+      durationMs: 72 * 60 * 60_000,
+      actorUserId: "owner",
+      actorLabel: "owner",
+      channelLink: config.cleanupChannelLink,
+      publicMessage: "public",
+      dmMessage: "dm",
+      batchSize: 8,
+      batchIntervalMinutes: 30,
+      nowMs: 1_000,
+      members: [
+        { userId: "user-1", displayName: "User One", primaryJid: "447700900001@s.whatsapp.net" },
+        { userId: "user-2", displayName: "User Two", primaryJid: "447700900002@s.whatsapp.net", whitelisted: true },
+      ],
+    });
+    store.setCleanupCampaignStatus(campaign.id, "completed", 2_000);
+
+    const reopened = store.continueLatestCleanupCampaignPaused(24 * 60 * 60_000, 3_000);
+
+    expect(reopened?.id).toBe(campaign.id);
+    expect(reopened?.status).toBe("paused");
+    expect(reopened?.endsAt).toBe(24 * 60 * 60_000 + 3_000);
+    const stats = store.getCleanupStats(campaign.id);
+    expect(stats?.dmPending).toBe(1);
+    expect(stats?.dmSkipped).toBe(1);
+    expect(stats?.nextBatchSize).toBe(0);
+  });
+
   it("reports first-time whitelist only once for acknowledgements", async () => {
     await setupDb();
     const store = await import("../store.js");

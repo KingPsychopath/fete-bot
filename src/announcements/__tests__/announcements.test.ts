@@ -373,6 +373,8 @@ describe("announcements", () => {
   });
 
   it("can blast an owner-confirmed replied message to every managed chat", async () => {
+    const previousBlastDelayMs = process.env.ANNOUNCEMENTS_BLAST_DELAY_MS;
+    process.env.ANNOUNCEMENTS_BLAST_DELAY_MS = "0";
     await setup();
     const { handleAnnouncementCommand } = await import("../commands.js");
     const sendMessage = vi.fn().mockResolvedValue(undefined);
@@ -418,6 +420,11 @@ describe("announcements", () => {
     expect(sendMessage).toHaveBeenCalledWith("owner@s.whatsapp.net", {
       text: "Sent to 3 chat(s).",
     });
+    if (previousBlastDelayMs === undefined) {
+      delete process.env.ANNOUNCEMENTS_BLAST_DELAY_MS;
+    } else {
+      process.env.ANNOUNCEMENTS_BLAST_DELAY_MS = previousBlastDelayMs;
+    }
   });
 
   it("allows test in restricted group mode but blocks write commands", async () => {

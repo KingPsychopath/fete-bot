@@ -14,6 +14,7 @@ import {
 } from "./format.js";
 import {
   createCleanupCampaign,
+  continueLatestCleanupCampaignPaused,
   extendCleanupCampaign,
   findCleanupMemberByUserOrJid,
   getCleanupStats,
@@ -40,6 +41,7 @@ export type CleanupActor = {
 const CLEANUP_HELP = `*Cleanup commands*
 
 !cleanup start {duration?} [channel=https://...] [public=off] [carry=off]
+!cleanup continue {duration?}
 !cleanup status
 !cleanup whitelist {limit?}
 !cleanup candidates {limit?}
@@ -442,6 +444,31 @@ export const handleCleanupCommand = async (
     const stats = getCleanupStats(campaign.id);
     await sock.sendMessage(replyJid, {
       text: stats ? formatCleanupStarted(stats, sentTargets) : "Cleanup campaign started.",
+    });
+    return true;
+  }
+
+  if (subcommand === "continue" || subcommand === "reopen") {
+    const existing = getOpenCleanupCampaign();
+    if (existing) {
+      await sock.sendMessage(replyJid, {
+        text: `Cleanup campaign already ${existing.status}. Use \`!cleanup status\`, \`!cleanup pause\`, \`!cleanup resume\`, or \`!cleanup stop\`.`,
+      });
+      return true;
+    }
+
+    const durationMs = durationMsFromToken(parts[2], 72 * 60 * 60_000);
+    if (!durationMs) {
+      await sock.sendMessage(replyJid, { text: "Usage: !cleanup continue {duration?}. Example: `!cleanup continue 72h`" });
+      return true;
+    }
+
+    const campaign = continueLatestCleanupCampaignPaused(durationMs);
+    const stats = campaign ? getCleanupStats(campaign.id) : null;
+    await sock.sendMessage(replyJid, {
+      text: stats
+        ? `Reopened latest cleanup campaign in PAUSED mode. Use \`!cleanup resume\` when you want DMs to continue.\n\n${formatCleanupStatus(stats, Date.now(), { hardPauseDms: isCleanupDmHardPaused(config) })}`
+        : "No previous cleanup campaign found.",
     });
     return true;
   }

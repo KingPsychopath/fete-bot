@@ -250,6 +250,11 @@ ${itemLines}`;
 const sleep = (delayMs: number): Promise<void> =>
   delayMs > 0 ? new Promise((resolve) => setTimeout(resolve, delayMs)) : Promise.resolve();
 
+const getAnnouncementBlastDelayMs = (): number => {
+  const parsed = Number(process.env.ANNOUNCEMENTS_BLAST_DELAY_MS ?? "5000");
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 5_000;
+};
+
 const getManualAnnouncementText = (tokens: readonly string[], quotedText: string | null): string | null => {
   const inlineText = tokens.slice(2).join(" ").trim();
   return inlineText || quotedText?.trim() || null;
@@ -268,6 +273,7 @@ const sendManualAnnouncementToGroups = async (
   body: string,
   targetGroupJids: readonly string[],
   candidates: readonly AnnouncementMentionCandidate[],
+  delayMs: number,
 ): Promise<{ sent: string[]; failed: Array<{ groupJid: string; error: string }> }> => {
   const sent: string[] = [];
   const failed: Array<{ groupJid: string; error: string }> = [];
@@ -276,7 +282,7 @@ const sendManualAnnouncementToGroups = async (
 
   for (const [index, groupJid] of targetGroupJids.entries()) {
     if (index > 0) {
-      await sleep(1_500);
+      await sleep(delayMs);
     }
 
     try {
@@ -599,6 +605,7 @@ export const handleAnnouncementCommand = async (
           body,
           [config.announcementsTargetGroupJid],
           mentionCandidates,
+          getAnnouncementBlastDelayMs(),
         );
         return formatManualAnnouncementResult(result, groups);
       },
@@ -624,14 +631,21 @@ export const handleAnnouncementCommand = async (
       return true;
     }
 
+    const blastDelayMs = getAnnouncementBlastDelayMs();
     const targetPreview = targetGroupJids.map((jid) => `- ${groups.get(jid) ?? jid} (${jid})`).join("\n");
     await requestConfirmation(
       sock,
       replyJid,
       actor.userId ?? actor.label,
-      `Blast this message once to ${targetGroupJids.length} chat(s)?\n${targetPreview}`,
+      `Blast this message once to ${targetGroupJids.length} chat(s)?\nDelay between chats: ${Math.round(blastDelayMs / 1000)}s\n${targetPreview}`,
       async () => {
-        const result = await sendManualAnnouncementToGroups(sock, body, targetGroupJids, mentionCandidates);
+        const result = await sendManualAnnouncementToGroups(
+          sock,
+          body,
+          targetGroupJids,
+          mentionCandidates,
+          blastDelayMs,
+        );
         return formatManualAnnouncementResult(result, groups);
       },
     );
