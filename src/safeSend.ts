@@ -9,14 +9,15 @@ import { warn } from "./logger.js";
 import { consumeQuietSwitchSendBypass, isQuietSwitchEnabled } from "./quietSwitch.js";
 
 type SendResult = Awaited<ReturnType<WASocket["sendMessage"]>>;
+type ParticipantUpdateResult = Awaited<ReturnType<WASocket["groupParticipantsUpdate"]>>;
 
-type QueueTask = {
+type QueueTask<Result> = {
   jid: string;
-  content: AnyMessageContent;
-  send: () => Promise<SendResult>;
-  resolve: (value: SendResult) => void;
+  run: () => Promise<Result>;
+  resolve: (value: Result) => void;
   reject: (reason?: unknown) => void;
   priority: number;
+  targetMinIntervalMs: number;
 };
 
 export type SafeSendOptions = {
@@ -24,6 +25,7 @@ export type SafeSendOptions = {
   directChatMinIntervalMs: number;
   groupChatMinIntervalMs: number;
   controlMessageMinIntervalMs: number;
+  participantUpdateMinIntervalMs: number;
   maxQueueSize: number;
   retryDelaysMs: readonly number[];
 };
@@ -33,6 +35,7 @@ const DEFAULT_SAFE_SEND_OPTIONS: SafeSendOptions = {
   directChatMinIntervalMs: 6_000,
   groupChatMinIntervalMs: 1_500,
   controlMessageMinIntervalMs: 750,
+  participantUpdateMinIntervalMs: 2_000,
   maxQueueSize: 1_000,
   retryDelaysMs: [10_000],
 };
@@ -86,6 +89,8 @@ const getTaskPriority = (content: AnyMessageContent): number => {
   return 2;
 };
 
+const PARTICIPANT_UPDATE_PRIORITY = 1;
+
 const getTargetMinIntervalMs = (jid: string, content: AnyMessageContent, options: SafeSendOptions): number => {
   if (isDeleteMessage(content) || isReactionMessage(content)) {
     return options.controlMessageMinIntervalMs;
@@ -128,9 +133,9 @@ const shouldRetrySendError = (value: unknown): boolean => {
   return /\b(?:rate|too many|timeout|timed out|connection|socket|unavailable|temporar)/iu.test(getErrorText(value));
 };
 
-export class SafeSendQueue {
+class SafeOperationQueue {
   private readonly options: SafeSendOptions;
-  private readonly queue: QueueTask[] = [];
+  private readonly queue: Array<QueueTask<unknown>> = [];
   private readonly lastSentAtByTarget = new Map<string, number>();
   private running = false;
   private lastGlobalSentAt = 0;
@@ -143,29 +148,30 @@ export class SafeSendQueue {
     };
   }
 
-  enqueue(
-    jid: string,
-    content: AnyMessageContent,
-    send: () => Promise<SendResult>,
-  ): Promise<SendResult> {
+  enqueue<Result>(taskInput: {
+    jid: string;
+    priority: number;
+    targetMinIntervalMs: number;
+    run: () => Promise<Result>;
+  }): Promise<Result> {
     if (this.queue.length >= this.options.maxQueueSize) {
       return Promise.reject(new Error("WhatsApp safe-send queue is full"));
     }
 
     return new Promise((resolve, reject) => {
-      const task: QueueTask = {
-        jid,
-        content,
-        send,
+      const task: QueueTask<Result> = {
+        jid: taskInput.jid,
+        run: taskInput.run,
         resolve,
         reject,
-        priority: getTaskPriority(content),
+        priority: taskInput.priority,
+        targetMinIntervalMs: taskInput.targetMinIntervalMs,
       };
       const insertAt = this.queue.findIndex((queuedTask) => queuedTask.priority > task.priority);
       if (insertAt === -1) {
-        this.queue.push(task);
+        this.queue.push(task as QueueTask<unknown>);
       } else {
-        this.queue.splice(insertAt, 0, task);
+        this.queue.splice(insertAt, 0, task as QueueTask<unknown>);
       }
       void this.drain();
     });
@@ -196,12 +202,11 @@ export class SafeSendQueue {
     }
   }
 
-  private async waitForSendSlot(task: QueueTask): Promise<void> {
+  private async waitForSendSlot<Result>(task: QueueTask<Result>): Promise<void> {
     const now = Date.now();
-    const targetMinIntervalMs = getTargetMinIntervalMs(task.jid, task.content, this.options);
     const lastTargetSentAt = this.lastSentAtByTarget.get(task.jid) ?? 0;
     const globalReadyAt = this.lastGlobalSentAt + this.options.globalMinIntervalMs;
-    const targetReadyAt = lastTargetSentAt + targetMinIntervalMs;
+    const targetReadyAt = lastTargetSentAt + task.targetMinIntervalMs;
     const waitMs = Math.max(0, globalReadyAt - now, targetReadyAt - now);
 
     if (waitMs > 0) {
@@ -209,20 +214,20 @@ export class SafeSendQueue {
     }
   }
 
-  private recordAttempt(task: QueueTask): void {
+  private recordAttempt<Result>(task: QueueTask<Result>): void {
     const now = Date.now();
     this.lastGlobalSentAt = now;
     this.lastSentAtByTarget.set(task.jid, now);
   }
 
-  private async runTask(task: QueueTask): Promise<SendResult> {
+  private async runTask<Result>(task: QueueTask<Result>): Promise<Result> {
     let attempt = 0;
     let lastError: unknown;
 
     while (attempt <= this.options.retryDelaysMs.length) {
       await this.waitForSendSlot(task);
       try {
-        const result = await task.send();
+        const result = await task.run();
         this.recordAttempt(task);
         return result;
       } catch (sendError) {
@@ -249,6 +254,33 @@ export class SafeSendQueue {
   }
 }
 
+export class SafeSendQueue {
+  private readonly options: SafeSendOptions;
+  private readonly queue: SafeOperationQueue;
+
+  constructor(options: Partial<SafeSendOptions> = {}) {
+    this.options = {
+      ...DEFAULT_SAFE_SEND_OPTIONS,
+      ...options,
+      retryDelaysMs: options.retryDelaysMs ?? DEFAULT_SAFE_SEND_OPTIONS.retryDelaysMs,
+    };
+    this.queue = new SafeOperationQueue(this.options);
+  }
+
+  enqueue(
+    jid: string,
+    content: AnyMessageContent,
+    send: () => Promise<SendResult>,
+  ): Promise<SendResult> {
+    return this.queue.enqueue({
+      jid,
+      priority: getTaskPriority(content),
+      targetMinIntervalMs: getTargetMinIntervalMs(jid, content, this.options),
+      run: send,
+    });
+  }
+}
+
 export const buildRetryDelays = (maxAttempts: number, baseDelayMs: number): number[] => {
   const attempts = Math.max(1, maxAttempts);
   const delay = Math.max(0, baseDelayMs);
@@ -264,6 +296,10 @@ export const getSafeSendOptionsFromEnv = (): SafeSendOptions => {
     groupChatMinIntervalMs: parseNonNegativeInteger(process.env.WHATSAPP_SEND_GROUP_MIN_INTERVAL_MS, 1_500),
     directChatMinIntervalMs: parseNonNegativeInteger(process.env.WHATSAPP_SEND_DIRECT_MIN_INTERVAL_MS, 6_000),
     controlMessageMinIntervalMs: parseNonNegativeInteger(process.env.WHATSAPP_SEND_CONTROL_MIN_INTERVAL_MS, 750),
+    participantUpdateMinIntervalMs: parseNonNegativeInteger(
+      process.env.WHATSAPP_PARTICIPANT_UPDATE_MIN_INTERVAL_MS,
+      2_000,
+    ),
     maxQueueSize: parsePositiveInteger(process.env.WHATSAPP_SEND_MAX_QUEUE, 1_000),
     retryDelaysMs: buildRetryDelays(retryMaxAttempts, retryBaseDelayMs),
   };
@@ -273,9 +309,26 @@ export const installSafeSendGuard = (
   sock: WASocket,
   options: Partial<SafeSendOptions> = {},
 ): void => {
-  const queue = new SafeSendQueue(options);
+  const queueOptions = {
+    ...DEFAULT_SAFE_SEND_OPTIONS,
+    ...options,
+    retryDelaysMs: options.retryDelaysMs ?? DEFAULT_SAFE_SEND_OPTIONS.retryDelaysMs,
+  };
+  const operationQueue = new SafeOperationQueue(queueOptions);
   const originalSendMessage = sock.sendMessage.bind(sock);
   const originalGroupParticipantsUpdate = sock.groupParticipantsUpdate.bind(sock);
+
+  const enqueueMessage = (
+    jid: string,
+    content: AnyMessageContent,
+    send: () => Promise<SendResult>,
+  ): Promise<SendResult> =>
+    operationQueue.enqueue({
+      jid,
+      priority: getTaskPriority(content),
+      targetMinIntervalMs: getTargetMinIntervalMs(jid, content, queueOptions),
+      run: send,
+    });
 
   sock.sendMessage = (async (
     jid: string,
@@ -299,7 +352,7 @@ export const installSafeSendGuard = (
         debugJid,
         keys: typeof content === "object" && content !== null ? Object.keys(content) : [],
       });
-      return queue.enqueue(
+      return enqueueMessage(
         debugJid,
         { text: redirectText },
         () => originalSendMessage(debugJid, {
@@ -308,7 +361,7 @@ export const installSafeSendGuard = (
       );
     }
 
-    return queue.enqueue(jid, content, () => originalSendMessage(jid, content, sendOptions));
+    return enqueueMessage(jid, content, () => originalSendMessage(jid, content, sendOptions));
   }) as WASocket["sendMessage"];
 
   sock.groupParticipantsUpdate = (async (
@@ -335,7 +388,7 @@ export const installSafeSendGuard = (
         participants,
         action,
       });
-      await queue.enqueue(
+      await enqueueMessage(
         debugJid,
         { text: redirectText },
         () => originalSendMessage(debugJid, {
@@ -345,6 +398,11 @@ export const installSafeSendGuard = (
       return [];
     }
 
-    return originalGroupParticipantsUpdate(jid, participants, action);
+    return operationQueue.enqueue<ParticipantUpdateResult>({
+      jid,
+      priority: PARTICIPANT_UPDATE_PRIORITY,
+      targetMinIntervalMs: queueOptions.participantUpdateMinIntervalMs,
+      run: () => originalGroupParticipantsUpdate(jid, participants, action),
+    });
   }) as WASocket["groupParticipantsUpdate"];
 };
