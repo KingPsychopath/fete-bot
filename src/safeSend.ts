@@ -12,12 +12,32 @@ type SendResult = Awaited<ReturnType<WASocket["sendMessage"]>>;
 type ParticipantUpdateResult = Awaited<ReturnType<WASocket["groupParticipantsUpdate"]>>;
 
 type QueueTask<Result> = {
+  id: number;
   jid: string;
+  contentKind: string;
+  queuedAt: number;
   run: () => Promise<Result>;
   resolve: (value: Result) => void;
   reject: (reason?: unknown) => void;
   priority: number;
   targetMinIntervalMs: number;
+};
+
+export type SafeSendQueueItemSnapshot = {
+  id: number;
+  jid: string;
+  contentKind: string;
+  priority: number;
+  queuedAt: number;
+  ageMs: number;
+  targetMinIntervalMs: number;
+};
+
+export type SafeSendQueueSnapshot = {
+  running: boolean;
+  active: SafeSendQueueItemSnapshot | null;
+  pendingCount: number;
+  pending: SafeSendQueueItemSnapshot[];
 };
 
 export type SafeSendOptions = {
@@ -76,6 +96,23 @@ const isDeleteMessage = (content: AnyMessageContent): boolean =>
 
 const isReactionMessage = (content: AnyMessageContent): boolean =>
   typeof content === "object" && content !== null && "react" in content;
+
+const describeContentKind = (content: AnyMessageContent): string => {
+  if (isDeleteMessage(content)) {
+    return "delete";
+  }
+  if (isReactionMessage(content)) {
+    return "reaction";
+  }
+  if (typeof content !== "object" || content === null) {
+    return "unknown";
+  }
+  const keys = Object.keys(content).sort();
+  if (keys.includes("text")) {
+    return "text";
+  }
+  return keys.length > 0 ? keys.join("+") : "empty";
+};
 
 const getTaskPriority = (content: AnyMessageContent): number => {
   if (isDeleteMessage(content)) {
@@ -139,6 +176,8 @@ class SafeOperationQueue {
   private readonly lastSentAtByTarget = new Map<string, number>();
   private running = false;
   private lastGlobalSentAt = 0;
+  private activeTask: QueueTask<unknown> | null = null;
+  private nextTaskId = 1;
 
   constructor(options: Partial<SafeSendOptions> = {}) {
     this.options = {
@@ -150,6 +189,7 @@ class SafeOperationQueue {
 
   enqueue<Result>(taskInput: {
     jid: string;
+    contentKind: string;
     priority: number;
     targetMinIntervalMs: number;
     run: () => Promise<Result>;
@@ -160,13 +200,17 @@ class SafeOperationQueue {
 
     return new Promise((resolve, reject) => {
       const task: QueueTask<Result> = {
+        id: this.nextTaskId,
         jid: taskInput.jid,
+        contentKind: taskInput.contentKind,
+        queuedAt: Date.now(),
         run: taskInput.run,
         resolve,
         reject,
         priority: taskInput.priority,
         targetMinIntervalMs: taskInput.targetMinIntervalMs,
       };
+      this.nextTaskId += 1;
       const insertAt = this.queue.findIndex((queuedTask) => queuedTask.priority > task.priority);
       if (insertAt === -1) {
         this.queue.push(task as QueueTask<unknown>);
@@ -175,6 +219,45 @@ class SafeOperationQueue {
       }
       void this.drain();
     });
+  }
+
+  getSnapshot(now = Date.now()): SafeSendQueueSnapshot {
+    return {
+      running: this.running,
+      active: this.activeTask ? this.toSnapshotItem(this.activeTask, now) : null,
+      pendingCount: this.queue.length,
+      pending: this.queue.map((task) => this.toSnapshotItem(task, now)),
+    };
+  }
+
+  dropQueuedTask(taskId: number): boolean {
+    const index = this.queue.findIndex((task) => task.id === taskId);
+    if (index === -1) {
+      return false;
+    }
+    const [task] = this.queue.splice(index, 1);
+    task?.reject(new Error(`WhatsApp safe-send queue task ${taskId} skipped`));
+    return true;
+  }
+
+  clearQueuedTasks(): number {
+    const tasks = this.queue.splice(0, this.queue.length);
+    for (const task of tasks) {
+      task.reject(new Error("WhatsApp safe-send queue cleared"));
+    }
+    return tasks.length;
+  }
+
+  private toSnapshotItem(task: QueueTask<unknown>, now: number): SafeSendQueueItemSnapshot {
+    return {
+      id: task.id,
+      jid: task.jid,
+      contentKind: task.contentKind,
+      priority: task.priority,
+      queuedAt: task.queuedAt,
+      ageMs: Math.max(0, now - task.queuedAt),
+      targetMinIntervalMs: task.targetMinIntervalMs,
+    };
   }
 
   private async drain(): Promise<void> {
@@ -191,10 +274,13 @@ class SafeOperationQueue {
         }
 
         try {
+          this.activeTask = task;
           const result = await this.runTask(task);
           task.resolve(result);
         } catch (sendError) {
           task.reject(sendError);
+        } finally {
+          this.activeTask = null;
         }
       }
     } finally {
@@ -274,12 +360,24 @@ export class SafeSendQueue {
   ): Promise<SendResult> {
     return this.queue.enqueue({
       jid,
+      contentKind: describeContentKind(content),
       priority: getTaskPriority(content),
       targetMinIntervalMs: getTargetMinIntervalMs(jid, content, this.options),
       run: send,
     });
   }
 }
+
+let activeOperationQueue: SafeOperationQueue | null = null;
+
+export const getActiveSafeSendQueueSnapshot = (): SafeSendQueueSnapshot | null =>
+  activeOperationQueue?.getSnapshot() ?? null;
+
+export const skipActiveSafeSendQueueTask = (taskId: number): boolean =>
+  activeOperationQueue?.dropQueuedTask(taskId) ?? false;
+
+export const clearActiveSafeSendQueue = (): number =>
+  activeOperationQueue?.clearQueuedTasks() ?? 0;
 
 export const buildRetryDelays = (maxAttempts: number, baseDelayMs: number): number[] => {
   const attempts = Math.max(1, maxAttempts);
@@ -315,6 +413,7 @@ export const installSafeSendGuard = (
     retryDelaysMs: options.retryDelaysMs ?? DEFAULT_SAFE_SEND_OPTIONS.retryDelaysMs,
   };
   const operationQueue = new SafeOperationQueue(queueOptions);
+  activeOperationQueue = operationQueue;
   const originalSendMessage = sock.sendMessage.bind(sock);
   const originalGroupParticipantsUpdate = sock.groupParticipantsUpdate.bind(sock);
 
@@ -325,6 +424,7 @@ export const installSafeSendGuard = (
   ): Promise<SendResult> =>
     operationQueue.enqueue({
       jid,
+      contentKind: describeContentKind(content),
       priority: getTaskPriority(content),
       targetMinIntervalMs: getTargetMinIntervalMs(jid, content, queueOptions),
       run: send,
@@ -400,6 +500,7 @@ export const installSafeSendGuard = (
 
     return operationQueue.enqueue<ParticipantUpdateResult>({
       jid,
+      contentKind: `participant:${action}:${participants.length}`,
       priority: PARTICIPANT_UPDATE_PRIORITY,
       targetMinIntervalMs: queueOptions.participantUpdateMinIntervalMs,
       run: () => originalGroupParticipantsUpdate(jid, participants, action),

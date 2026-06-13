@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { SafeSendQueue, buildRetryDelays, installSafeSendGuard, setSafeSendWaitForTests } from "./safeSend.js";
+import {
+  SafeSendQueue,
+  buildRetryDelays,
+  clearActiveSafeSendQueue,
+  getActiveSafeSendQueueSnapshot,
+  installSafeSendGuard,
+  setSafeSendWaitForTests,
+  skipActiveSafeSendQueueTask,
+} from "./safeSend.js";
 
 describe("SafeSendQueue", () => {
   afterEach(() => {
@@ -95,5 +103,79 @@ describe("SafeSendQueue", () => {
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(groupParticipantsUpdate).toHaveBeenCalledTimes(1);
     expect(waits.some((delayMs) => delayMs >= 1_900)).toBe(true);
+  });
+
+  it("exposes safe-send queue metadata without message bodies and can skip pending sends", async () => {
+    let resolveFirstSend!: (value: { key: { id: string } }) => void;
+    const firstSendPromise = new Promise<{ key: { id: string } }>((resolve) => {
+      resolveFirstSend = resolve;
+    });
+    const sendMessage = vi.fn()
+      .mockReturnValueOnce(firstSendPromise)
+      .mockResolvedValue({ key: { id: "later" } });
+    const sock = {
+      sendMessage,
+      groupParticipantsUpdate: vi.fn(),
+    };
+    installSafeSendGuard(sock as never, {
+      globalMinIntervalMs: 0,
+      directChatMinIntervalMs: 0,
+      groupChatMinIntervalMs: 0,
+      controlMessageMinIntervalMs: 0,
+      participantUpdateMinIntervalMs: 0,
+      maxQueueSize: 10,
+      retryDelaysMs: [],
+    });
+
+    const first = sock.sendMessage("one@g.us", { text: "secret one" });
+    const second = sock.sendMessage("two@g.us", { text: "secret two" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const snapshot = getActiveSafeSendQueueSnapshot();
+    expect(snapshot?.active?.contentKind).toBe("text");
+    expect(snapshot?.pending).toHaveLength(1);
+    expect(snapshot?.pending[0]?.jid).toBe("two@g.us");
+    expect(JSON.stringify(snapshot)).not.toContain("secret");
+
+    expect(skipActiveSafeSendQueueTask(snapshot!.pending[0]!.id)).toBe(true);
+    await expect(second).rejects.toThrow("skipped");
+    resolveFirstSend({ key: { id: "first" } });
+    await expect(first).resolves.toEqual({ key: { id: "first" } });
+  });
+
+  it("clears pending safe-send tasks without cancelling the active send", async () => {
+    let resolveFirstSend!: (value: { key: { id: string } }) => void;
+    const firstSendPromise = new Promise<{ key: { id: string } }>((resolve) => {
+      resolveFirstSend = resolve;
+    });
+    const sendMessage = vi.fn()
+      .mockReturnValueOnce(firstSendPromise)
+      .mockResolvedValue({ key: { id: "later" } });
+    const sock = {
+      sendMessage,
+      groupParticipantsUpdate: vi.fn(),
+    };
+    installSafeSendGuard(sock as never, {
+      globalMinIntervalMs: 0,
+      directChatMinIntervalMs: 0,
+      groupChatMinIntervalMs: 0,
+      controlMessageMinIntervalMs: 0,
+      participantUpdateMinIntervalMs: 0,
+      maxQueueSize: 10,
+      retryDelaysMs: [],
+    });
+
+    const first = sock.sendMessage("one@g.us", { text: "first" });
+    const second = sock.sendMessage("two@g.us", { text: "second" });
+    const third = sock.sendMessage("three@g.us", { text: "third" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(clearActiveSafeSendQueue()).toBe(2);
+    await expect(second).rejects.toThrow("cleared");
+    await expect(third).rejects.toThrow("cleared");
+    resolveFirstSend({ key: { id: "first" } });
+    await expect(first).resolves.toEqual({ key: { id: "first" } });
   });
 });

@@ -76,6 +76,12 @@ import {
   setDebugRedirectSwitchState,
 } from "./debugRedirectSwitch.js";
 import {
+  clearActiveSafeSendQueue,
+  getActiveSafeSendQueueSnapshot,
+  skipActiveSafeSendQueueTask,
+  type SafeSendQueueItemSnapshot,
+} from "./safeSend.js";
+import {
   getTicketMarketplaceDeletionState,
   setTicketMarketplaceDeletionEnabled,
 } from "./ticketMarketplaceDeletion.js";
@@ -118,7 +124,7 @@ const HELP_MESSAGE = `*Fete Bot — Admin Help*
   !spotlight-requeue {messageId|rowId} {minutes?}
   !spotlight-cancel {messageId|rowId} {reason?} — reply only or DM
   !announce     help|list|show|raw|preview|next|check|add|edit|publish|on|off|move|remove|schedule|pause|resume|test|test-group|post|blast|send-now
-  !cleanup      start|status|whitelist|candidates|pause|resume|extend|stop
+  !cleanup      start|continue|notice|status|whitelist|candidates|pause|resume|extend|stop
   !deleted      {limit?} {reason?} — DM only
   !bans         {groupJid?}
   !mutes        {groupJid?}
@@ -151,6 +157,7 @@ const OWNER_HELP_BLOCK = `
   !mods
   !quiet {on|off|status} — global kill switch for all bot messages
   !debug {on <jid>|off|status} — reroute bot messages to a debug chat
+  !sendqueue {status|skip <id>|clear confirm} — inspect or clear pending outbound sends
   !ticketdelete {on|off|status} — delete ticket redirect messages instead of reply-only`;
 
 const INVALID_IDENTIFIER_MESSAGE = `❌ Couldn't parse that as a user identifier.
@@ -207,8 +214,10 @@ const canonicalOwnerCommand = (command: string): string =>
     : ["!debug", "!debugredirect", "!debugmode"].includes(command)
       ? "!debug"
       : ["!ticketdelete", "!ticketdeletion", "!ticketsdelete"].includes(command)
-      ? "!ticketdelete"
-      : command;
+        ? "!ticketdelete"
+        : ["!sendqueue", "!queue", "!outbox"].includes(command)
+          ? "!sendqueue"
+          : command;
 const isDestructiveCommand = (command: string): boolean =>
   ["!ban", "!mute", "!strike", "!remove"].includes(canonicalCommand(command));
 const COMMANDS_WITH_TARGET = new Set([
@@ -1478,6 +1487,84 @@ const handleTicketMarketplaceDeletionCommand = async (
   return true;
 };
 
+const formatQueueAge = (ageMs: number): string => {
+  const seconds = Math.round(ageMs / 1000);
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
+};
+
+const formatSafeSendQueueItem = (item: SafeSendQueueItemSnapshot): string =>
+  `#${item.id} ${item.contentKind} -> ${item.jid} queued ${formatQueueAge(item.ageMs)} ago`;
+
+const formatSafeSendQueueStatus = (): string => {
+  const snapshot = getActiveSafeSendQueueSnapshot();
+  if (!snapshot) {
+    return "Safe send queue is not installed on the active socket.";
+  }
+
+  const lines = [
+    "Safe send queue",
+    `Active: ${snapshot.active ? formatSafeSendQueueItem(snapshot.active) : "none"}`,
+    `Pending: ${snapshot.pendingCount}`,
+  ];
+  const preview = snapshot.pending.slice(0, 10);
+  if (preview.length > 0) {
+    lines.push("", ...preview.map(formatSafeSendQueueItem));
+    if (snapshot.pendingCount > preview.length) {
+      lines.push(`...and ${snapshot.pendingCount - preview.length} more`);
+    }
+  }
+  lines.push("", "Bodies are intentionally hidden. clear/skip only affect pending items, not the active send.");
+  return lines.join("\n");
+};
+
+const handleSafeSendQueueCommand = async (
+  sock: Pick<WASocket, "sendMessage">,
+  destinationJid: string,
+  actorContext: ActorContext,
+  text: string,
+): Promise<void> => {
+  if (actorContext.actorRole !== "owner") {
+    await sock.sendMessage(destinationJid, { text: "❌ Only owners can inspect or clear the safe send queue." });
+    return;
+  }
+
+  const [, subcommand = "status", arg] = text.trim().split(/\s+/);
+  if (subcommand === "status") {
+    await sock.sendMessage(destinationJid, { text: formatSafeSendQueueStatus() });
+    return;
+  }
+
+  if (subcommand === "skip") {
+    const taskId = Number(arg);
+    if (!Number.isInteger(taskId) || taskId <= 0) {
+      await sock.sendMessage(destinationJid, { text: "Usage: !sendqueue skip <id>" });
+      return;
+    }
+    const skipped = skipActiveSafeSendQueueTask(taskId);
+    await sock.sendMessage(destinationJid, {
+      text: skipped ? `Skipped pending safe-send queue item #${taskId}.` : `No pending safe-send queue item #${taskId}.`,
+    });
+    return;
+  }
+
+  if (subcommand === "clear") {
+    if (arg !== "confirm") {
+      await sock.sendMessage(destinationJid, { text: "Usage: !sendqueue clear confirm" });
+      return;
+    }
+    const cleared = clearActiveSafeSendQueue();
+    await sock.sendMessage(destinationJid, { text: `Cleared ${cleared} pending safe-send queue item(s).` });
+    return;
+  }
+
+  await sock.sendMessage(destinationJid, { text: "Usage: !sendqueue status | !sendqueue skip <id> | !sendqueue clear confirm" });
+};
+
 export async function handleGroupCommand(
   sock: WASocket,
   actor: ResolvedUser,
@@ -1529,6 +1616,12 @@ export async function handleGroupCommand(
 
   if (command === "!ticketdelete") {
     await handleTicketMarketplaceDeletionCommand(sock, actorContext.participantJid ?? groupJid, actorContext, text);
+    logAudit(actorContext, command, null, null, groupJid, text, "success");
+    return true;
+  }
+
+  if (command === "!sendqueue") {
+    await handleSafeSendQueueCommand(sock, actorContext.participantJid ?? groupJid, actorContext, text);
     logAudit(actorContext, command, null, null, groupJid, text, "success");
     return true;
   }
@@ -1971,6 +2064,12 @@ ${buildIdentityDebugText(actor)}`,
   if (command === "!ticketdelete") {
     await handleTicketMarketplaceDeletionCommand(sock, replyJid, actorContext, text);
     logAudit(actorContext, "!ticketdelete", null, null, null, text, "success");
+    return;
+  }
+
+  if (command === "!sendqueue") {
+    await handleSafeSendQueueCommand(sock, replyJid, actorContext, text);
+    logAudit(actorContext, "!sendqueue", null, null, null, text, "success");
     return;
   }
 
