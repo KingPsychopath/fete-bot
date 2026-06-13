@@ -207,7 +207,7 @@ const loadedConfig = {
     process.env.TICKET_MARKETPLACE_RULE_REMINDER_MIN_ACTIVITY_MESSAGES,
     3,
   ),
-  ticketSpotlightEnabled: parseBoolean(process.env.TICKET_SPOTLIGHT_ENABLED, true),
+  ticketSpotlightEnabled: parseBoolean(process.env.TICKET_SPOTLIGHT_ENABLED, false),
   ticketSpotlightSellingEnabled: parseBoolean(process.env.TICKET_SPOTLIGHT_SELLING_ENABLED, true),
   ticketSpotlightBuyingEnabled: parseBoolean(process.env.TICKET_SPOTLIGHT_BUYING_ENABLED, false),
   ticketSpotlightTargetJids: parseList(process.env.TICKET_SPOTLIGHT_TARGET_JIDS || DEFAULT_TICKET_SPOTLIGHT_TARGET_JIDS),
@@ -279,7 +279,7 @@ const loadedConfig = {
   announcementsGroupMentions: parseAnnouncementGroupMentions(process.env.ANNOUNCEMENTS_GROUP_MENTIONS_JSON),
   cleanupChannelLink: normaliseEnvValue(process.env.CLEANUP_CHANNEL_LINK) || null,
   cleanupPublicTargetJids: parseList(process.env.CLEANUP_PUBLIC_TARGET_JIDS),
-  cleanupDmsEnabled: parseBoolean(process.env.CLEANUP_DMS_ENABLED, true),
+  cleanupDmsEnabled: parseBoolean(process.env.CLEANUP_DMS_ENABLED, false),
   logAllowedMessages: parseBoolean(process.env.LOG_ALLOWED_MESSAGES, true),
   logMessageText: parseBoolean(process.env.LOG_MESSAGE_TEXT, false),
 } as const;

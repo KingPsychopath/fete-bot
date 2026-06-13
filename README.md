@@ -128,12 +128,12 @@ The backup contains WhatsApp linked-device credentials. Treat it like a secret.
 - `TICKET_MARKETPLACE_MANAGEMENT=true` by default
 - `TICKET_MARKETPLACE_GROUP_JIDS` is comma-separated and defaults to `120363418331899807@g.us`
 - `TICKET_MARKETPLACE_RULE_REMINDER_ENABLED=true` sends a daily marketplace rules reminder after `TICKET_MARKETPLACE_RULE_REMINDER_TIME` in `TICKET_MARKETPLACE_RULE_REMINDER_TIMEZONE`; after a reminder, it waits for `TICKET_MARKETPLACE_RULE_REMINDER_MIN_ACTIVITY_MESSAGES` observed chat messages before sending another
-- `TICKET_SPOTLIGHT_ENABLED=true` by default; seller spotlights are enabled, buying spotlights are off by default for the first rollout
+- `TICKET_SPOTLIGHT_ENABLED=false` by default; seller spotlights remain separately gated by `TICKET_SPOTLIGHT_SELLING_ENABLED` if spotlighting is explicitly enabled
 - `TICKET_EXCHANGE_WEBSITE_ANNOUNCEMENTS_ENABLED=false` by default; when enabled, the bot polls Fete Finder for new Ticket Exchange listings and posts website links only, never user contact details. Listings wait `TICKET_EXCHANGE_WEBSITE_ANNOUNCE_DELAY_MINUTES` before posting, and `TICKET_EXCHANGE_WEBSITE_MAX_ANNOUNCEMENTS_PER_TICK=1` limits catch-up bursts after downtime. When a marketplace post is queued for spotlight, the bot can DM the poster a Fete Finder nudge, cooled down by `TICKET_EXCHANGE_WEBSITE_SPOTLIGHT_PROMPT_COOLDOWN_DAYS`.
 - `ANNOUNCEMENTS_ENABLED=false` by default; when enabled, announcements are sent to `ANNOUNCEMENTS_TARGET_GROUP_JID` on a local wall-clock schedule
 - `STARTUP_OWNER_AWAKE_ENABLED=true` sends owners a warm-up DM on startup; `STARTUP_OWNER_AWAKE_COOLDOWN_MINUTES=30` suppresses repeats across rapid restarts, and setting enabled to `false` disables the warm-up DM entirely
 - `DIRECT_CHAT_AUTORESPONSE_ENABLED=true` sends ordinary 1:1 messages a short "contact admins" reply; `DIRECT_CHAT_AUTORESPONSE_COOLDOWN_DAYS=365` keeps it effectively one-and-done per chat, and cleanup DM replies stay separate
-- `CLEANUP_DMS_ENABLED=true` allows cleanup DMs to send at the fixed safety rate of 8 every 30m, 10s apart inside a batch; use `!cleanup start 72h public=off` to start without sending public group notices
+- `CLEANUP_DMS_ENABLED=false` hard-pauses cleanup DMs by default; set it to `true` to send at the fixed safety rate of 8 every 30m, 10s apart inside a batch. Use `!cleanup start 72h public=off` to start without sending public group notices
 - Cleanup starts carry the previous campaign whitelist by default; add `carry=off` if you need a completely fresh whitelist
 - `TICKET_SPOTLIGHT_TARGET_JIDS` defaults to FDLM Parties & Events PT.2 and FDLM Parties & Events; website ticket exchange announcements also include the ticket marketplace by default
 - `OWNER_JIDS`, database moderators, and WhatsApp group admins are never moderated
@@ -214,7 +214,7 @@ Special rules:
 
 ### Ticket spotlight reposts
 
-- Enabled by default with `TICKET_SPOTLIGHT_ENABLED=true`; set it to `false` to opt out
+- Disabled by default with `TICKET_SPOTLIGHT_ENABLED=false`; set it to `true` to opt in
 - Priced selling posts in the marketplace can be reposted after a delay to the configured spotlight target groups
 - Selling spotlights default to a 20 minute delay; buying spotlights default to a 30 minute delay
 - Target groups default to a 60 minute cooldown between spotlight posts
