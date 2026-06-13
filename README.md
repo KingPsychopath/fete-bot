@@ -59,7 +59,7 @@ WhatsApp moderation bot for the Fete event groups. It runs through Baileys, appl
 
 ### Session storage
 
-- `./data/auth`
+- `./data/bot.db` table `whatsapp_auth_state`
 
 ## Storage Contract
 
@@ -72,7 +72,8 @@ Use one Railway volume for this service.
 Inside that volume:
 
 - `/app/data/bot.db` stores the SQLite database
-- `/app/data/auth` stores the Baileys multi-file WhatsApp session
+- `/app/data/bot.db` table `whatsapp_auth_state` stores the Baileys WhatsApp session
+- `/app/data/auth` is legacy multi-file auth storage only
 - `/app/data/auth-backups/<name>` stores timestamped WhatsApp auth snapshots created after a known-good link
 
 Notes:
@@ -88,17 +89,21 @@ The bot automatically snapshots WhatsApp auth after every successful connection.
 
 ```text
 /app/data/auth-backups/<timestamp>-<whatsapp-id>/
-  auth/
+  whatsapp-auth.json
   manifest.json
 ```
 
-The app keeps the newest 1 backup by default. Set `WHATSAPP_AUTH_MAX_BACKUPS` if you need a larger restore window. To manually snapshot the current working auth:
+The app keeps the newest 1 backup by default. Set `WHATSAPP_AUTH_MAX_BACKUPS` if you need a larger restore window.
+
+The `scripts/backup-whatsapp-auth.sh` and `scripts/restore-whatsapp-auth.sh` helpers are for legacy `auth/` directory snapshots. SQLite auth restore should be done by importing `whatsapp-auth.json` into the `whatsapp_auth_state` table or by re-pairing the bot.
+
+To manually snapshot a legacy auth directory:
 
 ```bash
 scripts/backup-whatsapp-auth.sh
 ```
 
-Restore a known-good snapshot and redeploy:
+Restore a legacy auth-directory snapshot and redeploy:
 
 ```bash
 scripts/restore-whatsapp-auth.sh <backup-name>

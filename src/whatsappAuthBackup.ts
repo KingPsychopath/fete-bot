@@ -1,6 +1,8 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
+import { getWhatsAppAuthCredsForBackup, getWhatsAppAuthRowsForBackup } from "./whatsappSqliteAuth.js";
+
 export type WhatsAppAuthBackupResult =
   | {
       created: true;
@@ -67,6 +69,19 @@ const readCreds = (credsPath: string): WhatsAppCredsFile | null => {
   }
 };
 
+const readSqliteCreds = (): { creds: WhatsAppCredsFile; rows: ReturnType<typeof getWhatsAppAuthRowsForBackup> } | null => {
+  try {
+    const creds = getWhatsAppAuthCredsForBackup();
+    if (!creds) {
+      return null;
+    }
+
+    return { creds, rows: getWhatsAppAuthRowsForBackup() };
+  } catch {
+    return null;
+  }
+};
+
 const getBackupNames = (backupRoot: string): string[] => {
   if (!existsSync(backupRoot)) {
     return [];
@@ -116,12 +131,13 @@ export const createWhatsAppAuthBackup = ({
   backupName,
   maxBackups = DEFAULT_MAX_BACKUPS,
 }: CreateWhatsAppAuthBackupOptions): WhatsAppAuthBackupResult => {
+  const sqliteAuth = readSqliteCreds();
   const credsPath = path.join(authDir, "creds.json");
-  if (!existsSync(credsPath)) {
+  if (!sqliteAuth && !existsSync(credsPath)) {
     return { created: false, reason: "missing-creds" };
   }
 
-  const creds = readCreds(credsPath);
+  const creds = sqliteAuth?.creds ?? readCreds(credsPath);
   if (!creds) {
     return { created: false, reason: "creds-not-ready" };
   }
@@ -145,17 +161,24 @@ export const createWhatsAppAuthBackup = ({
   mkdirSync(tmpPath, { recursive: true, mode: 0o700 });
 
   try {
-    cpSync(authDir, path.join(tmpPath, "auth"), { recursive: true });
+    if (sqliteAuth) {
+      writeFileSync(
+        path.join(tmpPath, "whatsapp-auth.json"),
+        `${JSON.stringify({ rows: sqliteAuth.rows }, null, 2)}\n`,
+      );
+    } else {
+      cpSync(authDir, path.join(tmpPath, "auth"), { recursive: true });
+    }
     writeFileSync(
       path.join(tmpPath, "manifest.json"),
       `${JSON.stringify(
         {
           createdAt: now.toISOString(),
-          authDir,
+          authDir: sqliteAuth ? null : authDir,
           me: creds.me ?? null,
           registered: creds.registered ?? null,
           platform: creds.platform ?? null,
-          format: "auth-directory-v1",
+          format: sqliteAuth ? "sqlite-auth-v1" : "auth-directory-v1",
         },
         null,
         2,

@@ -1,7 +1,6 @@
 import makeWASocket, {
   DisconnectReason,
   fetchLatestBaileysVersion,
-  useMultiFileAuthState,
   type GroupMetadata,
   type AnyMessageContent,
   type MiscMessageGenerationOptions,
@@ -11,7 +10,7 @@ import makeWASocket, {
   type WAMessageKey,
 } from "@whiskeysockets/baileys";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import pino from "pino";
@@ -125,6 +124,7 @@ import { getDebugRedirectSwitchState } from "./debugRedirectSwitch.js";
 import { createWhatsAppAuthBackup } from "./whatsappAuthBackup.js";
 import { shouldRequestWhatsAppPairingCode } from "./whatsappPairing.js";
 import { getSafeSendOptionsFromEnv, installSafeSendGuard } from "./safeSend.js";
+import { clearWhatsAppAuthState, useSqliteAuthState } from "./whatsappSqliteAuth.js";
 
 const spamDetector = new SpamDetector({
   duplicateMinLength: config.spamDuplicateMinLength,
@@ -3445,7 +3445,6 @@ export const startBot = async (): Promise<void> => {
     healthServerStarted = true;
   }
   initDb();
-  await loadLidMappings();
   purgeExpiredStrikes();
   purgeExpiredMutes();
   purgeExpiredCallViolations(getCallGuardWindowMs());
@@ -3479,7 +3478,8 @@ export const startBot = async (): Promise<void> => {
   logConfig();
 
   const authFolder = AUTH_DIR;
-  const { state, saveCreds } = await useMultiFileAuthState(authFolder);
+  const { state, saveCreds } = await useSqliteAuthState();
+  await loadLidMappings();
   const { version, isLatest, error: versionError } = await fetchLatestBaileysVersion();
 
   if (versionError) {
@@ -3671,15 +3671,14 @@ export const startBot = async (): Promise<void> => {
         pairingCodeRequested = false;
 
         if (pairingPhoneDigits) {
-          warn("WhatsApp logged the bot out. Clearing auth folder and restarting pairing.", {
+          warn("WhatsApp logged the bot out. Clearing SQLite auth state and restarting pairing.", {
             authFolder,
             statusCode,
           });
           try {
-            rmSync(authFolder, { recursive: true, force: true });
-            mkdirSync(authFolder, { recursive: true });
+            clearWhatsAppAuthState();
           } catch (authCleanupError) {
-            error("Failed to clear WhatsApp auth folder after logout.", authCleanupError);
+            error("Failed to clear WhatsApp SQLite auth state after logout.", authCleanupError);
             warn("Bot is staying online for health/SSH while waiting for WhatsApp re-pair.");
             return;
           }
@@ -3690,7 +3689,7 @@ export const startBot = async (): Promise<void> => {
           return;
         }
 
-        error(`WhatsApp logged the bot out. Remove the auth folder (${authFolder}) and pair again.`, { statusCode });
+        error("WhatsApp logged the bot out. Clear the SQLite auth state and pair again.", { statusCode });
         warn("Bot is staying online for health/SSH while waiting for WhatsApp re-pair.");
         return;
       }

@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { getDb } from "./db.js";
 import { AUTH_DIR } from "./storagePaths.js";
 
 const lidToPhone = new Map<string, string>();
@@ -40,6 +41,34 @@ const normalizeAlias = (alias: string): string => {
 export async function loadLidMappings(authDir = AUTH_DIR): Promise<void> {
   lidToPhone.clear();
   phoneToLids.clear();
+
+  try {
+    const rows = getDb()
+      .prepare<[], { id: string; value_json: string }>(`
+        SELECT id, value_json
+        FROM whatsapp_auth_state
+        WHERE type = 'lid-mapping'
+      `)
+      .all();
+
+    for (const row of rows) {
+      const phoneUser = row.id.trim();
+      const parsed = JSON.parse(row.value_json) as unknown;
+      const lidUser = typeof parsed === "string" ? parsed.trim() : String(parsed ?? "").trim();
+      if (!phoneUser || !lidUser) {
+        continue;
+      }
+
+      const phoneAlias = normalizeAlias(`${phoneUser}@s.whatsapp.net`);
+      const lidAlias = normalizeAlias(`${lidUser}@lid`);
+      lidToPhone.set(lidAlias, phoneAlias);
+      const lids = phoneToLids.get(phoneAlias) ?? new Set<string>();
+      lids.add(lidAlias);
+      phoneToLids.set(phoneAlias, lids);
+    }
+  } catch {
+    // Fall back to legacy multi-file auth mappings below.
+  }
 
   let entries: string[];
   try {
