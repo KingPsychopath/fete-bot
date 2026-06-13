@@ -1,8 +1,13 @@
 const isUserChatJid = (jid: string): boolean => jid.endsWith("@s.whatsapp.net") || jid.endsWith("@lid");
+const isGroupChatJid = (jid: string): boolean => jid.endsWith("@g.us");
 const isLidJid = (jid: string): boolean => jid.endsWith("@lid");
 const isPhoneJid = (jid: string): boolean => jid.endsWith("@s.whatsapp.net");
 
 export const getDirectCommandReplyTargets = (originalJid: string, inboundRemoteJid: string): string[] => {
+  if (isGroupChatJid(originalJid)) {
+    return [originalJid];
+  }
+
   return Array.from(new Set([inboundRemoteJid, originalJid].filter(isUserChatJid)));
 };
 

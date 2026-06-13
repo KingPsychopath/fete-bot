@@ -25,6 +25,10 @@ describe("direct command reply targets", () => {
   it("falls back to the inbound LID when no phone JID is known", () => {
     expect(getDirectCommandReplyTargets("111222333@lid", "111222333@lid")).toEqual(["111222333@lid"]);
   });
+
+  it("preserves group targets for direct commands that intentionally send to a group", () => {
+    expect(getDirectCommandReplyTargets("group@g.us", "111222333@lid")).toEqual(["group@g.us"]);
+  });
 });
 
 describe("known direct message targets", () => {
