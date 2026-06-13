@@ -83,7 +83,7 @@ import {
 } from "./moderation/ticketMarketplace/ruleReminder.js";
 import { SpamDetector, type SpamReason } from "./spamDetector.js";
 import { error, log, warn } from "./logger.js";
-import { consumeQuietSwitchSendBypass, isQuietSwitchEnabled } from "./quietSwitch.js";
+import { isQuietSwitchEnabled } from "./quietSwitch.js";
 import { isTicketMarketplaceDeletionEnabled } from "./ticketMarketplaceDeletion.js";
 import {
   startWebsiteTicketExchangeAnnouncementScheduler,
@@ -121,13 +121,10 @@ import {
 import { extractAllIdentifiers, isProtectedGroupMember, parseToJid } from "./utils.js";
 import { STARTED_AT, VERSION } from "./version.js";
 import { getDirectCommandReplyTargets, getKnownDirectMessageTargets, getStartupOwnerAwakeTargets } from "./directCommandReply.js";
-import {
-  buildDebugParticipantUpdateText,
-  buildDebugRedirectText,
-  getDebugRedirectSwitchState,
-} from "./debugRedirectSwitch.js";
+import { getDebugRedirectSwitchState } from "./debugRedirectSwitch.js";
 import { createWhatsAppAuthBackup } from "./whatsappAuthBackup.js";
 import { shouldRequestWhatsAppPairingCode } from "./whatsappPairing.js";
+import { getSafeSendOptionsFromEnv, installSafeSendGuard } from "./safeSend.js";
 
 const spamDetector = new SpamDetector({
   duplicateMinLength: config.spamDuplicateMinLength,
@@ -632,69 +629,6 @@ const hasHandledCallOfferId = (callId: string, nowMs = Date.now()): boolean => {
   }
 
   return true;
-};
-
-const installQuietSwitchSendGuard = (sock: WASocket): void => {
-  const originalSendMessage = sock.sendMessage.bind(sock);
-  const originalGroupParticipantsUpdate = sock.groupParticipantsUpdate.bind(sock);
-  sock.sendMessage = (async (
-    jid: string,
-    content: AnyMessageContent,
-    options?: MiscMessageGenerationOptions,
-  ) => {
-    if (isQuietSwitchEnabled() && !consumeQuietSwitchSendBypass(content)) {
-      warn("Quiet switch blocked outgoing bot message", {
-        jid,
-        keys: typeof content === "object" && content !== null ? Object.keys(content) : [],
-      });
-      return undefined;
-    }
-
-    const debugRedirect = getDebugRedirectSwitchState();
-    if (debugRedirect.enabled && debugRedirect.targetJid && jid !== debugRedirect.targetJid) {
-      warn("Debug redirect rerouted outgoing bot message", {
-        originalJid: jid,
-        debugJid: debugRedirect.targetJid,
-        keys: typeof content === "object" && content !== null ? Object.keys(content) : [],
-      });
-      return originalSendMessage(debugRedirect.targetJid, {
-        text: buildDebugRedirectText(jid, content),
-      });
-    }
-
-    return originalSendMessage(jid, content, options);
-  }) as WASocket["sendMessage"];
-
-  sock.groupParticipantsUpdate = (async (
-    jid: string,
-    participants: string[],
-    action: Parameters<WASocket["groupParticipantsUpdate"]>[2],
-  ) => {
-    if (isQuietSwitchEnabled()) {
-      warn("Quiet switch blocked group participant update", {
-        jid,
-        participants,
-        action,
-      });
-      return [];
-    }
-
-    const debugRedirect = getDebugRedirectSwitchState();
-    if (debugRedirect.enabled && debugRedirect.targetJid) {
-      warn("Debug redirect blocked group participant update", {
-        originalJid: jid,
-        debugJid: debugRedirect.targetJid,
-        participants,
-        action,
-      });
-      await originalSendMessage(debugRedirect.targetJid, {
-        text: buildDebugParticipantUpdateText(jid, participants, action),
-      });
-      return [];
-    }
-
-    return originalGroupParticipantsUpdate(jid, participants, action);
-  }) as WASocket["groupParticipantsUpdate"];
 };
 
 type MessageContextInfo = {
@@ -3563,7 +3497,7 @@ export const startBot = async (): Promise<void> => {
     printQRInTerminal: false,
     logger: pino({ level: "silent" }),
   });
-  installQuietSwitchSendGuard(sock);
+  installSafeSendGuard(sock, getSafeSendOptionsFromEnv());
   activeSocket = sock;
   refreshSelfJids(sock);
 

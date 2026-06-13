@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type { Config } from "../config.js";
 import type { WebsiteTicketExchangeListing } from "./client.js";
@@ -119,12 +122,16 @@ const listing = {
 } satisfies WebsiteTicketExchangeListing;
 
 describe("website Ticket Exchange scheduler", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
     mocks.getDebugRedirectSwitchState.mockReturnValue({ enabled: false, targetJid: null });
     mocks.isQuietSwitchEnabled.mockReturnValue(false);
     mocks.isWebsiteTicketExchangeListingAnnounceable.mockResolvedValue(true);
     mocks.markWebsiteTicketExchangeListingAnnounced.mockResolvedValue(undefined);
+    const { setWebsiteTicketExchangeAnnouncementTargetStatePathForTests } = await import("./scheduler.js");
+    setWebsiteTicketExchangeAnnouncementTargetStatePathForTests(
+      join(mkdtempSync(join(tmpdir(), "fete-ticket-exchange-")), "target-state.json"),
+    );
   });
 
   it("treats listings as eligible only after the configured delay", async () => {
@@ -219,5 +226,34 @@ describe("website Ticket Exchange scheduler", () => {
 
     expect(sendMessage).toHaveBeenCalledTimes(2);
     expect(mocks.markWebsiteTicketExchangeListingAnnounced).not.toHaveBeenCalled();
+  });
+
+  it("retries only failed targets after a partial website announcement send", async () => {
+    const { runWebsiteTicketExchangeAnnouncementTick } = await import("./scheduler.js");
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ key: { id: "sent-1" } })
+      .mockRejectedValueOnce(new Error("not in group"))
+      .mockResolvedValueOnce({ key: { id: "sent-2" } });
+    mocks.fetchWebsiteTicketExchangeListings.mockResolvedValue([
+      {
+        ...listing,
+        createdAt: new Date(Date.now() - 6 * 60 * 1000).toISOString(),
+      },
+    ]);
+
+    await runWebsiteTicketExchangeAnnouncementTick({ sendMessage } as never, config);
+    await runWebsiteTicketExchangeAnnouncementTick({ sendMessage } as never, config);
+
+    expect(sendMessage).toHaveBeenCalledTimes(3);
+    expect(sendMessage.mock.calls.map((call) => call[0])).toEqual([
+      "target@g.us",
+      "market@g.us",
+      "market@g.us",
+    ]);
+    expect(mocks.markWebsiteTicketExchangeListingAnnounced).toHaveBeenCalledTimes(1);
+    expect(mocks.markWebsiteTicketExchangeListingAnnounced).toHaveBeenCalledWith(expect.objectContaining({
+      listingId: "listing_1",
+    }));
   });
 });

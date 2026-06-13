@@ -1,9 +1,12 @@
 import type { WASocket } from "@whiskeysockets/baileys";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 import type { Config } from "../config.js";
 import { getDebugRedirectSwitchState } from "../debugRedirectSwitch.js";
 import { log, warn } from "../logger.js";
 import { isQuietSwitchEnabled } from "../quietSwitch.js";
+import { DATA_DIR } from "../storagePaths.js";
 import {
   fetchWebsiteTicketExchangeListings,
   isWebsiteTicketExchangeListingAnnounceable,
@@ -13,6 +16,86 @@ import { buildWebsiteTicketExchangeAnnouncement } from "./format.js";
 
 let schedulerTimer: ReturnType<typeof setInterval> | null = null;
 let schedulerRunning = false;
+let targetStatePath = join(DATA_DIR, "ticket-exchange-announcement-targets.json");
+
+type AnnouncementTargetState = Record<string, Record<string, string>>;
+
+const readAnnouncementTargetState = (): AnnouncementTargetState => {
+  try {
+    if (!existsSync(targetStatePath)) {
+      return {};
+    }
+
+    const parsed = JSON.parse(readFileSync(targetStatePath, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
+    const state: AnnouncementTargetState = {};
+    for (const [listingId, targets] of Object.entries(parsed)) {
+      if (!targets || typeof targets !== "object" || Array.isArray(targets)) {
+        continue;
+      }
+
+      const targetState: Record<string, string> = {};
+      for (const [targetJid, sentAt] of Object.entries(targets)) {
+        if (typeof sentAt === "string") {
+          targetState[targetJid] = sentAt;
+        }
+      }
+      state[listingId] = targetState;
+    }
+    return state;
+  } catch (stateError) {
+    warn("ticket_exchange.website_announcement.target_state_read_failed", {
+      path: targetStatePath,
+      error: stateError,
+    });
+    return {};
+  }
+};
+
+const writeAnnouncementTargetState = (state: AnnouncementTargetState): void => {
+  try {
+    mkdirSync(dirname(targetStatePath), { recursive: true });
+    writeFileSync(targetStatePath, `${JSON.stringify(state, null, 2)}\n`);
+  } catch (stateError) {
+    warn("ticket_exchange.website_announcement.target_state_write_failed", {
+      path: targetStatePath,
+      error: stateError,
+    });
+  }
+};
+
+const hasListingTargetBeenSent = (
+  state: AnnouncementTargetState,
+  listingId: string,
+  targetJid: string,
+): boolean => Boolean(state[listingId]?.[targetJid]);
+
+const recordListingTargetSent = (
+  state: AnnouncementTargetState,
+  listingId: string,
+  targetJid: string,
+  sentAt = new Date(),
+): void => {
+  state[listingId] ??= {};
+  state[listingId][targetJid] = sentAt.toISOString();
+  writeAnnouncementTargetState(state);
+};
+
+const clearListingTargetState = (state: AnnouncementTargetState, listingId: string): void => {
+  if (!(listingId in state)) {
+    return;
+  }
+
+  delete state[listingId];
+  writeAnnouncementTargetState(state);
+};
+
+export const setWebsiteTicketExchangeAnnouncementTargetStatePathForTests = (path: string): void => {
+  targetStatePath = path;
+};
 
 const getEnabledTargetJids = (config: Config): string[] =>
   Array.from(
@@ -61,6 +144,7 @@ export const runWebsiteTicketExchangeAnnouncementTick = async (
   try {
     const targetJids = getEnabledTargetJids(config);
     const debugRedirectEnabled = getDebugRedirectSwitchState().enabled;
+    const targetState = readAnnouncementTargetState();
     const listings = await fetchWebsiteTicketExchangeListings({
       baseUrl: config.ticketExchangeWebsiteBaseUrl,
       secret: config.ticketExchangeWebsiteBotSecret,
@@ -116,8 +200,18 @@ export const runWebsiteTicketExchangeAnnouncementTick = async (
       );
       let sentCount = 0;
       let failedCount = 0;
+      let skippedAlreadySentCount = 0;
 
       for (const targetJid of targetJids) {
+        if (!debugRedirectEnabled && hasListingTargetBeenSent(targetState, listing.id, targetJid)) {
+          skippedAlreadySentCount += 1;
+          log("ticket_exchange.website_announcement.skipped_target_already_sent", {
+            listingId: listing.id,
+            targetJid,
+          });
+          continue;
+        }
+
         if (config.dryRun) {
           warn("Dry run: would announce website Ticket Exchange listing", {
             listingId: listing.id,
@@ -130,6 +224,9 @@ export const runWebsiteTicketExchangeAnnouncementTick = async (
         try {
           await sock.sendMessage(targetJid, { text: message });
           sentCount += 1;
+          if (!debugRedirectEnabled) {
+            recordListingTargetSent(targetState, listing.id, targetJid);
+          }
           log("ticket_exchange.website_announcement.sent", {
             listingId: listing.id,
             targetJid,
@@ -144,11 +241,15 @@ export const runWebsiteTicketExchangeAnnouncementTick = async (
         }
       }
 
-      if (sentCount > 0) {
+      const allTargetsSent = !config.dryRun && !debugRedirectEnabled &&
+        targetJids.every((targetJid) => hasListingTargetBeenSent(targetState, listing.id, targetJid));
+
+      if (sentCount > 0 || allTargetsSent) {
         if (failedCount > 0) {
           warn("ticket_exchange.website_announcement.not_marked_partial_send", {
             listingId: listing.id,
             sentCount,
+            skippedAlreadySentCount,
             failedCount,
             targetCount: targetJids.length,
           });
@@ -169,6 +270,7 @@ export const runWebsiteTicketExchangeAnnouncementTick = async (
             secret: config.ticketExchangeWebsiteBotSecret,
             listingId: listing.id,
           });
+          clearListingTargetState(targetState, listing.id);
           announcedThisTick += 1;
         } catch (callbackError) {
           warn("ticket_exchange.website_announcement.callback_failed", {
