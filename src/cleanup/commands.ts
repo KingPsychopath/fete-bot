@@ -42,6 +42,7 @@ const CLEANUP_HELP = `*Cleanup commands*
 
 !cleanup start {duration?} [channel=https://...] [public=off] [carry=off]
 !cleanup continue {duration?}
+!cleanup notice
 !cleanup status
 !cleanup whitelist {limit?}
 !cleanup candidates {limit?}
@@ -482,6 +483,25 @@ export const handleCleanupCommand = async (
     const stats = getCleanupStats(campaign.id);
     await sock.sendMessage(replyJid, {
       text: stats ? formatCleanupStatus(stats, Date.now(), { hardPauseDms: isCleanupDmHardPaused(config) }) : "Couldn't load cleanup status.",
+    });
+    return true;
+  }
+
+  if (subcommand === "notice" || subcommand === "notices" || subcommand === "public") {
+    const campaign = await getActiveOrReply(sock, replyJid);
+    if (!campaign) {
+      return true;
+    }
+
+    const publicTargets = getPublicTargetJids(config, groups);
+    if (publicTargets.length === 0) {
+      await sock.sendMessage(replyJid, { text: "No cleanup public target chats found." });
+      return true;
+    }
+
+    const sentTargets = await sendPublicNotices(sock, campaign.id, publicTargets, campaign.publicMessage);
+    await sock.sendMessage(replyJid, {
+      text: `Sent cleanup public notice to ${sentTargets.length}/${publicTargets.length} chat(s).`,
     });
     return true;
   }

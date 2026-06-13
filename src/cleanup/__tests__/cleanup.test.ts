@@ -349,6 +349,57 @@ describe("cleanup campaign", () => {
     }));
   });
 
+  it("can send the cleanup public notice separately after starting quietly", async () => {
+    await setupDb();
+    const { handleCleanupCommand } = await import("../commands.js");
+    const sendMessage = vi.fn().mockResolvedValue({ key: { id: "sent-message" } });
+    const groups = new Map([["group@g.us", "Fete Group"]]);
+    const groupMetadata = new Map([
+      [
+        "group@g.us",
+        {
+          id: "group@g.us",
+          subject: "Fete Group",
+          participants: [
+            { id: "447700900001@s.whatsapp.net" },
+            { id: "447700900002@s.whatsapp.net" },
+          ],
+        },
+      ],
+    ]) as never;
+
+    await handleCleanupCommand(
+      { sendMessage } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "447700900000@s.whatsapp.net",
+      "!cleanup start 72h public=off",
+      config,
+      groups,
+      groupMetadata,
+      new Set(["bot@s.whatsapp.net"]),
+    );
+
+    expect(sendMessage).not.toHaveBeenCalledWith("group@g.us", expect.anything());
+
+    await handleCleanupCommand(
+      { sendMessage } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "447700900000@s.whatsapp.net",
+      "!cleanup notice",
+      config,
+      groups,
+      groupMetadata,
+      new Set(["bot@s.whatsapp.net"]),
+    );
+
+    expect(sendMessage).toHaveBeenCalledWith("group@g.us", expect.objectContaining({
+      text: expect.stringContaining("*Out of Office Collective Fete Community Cleanup*"),
+    }));
+    expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", {
+      text: "Sent cleanup public notice to 1/1 chat(s).",
+    });
+  });
+
   it("stores the lid chat identity as the cleanup primary jid when metadata provides one", async () => {
     await setupDb();
     const { handleCleanupCommand } = await import("../commands.js");
