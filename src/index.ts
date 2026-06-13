@@ -55,6 +55,7 @@ import { isGroupShhEnabled } from "./groupShhSwitch.js";
 import { loadLidMappings, recordLidMapping } from "./lidMap.js";
 import { containsDisallowedUrl } from "./linkChecker.js";
 import { isLinkGraceActive } from "./linkGrace.js";
+import { formatMentionLabel, getMentionTargetJid } from "./mentionLabel.js";
 import {
   ADMIN_MENTION_OVERUSE_REPLIES,
   AdminMentionCooldown,
@@ -1090,39 +1091,7 @@ const maybeSendAdminSummonReply = async (
   return true;
 };
 
-const MENTIONABLE_JID_REGEX = /@(s\.whatsapp\.net|lid)$/i;
-
-const getMentionableToken = (senderJid: string, phoneJid?: string | null): string | null => {
-  const mentionTargetJid = getMentionTargetJid(senderJid, phoneJid);
-  return mentionTargetJid ? (mentionTargetJid.split("@")[0] ?? null) : null;
-};
-
-const getMentionTextToken = (
-  senderJid: string,
-  _pushName: string | null,
-  phoneJid?: string | null,
-): string => {
-  return getMentionableToken(senderJid, phoneJid) ?? "there";
-};
-
-const getMentionTargetJid = (senderJid: string, phoneJid?: string | null): string => {
-  for (const candidateJid of [senderJid, phoneJid]) {
-    if (candidateJid && MENTIONABLE_JID_REGEX.test(candidateJid)) {
-      return candidateJid;
-    }
-  }
-
-  return "";
-};
-
-const formatMentionLabel = (
-  senderJid: string,
-  pushName: string | null,
-  phoneJid?: string | null,
-): string => {
-  const mentionToken = getMentionTextToken(senderJid, pushName, phoneJid);
-  return mentionToken === "there" ? "there" : `@${mentionToken}`;
-};
+const MENTIONABLE_JID_REGEX = /@(s\.whatsapp\.net|lid)$/iu;
 
 const sendModerationMessage = async (
   sock: WASocket,
