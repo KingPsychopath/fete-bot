@@ -4,8 +4,8 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  buildSpotlightWebsiteGroupPromptText,
-  buildSpotlightWebsitePromptText,
+  buildTicketExchangeListingGroupPromptText,
+  buildTicketExchangeListingPromptText,
   buildTicketExchangeRedirectText,
   buildTicketExchangeUrl,
 } from "./visibilityPrompt.js";
@@ -36,19 +36,21 @@ describe("Ticket Exchange visibility prompts", () => {
     );
   });
 
-  it("builds the spotlight DM prompt", () => {
-    const text = buildSpotlightWebsitePromptText("https://fete.outofofficecollective.co.uk");
+  it("builds the Ticket Exchange listing DM prompt", () => {
+    const text = buildTicketExchangeListingPromptText("https://fete.outofofficecollective.co.uk");
 
-    expect(text).toContain("we've queued your ticket post for extra visibility");
+    expect(text).not.toContain("queued");
+    expect(text).toContain("for the best chance of finding someone");
     expect(text).toContain("Fete Finder Ticket Exchange");
     expect(text).toContain("https://fete.outofofficecollective.co.uk/exchange");
   });
 
-  it("builds the spotlight group prompt with a mention", () => {
-    const text = buildSpotlightWebsiteGroupPromptText("@447700900000", "https://fete.outofofficecollective.co.uk");
+  it("builds the Ticket Exchange listing group prompt with a mention", () => {
+    const text = buildTicketExchangeListingGroupPromptText("@447700900000", "https://fete.outofofficecollective.co.uk");
 
     expect(text).toContain("Hey @447700900000");
-    expect(text).toContain("your ticket post has been queued for extra visibility");
+    expect(text).not.toContain("queued");
+    expect(text).toContain("you can also list your ticket post");
     expect(text).toContain("https://fete.outofofficecollective.co.uk/exchange");
   });
 

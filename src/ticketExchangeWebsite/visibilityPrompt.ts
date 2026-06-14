@@ -49,18 +49,18 @@ const writeState = (state: WebsiteVisibilityPromptState): void => {
 export const buildTicketExchangeUrl = (baseUrl: string): string =>
   `${baseUrl.replace(/\/+$/u, "")}/exchange`;
 
-export const buildSpotlightWebsitePromptText = (baseUrl: string): string => `Hey - we've queued your ticket post for extra visibility in the wider Fete chats.
-
-For the best chance of finding someone, you can also list it on Fete Finder Ticket Exchange:
+export const buildTicketExchangeListingPromptText = (baseUrl: string): string => `Hey - for the best chance of finding someone, you can also list your ticket post on Fete Finder Ticket Exchange:
 ${buildTicketExchangeUrl(baseUrl)}
 
 Listings there can be shared by the bot too, and people unlock contact through the site.`;
 
-export const buildSpotlightWebsiteGroupPromptText = (mentionLabel: string, baseUrl: string): string =>
-  `Hey ${mentionLabel} - your ticket post has been queued for extra visibility.
-
-You can also list it on Fete Finder Ticket Exchange:
+export const buildTicketExchangeListingGroupPromptText = (mentionLabel: string, baseUrl: string): string =>
+  `Hey ${mentionLabel} - you can also list your ticket post on Fete Finder Ticket Exchange:
 ${buildTicketExchangeUrl(baseUrl)}`;
+
+export const buildSpotlightWebsitePromptText = buildTicketExchangeListingPromptText;
+
+export const buildSpotlightWebsiteGroupPromptText = buildTicketExchangeListingGroupPromptText;
 
 export const buildTicketExchangeRedirectText = (
   input: {
