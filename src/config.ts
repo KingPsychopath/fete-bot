@@ -147,6 +147,7 @@ const DEFAULT_TICKET_SPOTLIGHT_TARGET_JIDS = [
   "120363408658925299@g.us",
   "120363401608823361@g.us",
 ].join(",");
+const DEFAULT_TICKET_MARKETPLACE_GROUP_JIDS = "120363418331899807@g.us";
 
 const spamFloodWarnMessageLimit = parsePositiveInteger(process.env.SPAM_FLOOD_WARN_MESSAGE_LIMIT, 20);
 
@@ -195,7 +196,7 @@ const loadedConfig = {
   adminMentionOveruseThreshold: parsePositiveInteger(process.env.ADMIN_MENTION_OVERUSE_THRESHOLD, 3),
   adminMentionOveruseWindowMinutes: parsePositiveInteger(process.env.ADMIN_MENTION_OVERUSE_WINDOW_MINUTES, 3),
   ticketMarketplaceManagement: parseBoolean(process.env.TICKET_MARKETPLACE_MANAGEMENT, true),
-  ticketMarketplaceGroupJids: parseList(process.env.TICKET_MARKETPLACE_GROUP_JIDS || "120363418331899807@g.us"),
+  ticketMarketplaceGroupJids: parseList(process.env.TICKET_MARKETPLACE_GROUP_JIDS || DEFAULT_TICKET_MARKETPLACE_GROUP_JIDS),
   ticketMarketplaceGroupName: normaliseEnvValue(process.env.TICKET_MARKETPLACE_GROUP_NAME) || "FDLM Ticket Marketplace",
   ticketMarketplaceReplyCooldownMinutes: parsePositiveInteger(process.env.TICKET_MARKETPLACE_REPLY_COOLDOWN_MINUTES, 30),
   ticketMarketplaceRuleReminderEnabled: parseBoolean(process.env.TICKET_MARKETPLACE_RULE_REMINDER_ENABLED, true),
@@ -235,7 +236,7 @@ const loadedConfig = {
   ticketSpotlightReactionEmoji: normaliseEnvValue(process.env.TICKET_SPOTLIGHT_REACTION_EMOJI) || "⭐",
   ticketExchangeWebsiteAnnouncementsEnabled: parseBoolean(
     process.env.TICKET_EXCHANGE_WEBSITE_ANNOUNCEMENTS_ENABLED,
-    false,
+    true,
   ),
   ticketExchangeWebsiteBaseUrl:
     normaliseEnvValue(process.env.TICKET_EXCHANGE_WEBSITE_BASE_URL) ||
@@ -243,11 +244,8 @@ const loadedConfig = {
   ticketExchangeWebsiteBotSecret: normaliseEnvValue(process.env.TICKET_EXCHANGE_BOT_SECRET) || "",
   ticketExchangeWebsiteTargetJids: parseList(
     process.env.TICKET_EXCHANGE_WEBSITE_TARGET_JIDS ||
-      [
-        process.env.TICKET_SPOTLIGHT_TARGET_JIDS || DEFAULT_TICKET_SPOTLIGHT_TARGET_JIDS,
-        process.env.TICKET_MARKETPLACE_GROUP_JIDS || "120363418331899807@g.us",
-      ].join(",") ||
-      DEFAULT_TICKET_SPOTLIGHT_TARGET_JIDS,
+      process.env.TICKET_MARKETPLACE_GROUP_JIDS ||
+      DEFAULT_TICKET_MARKETPLACE_GROUP_JIDS,
   ),
   ticketExchangeWebsitePollSeconds: parsePositiveInteger(
     process.env.TICKET_EXCHANGE_WEBSITE_POLL_SECONDS,

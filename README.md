@@ -129,13 +129,13 @@ The backup contains WhatsApp linked-device credentials. Treat it like a secret.
 - `TICKET_MARKETPLACE_GROUP_JIDS` is comma-separated and defaults to `120363418331899807@g.us`
 - `TICKET_MARKETPLACE_RULE_REMINDER_ENABLED=true` sends a daily marketplace rules reminder after `TICKET_MARKETPLACE_RULE_REMINDER_TIME` in `TICKET_MARKETPLACE_RULE_REMINDER_TIMEZONE`; after a reminder, it waits for `TICKET_MARKETPLACE_RULE_REMINDER_MIN_ACTIVITY_MESSAGES` observed chat messages before sending another
 - `TICKET_SPOTLIGHT_ENABLED=false` by default; seller spotlights remain separately gated by `TICKET_SPOTLIGHT_SELLING_ENABLED` if spotlighting is explicitly enabled
-- `TICKET_EXCHANGE_WEBSITE_ANNOUNCEMENTS_ENABLED=false` by default; when enabled, the bot polls Fete Finder for new Ticket Exchange listings and posts website links only, never user contact details. Listings wait `TICKET_EXCHANGE_WEBSITE_ANNOUNCE_DELAY_MINUTES` before posting, and `TICKET_EXCHANGE_WEBSITE_MAX_ANNOUNCEMENTS_PER_TICK=1` limits catch-up bursts after downtime. When a marketplace post is queued for spotlight, the bot can DM the poster a Fete Finder nudge, cooled down by `TICKET_EXCHANGE_WEBSITE_SPOTLIGHT_PROMPT_COOLDOWN_DAYS`.
+- `TICKET_EXCHANGE_WEBSITE_ANNOUNCEMENTS_ENABLED=true` by default; when enabled, the bot polls Fete Finder for new Ticket Exchange listings and posts website links only, never user contact details. Listings wait `TICKET_EXCHANGE_WEBSITE_ANNOUNCE_DELAY_MINUTES` before posting, and `TICKET_EXCHANGE_WEBSITE_MAX_ANNOUNCEMENTS_PER_TICK=1` limits catch-up bursts after downtime. When a marketplace post is queued for spotlight, the bot can DM the poster a Fete Finder nudge, cooled down by `TICKET_EXCHANGE_WEBSITE_SPOTLIGHT_PROMPT_COOLDOWN_DAYS`.
 - `ANNOUNCEMENTS_ENABLED=false` by default; when enabled, announcements are sent to `ANNOUNCEMENTS_TARGET_GROUP_JID` on a local wall-clock schedule
 - `STARTUP_OWNER_AWAKE_ENABLED=true` sends owners a warm-up DM on startup; `STARTUP_OWNER_AWAKE_COOLDOWN_MINUTES=30` suppresses repeats across rapid restarts, and setting enabled to `false` disables the warm-up DM entirely
 - `DIRECT_CHAT_AUTORESPONSE_ENABLED=true` sends ordinary 1:1 messages a short "contact admins" reply; `DIRECT_CHAT_AUTORESPONSE_COOLDOWN_DAYS=365` keeps it effectively one-and-done per chat, and cleanup DM replies stay separate
 - `CLEANUP_DMS_ENABLED=false` hard-pauses cleanup DMs by default; set it to `true` to send at the fixed safety rate of 8 every 30m, 10s apart inside a batch. Use `!cleanup start 72h public=off` to start without sending public group notices
 - Cleanup starts carry the previous campaign whitelist by default; add `carry=off` if you need a completely fresh whitelist
-- `TICKET_SPOTLIGHT_TARGET_JIDS` defaults to FDLM Parties & Events PT.2 and FDLM Parties & Events; website ticket exchange announcements also include the ticket marketplace by default
+- `TICKET_SPOTLIGHT_TARGET_JIDS` defaults to FDLM Parties & Events PT.2 and FDLM Parties & Events; website ticket exchange announcements default to the configured ticket marketplace groups only
 - `OWNER_JIDS`, database moderators, and WhatsApp group admins are never moderated
 - The bot only responds in 1:1 chats for the direct-chat autoresponse, cleanup replies, or authorised owner/moderator commands
 - The bot never acts on its own messages, with an extra self-ID check as defence in depth
@@ -600,10 +600,10 @@ Notes:
 - `GROUP_CALL_GUARD_WINDOW_HOURS=24`
 - `GROUP_CALL_GUARD_WARNING_COOLDOWN_SECONDS=30`
 - `GROUP_CALL_GUARD_RECENT_ACTIVITY_TTL_MINUTES=10`
-- `TICKET_EXCHANGE_WEBSITE_ANNOUNCEMENTS_ENABLED=false`
+- `TICKET_EXCHANGE_WEBSITE_ANNOUNCEMENTS_ENABLED=true`
 - `TICKET_EXCHANGE_WEBSITE_BASE_URL=https://fete.outofofficecollective.co.uk`
 - `TICKET_EXCHANGE_BOT_SECRET=shared-secret-from-fete-finder`
-- `TICKET_EXCHANGE_WEBSITE_TARGET_JIDS=120363...@g.us,120363...@g.us`
+- `TICKET_EXCHANGE_WEBSITE_TARGET_JIDS=120363...@g.us` (defaults to `TICKET_MARKETPLACE_GROUP_JIDS`)
 - `TICKET_EXCHANGE_WEBSITE_POLL_SECONDS=120`
 - `TICKET_EXCHANGE_WEBSITE_BATCH_SIZE=5`
 - `TICKET_EXCHANGE_WEBSITE_ANNOUNCE_DELAY_MINUTES=5`
