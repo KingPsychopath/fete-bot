@@ -810,6 +810,120 @@ describe("cleanup campaign", () => {
     }
   });
 
+  it("lets owners inspect and clear cleanup removal queues", async () => {
+    await setupDb();
+    const store = await import("../store.js");
+    const { handleCleanupCommand } = await import("../commands.js");
+    const campaign = store.createCleanupCampaign({
+      durationMs: 72 * 60 * 60_000,
+      actorUserId: "owner",
+      actorLabel: "owner",
+      channelLink: config.cleanupChannelLink,
+      publicMessage: "public",
+      dmMessage: "dm",
+      batchSize: 25,
+      batchIntervalMinutes: 30,
+      nowMs: 1_000,
+      members: [
+        { userId: "user-1", displayName: "User One", primaryJid: "447700900001@s.whatsapp.net" },
+        { userId: "user-2", displayName: "User Two", primaryJid: "447700900002@s.whatsapp.net" },
+      ],
+    });
+    const job = store.createCleanupRemovalJob({
+      campaignId: campaign.id,
+      groupJids: ["group@g.us", "second@g.us"],
+      peopleLimit: 2,
+      delayMs: 5_000,
+      groupDelayMs: 15_000,
+      totalPeople: 2,
+      createdByUserId: "owner",
+      createdByLabel: "owner",
+      replyJid: "447700900000@s.whatsapp.net",
+      actions: [
+        {
+          userId: "user-1",
+          displayName: "User One",
+          groupJid: "group@g.us",
+          participantJid: "447700900001@s.whatsapp.net",
+        },
+        {
+          userId: "user-2",
+          displayName: "User Two",
+          groupJid: "second@g.us",
+          participantJid: "447700900002@s.whatsapp.net",
+        },
+      ],
+      nowMs: 2_000,
+    });
+    const sendMessage = vi.fn().mockResolvedValue({ key: { id: "admin-reply" } });
+    const groups = new Map([
+      ["group@g.us", "Fete Group"],
+      ["second@g.us", "Second Group"],
+    ]);
+
+    await handleCleanupCommand(
+      { sendMessage, groupParticipantsUpdate: vi.fn() } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "447700900000@s.whatsapp.net",
+      "!cleanup remove-queue",
+      config,
+      groups,
+      new Map() as never,
+      new Set(["bot@s.whatsapp.net"]),
+    );
+
+    expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", expect.objectContaining({
+      text: expect.stringContaining(job.id),
+    }));
+    expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", expect.objectContaining({
+      text: expect.stringContaining("0/2 removed"),
+    }));
+
+    sendMessage.mockClear();
+    await handleCleanupCommand(
+      { sendMessage, groupParticipantsUpdate: vi.fn() } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "447700900000@s.whatsapp.net",
+      `!cleanup remove-job ${job.id}`,
+      config,
+      groups,
+      new Map() as never,
+      new Set(["bot@s.whatsapp.net"]),
+    );
+
+    expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", {
+      text: expect.stringContaining(`Cleanup removal job ${job.id}`),
+      mentions: ["447700900001@s.whatsapp.net", "447700900002@s.whatsapp.net"],
+    });
+    expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", expect.objectContaining({
+      text: expect.stringContaining("User One (@447700900001) — Fete Group — pending"),
+    }));
+
+    sendMessage.mockClear();
+    await handleCleanupCommand(
+      { sendMessage, groupParticipantsUpdate: vi.fn() } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "447700900000@s.whatsapp.net",
+      `!cleanup remove-clear ${job.id} confirm=CLEAR`,
+      config,
+      groups,
+      new Map() as never,
+      new Set(["bot@s.whatsapp.net"]),
+    );
+
+    expect(store.getCleanupRemovalJobSummary(job.id)).toMatchObject({
+      job: expect.objectContaining({ status: "cancelled" }),
+      pending: 0,
+      running: 0,
+      succeeded: 0,
+      failed: 0,
+      skipped: 2,
+    });
+    expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", expect.objectContaining({
+      text: expect.stringContaining("Cleared 1 cleanup removal job(s)."),
+    }));
+  });
+
   it("starts without public notices and carries the previous cleanup whitelist by default", async () => {
     await setupDb();
     const { handleCleanupCommand } = await import("../commands.js");

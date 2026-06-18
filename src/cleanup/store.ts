@@ -1024,6 +1024,20 @@ export const getCleanupRemovalJob = (jobId: string): CleanupRemovalJob | null =>
   return row ? toRemovalJob(row) : null;
 };
 
+export const listCleanupRemovalJobSummaries = (limit = 10): CleanupRemovalJobSummary[] => {
+  const rows = getDb()
+    .prepare<[number], RemovalJobRow>(`
+      SELECT *
+      FROM cleanup_removal_jobs
+      ORDER BY created_at DESC
+      LIMIT ?
+    `)
+    .all(Math.min(Math.max(Math.trunc(limit), 1), 25));
+  return rows
+    .map((row) => getCleanupRemovalJobSummary(row.id))
+    .filter((summary): summary is CleanupRemovalJobSummary => Boolean(summary));
+};
+
 export const claimCleanupRemovalJob = (
   jobId: string,
   nowMs = Date.now(),
@@ -1133,7 +1147,7 @@ export const markCleanupRemovalActionSucceeded = (
           last_error = NULL,
           completed_at = ?,
           updated_at = ?
-      WHERE id = ?
+      WHERE id = ? AND status = 'running'
     `)
     .run(status, nowMs, nowMs, actionId);
 };
@@ -1152,7 +1166,7 @@ export const markCleanupRemovalActionFailed = (
           last_error = ?,
           completed_at = ?,
           updated_at = ?
-      WHERE id = ?
+      WHERE id = ? AND status = 'running'
     `)
     .run(status, error.slice(0, 500), nowMs, nowMs, actionId);
 };
@@ -1172,6 +1186,52 @@ export const markCleanupRemovalActionSkipped = (
       WHERE id = ?
     `)
     .run(reason.slice(0, 500), nowMs, nowMs, actionId);
+};
+
+export const cancelCleanupRemovalJob = (
+  jobId: string,
+  reason: string,
+  nowMs = Date.now(),
+): CleanupRemovalJobSummary | null => withImmediateTransaction(() => {
+  const job = getCleanupRemovalJob(jobId);
+  if (!job || !["queued", "running"].includes(job.status)) {
+    return getCleanupRemovalJobSummary(jobId);
+  }
+
+  const safeReason = reason.slice(0, 500);
+  getDb()
+    .prepare(`
+      UPDATE cleanup_removal_jobs
+      SET status = 'cancelled',
+          last_error = ?,
+          completed_at = COALESCE(completed_at, ?),
+          updated_at = ?
+      WHERE id = ? AND status IN ('queued','running')
+    `)
+    .run(safeReason, nowMs, nowMs, jobId);
+
+  getDb()
+    .prepare(`
+      UPDATE cleanup_removal_actions
+      SET status = 'skipped',
+          last_error = ?,
+          completed_at = COALESCE(completed_at, ?),
+          updated_at = ?
+      WHERE job_id = ? AND status IN ('pending','running')
+    `)
+    .run(safeReason, nowMs, nowMs, jobId);
+
+  return getCleanupRemovalJobSummary(jobId);
+});
+
+export const cancelAllUnfinishedCleanupRemovalJobs = (
+  reason: string,
+  nowMs = Date.now(),
+): CleanupRemovalJobSummary[] => {
+  const jobs = listUnfinishedCleanupRemovalJobs(25);
+  return jobs
+    .map((job) => cancelCleanupRemovalJob(job.id, reason, nowMs))
+    .filter((summary): summary is CleanupRemovalJobSummary => Boolean(summary));
 };
 
 export const markCleanupRemovalJobFailed = (

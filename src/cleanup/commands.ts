@@ -14,6 +14,8 @@ import {
   formatCleanupStatus,
 } from "./format.js";
 import {
+  cancelAllUnfinishedCleanupRemovalJobs,
+  cancelCleanupRemovalJob,
   createCleanupCampaign,
   continueLatestCleanupCampaignPaused,
   claimCleanupRemovalJob,
@@ -22,6 +24,7 @@ import {
   extendCleanupCampaign,
   findCleanupMemberByUserOrJid,
   getCleanupMember,
+  getCleanupRemovalJob,
   getCleanupRemovalJobSummary,
   getCleanupStats,
   getLatestCleanupCampaign,
@@ -30,6 +33,7 @@ import {
   listCleanupDmMembers,
   listCleanupMembers,
   listCleanupRemovalCandidateMembers,
+  listCleanupRemovalJobSummaries,
   listCleanupRemovalJobActions,
   listUnfinishedCleanupRemovalJobs,
   markCleanupRemovalActionFailed,
@@ -42,6 +46,8 @@ import {
   recordCleanupSignal,
   removeCleanupWhitelist,
   setCleanupCampaignStatus,
+  type CleanupRemovalAction as StoredCleanupRemovalAction,
+  type CleanupRemovalJobSummary,
   type CleanupMemberSeed,
 } from "./store.js";
 import { CLEANUP_DM_RATE_LIMIT } from "./policy.js";
@@ -63,6 +69,9 @@ const CLEANUP_HELP = `*Cleanup commands*
 !cleanup dms {sent|failed|pending|all?} {limit?}
 !cleanup remove-preview {limit?} group={groupJid}|all=true
 !cleanup remove-start {limit?} group={groupJid}|all=true confirm=REMOVE [delay=10s] [group-delay=60s]
+!cleanup remove-queue {limit?}
+!cleanup remove-job {jobId} {limit?}
+!cleanup remove-clear {jobId|all} confirm=CLEAR
 !cleanup pause
 !cleanup resume
 !cleanup extend {duration}
@@ -74,6 +83,7 @@ const CLEANUP_HELP = `*Cleanup commands*
 Safety: cleanup watching never removes members automatically. Owner-only remove-start removes confirmed candidate batches and does not ban.`;
 
 const CLEANUP_REMOVE_CONFIRM_TOKEN = "REMOVE";
+const CLEANUP_REMOVE_CLEAR_CONFIRM_TOKEN = "CLEAR";
 const CLEANUP_REMOVE_DEFAULT_LIMIT = 5;
 const CLEANUP_REMOVE_MAX_LIMIT = 25;
 const CLEANUP_REMOVE_DEFAULT_DELAY_MS = 10_000;
@@ -474,6 +484,97 @@ const formatCleanupRemovalPlan = (
   return { text: lines.join("\n"), mentions: Array.from(new Set(mentions)) };
 };
 
+const shortJobId = (jobId: string): string => jobId.slice(0, 8);
+
+const formatRemovalJobProgress = (summary: CleanupRemovalJobSummary): string => {
+  const unfinished = summary.pending + summary.running;
+  return [
+    `${summary.succeeded}/${summary.job.totalActions} removed`,
+    summary.failed > 0 ? `${summary.failed} failed` : null,
+    summary.skipped > 0 ? `${summary.skipped} skipped` : null,
+    unfinished > 0 ? `${unfinished} queued` : null,
+  ].filter(Boolean).join(", ");
+};
+
+const formatRemovalJobSummaryList = (
+  title: string,
+  summaries: readonly CleanupRemovalJobSummary[],
+  groups: ReadonlyMap<string, string>,
+): string => {
+  if (summaries.length === 0) {
+    return `${title}\n\nNo cleanup removal jobs found.`;
+  }
+
+  return [
+    title,
+    "",
+    ...summaries.map((summary, index) => {
+      const groupLabels = summary.job.scopeGroupJids
+        .map((groupJid) => groups.get(groupJid) ?? groupJid)
+        .slice(0, 3);
+      const extraGroups = Math.max(0, summary.job.scopeGroupJids.length - groupLabels.length);
+      return [
+        `${index + 1}. ${shortJobId(summary.job.id)} — ${summary.job.status}, ${formatRemovalJobProgress(summary)}`,
+        `   Scope: ${groupLabels.join(", ")}${extraGroups > 0 ? ` +${extraGroups}` : ""}`,
+        `   Created: ${formatTimestamp(summary.job.createdAt)} by ${summary.job.createdByLabel}`,
+        `   Full id: ${summary.job.id}`,
+      ].join("\n");
+    }),
+    "",
+    "Inspect: `!cleanup remove-job {jobId}`",
+    `Clear: \`!cleanup remove-clear {jobId|all} confirm=${CLEANUP_REMOVE_CLEAR_CONFIRM_TOKEN}\``,
+  ].join("\n");
+};
+
+const formatRemovalActionMentionLabel = (action: StoredCleanupRemovalAction): string => {
+  const mentionTarget = isMentionableJid(action.participantJid) ? action.participantJid : null;
+  return formatMentionTargetLabel(mentionTarget, action.participantJid);
+};
+
+const formatCleanupRemovalJobDetails = (
+  summary: CleanupRemovalJobSummary,
+  actions: readonly StoredCleanupRemovalAction[],
+  groups: ReadonlyMap<string, string>,
+  limit: number,
+): { text: string; mentions: string[] } => {
+  const mentions = actions
+    .map((action) => action.participantJid)
+    .filter(isMentionableJid);
+  const groupLabels = summary.job.scopeGroupJids.map((groupJid) => groups.get(groupJid) ?? groupJid);
+  const actionLines = actions.map((action) => {
+    const label = action.displayName?.trim() || action.participantJid;
+    const details = [
+      action.status,
+      `attempts ${action.attemptCount}`,
+      action.lastStatus ? `status ${action.lastStatus}` : null,
+      action.lastError ? `note ${action.lastError}` : null,
+    ].filter(Boolean);
+    return `${action.actionOrder}. ${label} (${formatRemovalActionMentionLabel(action)}) — ${groups.get(action.groupJid) ?? action.groupJid} — ${details.join(", ")}`;
+  });
+
+  return {
+    text: [
+      `Cleanup removal job ${summary.job.id}`,
+      "",
+      `Status: ${summary.job.status}`,
+      `Progress: ${formatRemovalJobProgress(summary)}`,
+      `People requested: ${summary.job.totalPeople}/${summary.job.peopleLimit}`,
+      `Scope: ${groupLabels.join(", ")}`,
+      `Delay: ${Math.round(summary.job.delayMs / 1000)}s in-chat; ${Math.round(summary.job.groupDelayMs / 1000)}s between chats`,
+      `Created: ${formatTimestamp(summary.job.createdAt)} by ${summary.job.createdByLabel}`,
+      summary.job.lastError ? `Last note: ${summary.job.lastError}` : null,
+      "",
+      `Actions (${actions.length}/${summary.job.totalActions}${summary.job.totalActions > limit ? `, showing first ${limit}` : ""}):`,
+      ...actionLines,
+      "",
+      summary.job.status === "queued" || summary.job.status === "running"
+        ? `Clear: \`!cleanup remove-clear ${summary.job.id} confirm=${CLEANUP_REMOVE_CLEAR_CONFIRM_TOKEN}\``
+        : "This job is finished; clear only affects queued/running jobs.",
+    ].filter(Boolean).join("\n"),
+    mentions: Array.from(new Set(mentions)),
+  };
+};
+
 const wait = (delayMs: number): Promise<void> => new Promise((resolve) => {
   setTimeout(resolve, delayMs);
 });
@@ -552,6 +653,21 @@ const runCleanupRemovalJob = async (
       if (previousGroupJid) {
         await wait(previousGroupJid === action.groupJid ? job.delayMs : job.groupDelayMs);
       }
+
+      const currentJob = getCleanupRemovalJob(job.id);
+      if (currentJob?.status === "cancelled") {
+        log("cleanup.remove_batch.cancelled", {
+          campaignId: job.campaignId,
+          jobId: job.id,
+          attempted,
+        });
+        const cancelledSummary = getCleanupRemovalJobSummary(job.id);
+        if (cancelledSummary) {
+          return cancelledSummary;
+        }
+        throw new Error(`Cleanup removal job ${job.id} disappeared after cancellation`);
+      }
+
       previousGroupJid = action.groupJid;
 
       const runningAction = markCleanupRemovalActionRunning(action.id);
@@ -1090,6 +1206,121 @@ export const handleCleanupCommand = async (
         `Cleanup DMs (${status}, ${members.length}${members.length === safeLimit ? "+" : ""})`,
         members,
       ),
+    });
+    return true;
+  }
+
+  if (subcommand === "remove-queue" || subcommand === "remove-jobs") {
+    if (actor.role !== "owner") {
+      await sock.sendMessage(replyJid, {
+        text: "Only owners can view cleanup removal jobs.",
+      });
+      return true;
+    }
+
+    const maybeJobId = parts[2];
+    if (maybeJobId && !/^\d+$/u.test(maybeJobId)) {
+      const summary = getCleanupRemovalJobSummary(maybeJobId);
+      if (!summary) {
+        await sock.sendMessage(replyJid, { text: `Cleanup removal job not found: ${maybeJobId}` });
+        return true;
+      }
+      const limit = parsePositiveLimit(parts[3], 50, 200);
+      const actions = listCleanupRemovalJobActions(summary.job.id).slice(0, limit);
+      const details = formatCleanupRemovalJobDetails(summary, actions, groups, limit);
+      await sock.sendMessage(replyJid, { text: details.text, mentions: details.mentions });
+      return true;
+    }
+
+    const limit = parsePositiveLimit(maybeJobId, 10, 25);
+    const summaries = listCleanupRemovalJobSummaries(limit);
+    await sock.sendMessage(replyJid, {
+      text: formatRemovalJobSummaryList(`Cleanup removal queue (${summaries.length})`, summaries, groups),
+    });
+    return true;
+  }
+
+  if (subcommand === "remove-job") {
+    if (actor.role !== "owner") {
+      await sock.sendMessage(replyJid, {
+        text: "Only owners can view cleanup removal jobs.",
+      });
+      return true;
+    }
+
+    const jobId = parts[2];
+    if (!jobId) {
+      await sock.sendMessage(replyJid, { text: "Usage: !cleanup remove-job {jobId} {limit?}" });
+      return true;
+    }
+
+    const summary = getCleanupRemovalJobSummary(jobId);
+    if (!summary) {
+      await sock.sendMessage(replyJid, { text: `Cleanup removal job not found: ${jobId}` });
+      return true;
+    }
+
+    const limit = parsePositiveLimit(parts[3], 50, 200);
+    const actions = listCleanupRemovalJobActions(summary.job.id).slice(0, limit);
+    const details = formatCleanupRemovalJobDetails(summary, actions, groups, limit);
+    await sock.sendMessage(replyJid, { text: details.text, mentions: details.mentions });
+    return true;
+  }
+
+  if (subcommand === "remove-clear") {
+    if (actor.role !== "owner") {
+      await sock.sendMessage(replyJid, {
+        text: "Only owners can clear cleanup removal jobs.",
+      });
+      return true;
+    }
+
+    const target = parts[2];
+    const confirm = getOptionValue(parts.slice(3), "confirm");
+    if (!target || confirm !== CLEANUP_REMOVE_CLEAR_CONFIRM_TOKEN) {
+      await sock.sendMessage(replyJid, {
+        text: [
+          "Cleanup removal clear needs explicit confirmation.",
+          `Usage: \`!cleanup remove-clear {jobId|all} confirm=${CLEANUP_REMOVE_CLEAR_CONFIRM_TOKEN}\``,
+          "This cancels queued/running removal work only. It cannot undo removals already completed.",
+        ].join("\n"),
+      });
+      return true;
+    }
+
+    const reason = `cancelled by ${actor.label}`;
+    let summaries: CleanupRemovalJobSummary[];
+    if (target.toLowerCase() === "all") {
+      summaries = cancelAllUnfinishedCleanupRemovalJobs(reason);
+    } else {
+      const job = getCleanupRemovalJob(target);
+      if (!job) {
+        await sock.sendMessage(replyJid, { text: `Cleanup removal job not found: ${target}` });
+        return true;
+      }
+      if (job.status !== "queued" && job.status !== "running") {
+        await sock.sendMessage(replyJid, {
+          text: `Cleanup removal job ${target} is already ${job.status}; only queued/running jobs can be cleared.`,
+        });
+        return true;
+      }
+      summaries = [cancelCleanupRemovalJob(target, reason)].filter((summary): summary is CleanupRemovalJobSummary => Boolean(summary));
+    }
+    if (summaries.length === 0) {
+      await sock.sendMessage(replyJid, {
+        text: "No queued or running cleanup removal jobs to clear.",
+      });
+      return true;
+    }
+
+    await sock.sendMessage(replyJid, {
+      text: [
+        `Cleared ${summaries.length} cleanup removal job(s).`,
+        ...summaries.map((summary) =>
+          `${shortJobId(summary.job.id)} — ${summary.job.status}, ${formatRemovalJobProgress(summary)}`),
+        "",
+        "Completed removals are unchanged. Pending/running removals were marked skipped.",
+      ].join("\n"),
     });
     return true;
   }
