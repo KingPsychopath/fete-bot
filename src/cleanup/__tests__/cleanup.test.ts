@@ -553,6 +553,88 @@ describe("cleanup campaign", () => {
     }
   });
 
+  it("runs cleanup removals grouped by chat before switching chats", async () => {
+    vi.useFakeTimers();
+    try {
+      await setupDb();
+      const { handleCleanupCommand } = await import("../commands.js");
+      const sendMessage = vi.fn().mockResolvedValue({ key: { id: "admin-reply" } });
+      const groupParticipantsUpdate = vi.fn().mockResolvedValue([{ status: "200" }]);
+      const groups = new Map([
+        ["group@g.us", "Fete Group"],
+        ["second@g.us", "Second Group"],
+      ]);
+      const groupMetadata = new Map([
+        [
+          "group@g.us",
+          {
+            id: "group@g.us",
+            subject: "Fete Group",
+            participants: [
+              { id: "bot@s.whatsapp.net", admin: "admin" },
+              { id: "447700900001@s.whatsapp.net" },
+              { id: "447700900002@s.whatsapp.net" },
+            ],
+          },
+        ],
+        [
+          "second@g.us",
+          {
+            id: "second@g.us",
+            subject: "Second Group",
+            participants: [
+              { id: "bot@s.whatsapp.net", admin: "admin" },
+              { id: "447700900001@s.whatsapp.net" },
+              { id: "447700900002@s.whatsapp.net" },
+            ],
+          },
+        ],
+      ]) as never;
+
+      await handleCleanupCommand(
+        { sendMessage, groupParticipantsUpdate } as never,
+        { userId: "owner", label: "owner", role: "owner" },
+        "447700900000@s.whatsapp.net",
+        "!cleanup start 72h public=off",
+        { ...config, allowedGroupJids: ["group@g.us", "second@g.us"] },
+        groups,
+        groupMetadata,
+        new Set(["bot@s.whatsapp.net"]),
+      );
+      sendMessage.mockClear();
+
+      const removal = handleCleanupCommand(
+        { sendMessage, groupParticipantsUpdate } as never,
+        { userId: "owner", label: "owner", role: "owner" },
+        "447700900000@s.whatsapp.net",
+        "!cleanup remove-start 2 all=true confirm=REMOVE delay=5s group-delay=15s",
+        { ...config, allowedGroupJids: ["group@g.us", "second@g.us"] },
+        groups,
+        groupMetadata,
+        new Set(["bot@s.whatsapp.net"]),
+      );
+
+      await vi.runAllTimersAsync();
+      await removal;
+
+      expect(groupParticipantsUpdate).toHaveBeenCalledTimes(4);
+      expect(groupParticipantsUpdate.mock.calls.map(([groupJid]) => groupJid)).toEqual([
+        "group@g.us",
+        "group@g.us",
+        "second@g.us",
+        "second@g.us",
+      ]);
+      expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", {
+        text: expect.stringContaining("Execution: grouped by chat."),
+      });
+      expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", {
+        text: expect.stringContaining("5s between removals in the same chat; 15s cooldown before switching chats"),
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("starts without public notices and carries the previous cleanup whitelist by default", async () => {
     await setupDb();
     const { handleCleanupCommand } = await import("../commands.js");

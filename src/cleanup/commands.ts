@@ -50,7 +50,7 @@ const CLEANUP_HELP = `*Cleanup commands*
 !cleanup candidates {limit?}
 !cleanup dms {sent|failed|pending|all?} {limit?}
 !cleanup remove-preview {limit?} group={groupJid}|all=true
-!cleanup remove-start {limit?} group={groupJid}|all=true confirm=REMOVE [delay=30s]
+!cleanup remove-start {limit?} group={groupJid}|all=true confirm=REMOVE [delay=10s] [group-delay=60s]
 !cleanup pause
 !cleanup resume
 !cleanup extend {duration}
@@ -64,8 +64,10 @@ Safety: cleanup watching never removes members automatically. Owner-only remove-
 const CLEANUP_REMOVE_CONFIRM_TOKEN = "REMOVE";
 const CLEANUP_REMOVE_DEFAULT_LIMIT = 5;
 const CLEANUP_REMOVE_MAX_LIMIT = 25;
-const CLEANUP_REMOVE_DEFAULT_DELAY_MS = 30_000;
-const CLEANUP_REMOVE_MIN_DELAY_MS = 15_000;
+const CLEANUP_REMOVE_DEFAULT_DELAY_MS = 10_000;
+const CLEANUP_REMOVE_DEFAULT_GROUP_DELAY_MS = 60_000;
+const CLEANUP_REMOVE_MIN_DELAY_MS = 5_000;
+const CLEANUP_REMOVE_MIN_GROUP_DELAY_MS = 15_000;
 const CLEANUP_REMOVE_MAX_DELAY_MS = 10 * 60_000;
 const CLEANUP_REMOVE_BLOCKED_PREVIEW_LIMIT = 10;
 
@@ -98,7 +100,12 @@ const durationLabel = (durationMs: number): string => {
   return `${minutes} minute${minutes === 1 ? "" : "s"}`;
 };
 
-const delayMsFromToken = (token: string | undefined, fallbackMs: number): number | null => {
+const delayMsFromToken = (
+  token: string | undefined,
+  fallbackMs: number,
+  minMs = CLEANUP_REMOVE_MIN_DELAY_MS,
+  maxMs = CLEANUP_REMOVE_MAX_DELAY_MS,
+): number | null => {
   if (!token) {
     return fallbackMs;
   }
@@ -112,7 +119,7 @@ const delayMsFromToken = (token: string | undefined, fallbackMs: number): number
   const unit = match[2] ?? "s";
   const multiplier = unit === "ms" ? 1 : unit === "s" ? 1_000 : 60_000;
   const delayMs = value * multiplier;
-  return Math.min(Math.max(delayMs, CLEANUP_REMOVE_MIN_DELAY_MS), CLEANUP_REMOVE_MAX_DELAY_MS);
+  return Math.min(Math.max(delayMs, minMs), maxMs);
 };
 
 const parseChannelOption = (tokens: readonly string[], fallback: string | null): string | null => {
@@ -459,11 +466,40 @@ const wait = (delayMs: number): Promise<void> => new Promise((resolve) => {
   setTimeout(resolve, delayMs);
 });
 
+type CleanupRemovalAction = {
+  member: CleanupRemovalPlanEntry["member"];
+  removal: CleanupRemovalPlanEntry["removals"][number];
+};
+
+const groupCleanupRemovalActions = (
+  plan: readonly CleanupRemovalPlanEntry[],
+  groupOrder: readonly string[],
+): { groupJid: string; actions: CleanupRemovalAction[] }[] => {
+  const actionsByGroupJid = new Map<string, CleanupRemovalAction[]>();
+  for (const groupJid of groupOrder) {
+    actionsByGroupJid.set(groupJid, []);
+  }
+
+  for (const entry of plan) {
+    for (const removal of entry.removals) {
+      const actions = actionsByGroupJid.get(removal.groupJid) ?? [];
+      actions.push({ member: entry.member, removal });
+      actionsByGroupJid.set(removal.groupJid, actions);
+    }
+  }
+
+  return Array.from(actionsByGroupJid.entries())
+    .filter(([, actions]) => actions.length > 0)
+    .map(([groupJid, actions]) => ({ groupJid, actions }));
+};
+
 const runCleanupRemovalPlan = async (
   sock: WASocket,
   campaignId: string,
   plan: readonly CleanupRemovalPlanEntry[],
+  groupJids: readonly string[],
   delayMs: number,
+  groupDelayMs: number,
 ): Promise<{ removed: number; failed: number; skipped: number }> => {
   let removed = 0;
   let failed = 0;
@@ -476,11 +512,25 @@ const runCleanupRemovalPlan = async (
     candidates: plan.length,
     removalActions: totalRemovalActions,
     delayMs,
+    groupDelayMs,
   });
 
-  for (const entry of plan) {
-    for (const removal of entry.removals) {
-      if (attempted > 0) {
+  const groupedActions = groupCleanupRemovalActions(plan, groupJids);
+  for (const [groupIndex, group] of groupedActions.entries()) {
+    if (groupIndex > 0) {
+      await wait(groupDelayMs);
+    }
+
+    log("cleanup.remove_group.start", {
+      campaignId,
+      groupJid: group.groupJid,
+      groupIndex: groupIndex + 1,
+      groupCount: groupedActions.length,
+      groupRemovalActions: group.actions.length,
+    });
+
+    for (const [actionIndex, action] of group.actions.entries()) {
+      if (actionIndex > 0) {
         await wait(delayMs);
       }
       attempted += 1;
@@ -488,30 +538,34 @@ const runCleanupRemovalPlan = async (
       try {
         log("cleanup.remove_attempt", {
           campaignId,
-          userId: entry.member.userId,
-          groupJid: removal.groupJid,
-          participantJid: removal.participantJid,
+          userId: action.member.userId,
+          groupJid: action.removal.groupJid,
+          participantJid: action.removal.participantJid,
           attempted,
           totalRemovalActions,
         });
-        const result = await sock.groupParticipantsUpdate(removal.groupJid, [removal.participantJid], "remove");
+        const result = await sock.groupParticipantsUpdate(
+          action.removal.groupJid,
+          [action.removal.participantJid],
+          "remove",
+        );
         const status = result?.[0]?.status;
         if (status && status !== "200") {
           failed += 1;
           warn("cleanup.remove_failed", {
             campaignId,
-            userId: entry.member.userId,
-            groupJid: removal.groupJid,
-            participantJid: removal.participantJid,
+            userId: action.member.userId,
+            groupJid: action.removal.groupJid,
+            participantJid: action.removal.participantJid,
             status,
           });
         } else {
           removed += 1;
           log("cleanup.remove_ok", {
             campaignId,
-            userId: entry.member.userId,
-            groupJid: removal.groupJid,
-            participantJid: removal.participantJid,
+            userId: action.member.userId,
+            groupJid: action.removal.groupJid,
+            participantJid: action.removal.participantJid,
             status: status ?? null,
           });
         }
@@ -519,18 +573,16 @@ const runCleanupRemovalPlan = async (
         failed += 1;
         warn("cleanup.remove_failed", {
           campaignId,
-          userId: entry.member.userId,
-          groupJid: removal.groupJid,
-          participantJid: removal.participantJid,
+          userId: action.member.userId,
+          groupJid: action.removal.groupJid,
+          participantJid: action.removal.participantJid,
           error: removeError,
         });
       }
     }
-
-    if (entry.removals.length === 0) {
-      skipped += 1;
-    }
   }
+
+  skipped = plan.filter((entry) => entry.removals.length === 0).length;
 
   log("cleanup.remove_batch.finish", {
     campaignId,
@@ -971,22 +1023,31 @@ export const handleCleanupCommand = async (
     }
 
     const delayMs = delayMsFromToken(getOptionValue(optionTokens, "delay") ?? undefined, CLEANUP_REMOVE_DEFAULT_DELAY_MS);
-    if (!delayMs) {
+    const groupDelayMs = delayMsFromToken(
+      getOptionValue(optionTokens, "group-delay") ?? undefined,
+      CLEANUP_REMOVE_DEFAULT_GROUP_DELAY_MS,
+      CLEANUP_REMOVE_MIN_GROUP_DELAY_MS,
+    );
+    if (!delayMs || !groupDelayMs) {
       await sock.sendMessage(replyJid, {
-        text: "Usage: !cleanup remove-start {limit?} group={groupJid}|all=true confirm=REMOVE [delay=30s]",
+        text: "Usage: !cleanup remove-start {limit?} group={groupJid}|all=true confirm=REMOVE [delay=10s] [group-delay=60s]",
       });
       return true;
     }
 
+    const delayText = groupJids.length === 1
+      ? `Delay: ${Math.round(delayMs / 1000)}s between removals in the chat.`
+      : `Delay: ${Math.round(delayMs / 1000)}s between removals in the same chat; ${Math.round(groupDelayMs / 1000)}s cooldown before switching chats.`;
     await sock.sendMessage(replyJid, {
       text: [
         `Starting cleanup removal for ${pluralize(removablePeople, "person", "people")} (${pluralize(removalActions, "participant removal")}) in ${scope}.`,
-        `Delay: ${Math.round(delayMs / 1000)}s between participant removals.`,
+        "Execution: grouped by chat.",
+        delayText,
         "This removes only; it does not ban.",
       ].join("\n"),
     });
 
-    const result = await runCleanupRemovalPlan(sock, campaign.id, plan, delayMs);
+    const result = await runCleanupRemovalPlan(sock, campaign.id, plan, groupJids, delayMs, groupDelayMs);
     await sock.sendMessage(replyJid, {
       text: [
         "Cleanup removal batch complete.",
