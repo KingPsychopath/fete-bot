@@ -16,8 +16,13 @@ import {
 import {
   createCleanupCampaign,
   continueLatestCleanupCampaignPaused,
+  claimCleanupRemovalJob,
+  completeCleanupRemovalJobIfFinished,
+  createCleanupRemovalJob,
   extendCleanupCampaign,
   findCleanupMemberByUserOrJid,
+  getCleanupMember,
+  getCleanupRemovalJobSummary,
   getCleanupStats,
   getLatestCleanupCampaign,
   getOpenCleanupCampaign,
@@ -25,6 +30,13 @@ import {
   listCleanupDmMembers,
   listCleanupMembers,
   listCleanupRemovalCandidateMembers,
+  listCleanupRemovalJobActions,
+  listUnfinishedCleanupRemovalJobs,
+  markCleanupRemovalActionFailed,
+  markCleanupRemovalActionRunning,
+  markCleanupRemovalActionSkipped,
+  markCleanupRemovalActionSucceeded,
+  markCleanupRemovalJobFailed,
   listCleanupWhitelistedMembers,
   recordCleanupMessage,
   recordCleanupSignal,
@@ -493,106 +505,243 @@ const groupCleanupRemovalActions = (
     .map(([groupJid, actions]) => ({ groupJid, actions }));
 };
 
-const runCleanupRemovalPlan = async (
+const describeError = (value: unknown): string =>
+  value instanceof Error ? value.message : String(value);
+
+let cleanupRemovalJobInFlight: string | null = null;
+
+const runCleanupRemovalJob = async (
   sock: WASocket,
-  campaignId: string,
-  plan: readonly CleanupRemovalPlanEntry[],
-  groupJids: readonly string[],
-  delayMs: number,
-  groupDelayMs: number,
-): Promise<{ removed: number; failed: number; skipped: number }> => {
-  let removed = 0;
-  let failed = 0;
-  let skipped = 0;
-  let attempted = 0;
-  const totalRemovalActions = countCleanupRemovalActions(plan);
+  jobId: string,
+  config: Config,
+  groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
+  selfJids: ReadonlySet<string>,
+): Promise<NonNullable<ReturnType<typeof getCleanupRemovalJobSummary>>> => {
+  if (cleanupRemovalJobInFlight && cleanupRemovalJobInFlight !== jobId) {
+    throw new Error(`Cleanup removal job ${cleanupRemovalJobInFlight} is already running`);
+  }
 
-  log("cleanup.remove_batch.start", {
-    campaignId,
-    candidates: plan.length,
-    removalActions: totalRemovalActions,
-    delayMs,
-    groupDelayMs,
-  });
-
-  const groupedActions = groupCleanupRemovalActions(plan, groupJids);
-  for (const [groupIndex, group] of groupedActions.entries()) {
-    if (groupIndex > 0) {
-      await wait(groupDelayMs);
+  cleanupRemovalJobInFlight = jobId;
+  let claimed = false;
+  try {
+    const job = claimCleanupRemovalJob(jobId);
+    if (!job) {
+      const summary = getCleanupRemovalJobSummary(jobId);
+      if (summary) {
+        return summary;
+      }
+      throw new Error(`Cleanup removal job ${jobId} not found`);
     }
+    claimed = true;
 
-    log("cleanup.remove_group.start", {
-      campaignId,
-      groupJid: group.groupJid,
-      groupIndex: groupIndex + 1,
-      groupCount: groupedActions.length,
-      groupRemovalActions: group.actions.length,
+    let attempted = 0;
+    let previousGroupJid: string | null = null;
+    const selfAliases = Array.from(selfJids);
+
+    log("cleanup.remove_batch.start", {
+      campaignId: job.campaignId,
+      jobId: job.id,
+      removalActions: job.totalActions,
+      delayMs: job.delayMs,
+      groupDelayMs: job.groupDelayMs,
+      resumed: job.status === "running",
     });
 
-    for (const [actionIndex, action] of group.actions.entries()) {
-      if (actionIndex > 0) {
-        await wait(delayMs);
+    const actions = listCleanupRemovalJobActions(job.id, ["pending"]);
+    for (const action of actions) {
+      if (previousGroupJid) {
+        await wait(previousGroupJid === action.groupJid ? job.delayMs : job.groupDelayMs);
+      }
+      previousGroupJid = action.groupJid;
+
+      const runningAction = markCleanupRemovalActionRunning(action.id);
+      if (!runningAction) {
+        continue;
       }
       attempted += 1;
 
+      const member = getCleanupMember(runningAction.campaignId, runningAction.userId);
+      if (!member) {
+        markCleanupRemovalActionSkipped(runningAction.id, "cleanup member no longer exists");
+        continue;
+      }
+
+      if (member.whitelistedAt !== null) {
+        markCleanupRemovalActionSkipped(runningAction.id, "cleanup member became whitelisted");
+        continue;
+      }
+
+      const metadata = groupMetadataByJid.get(runningAction.groupJid);
+      const liveParticipantJid = findParticipantJidForUser(runningAction.userId, metadata);
+      if (!liveParticipantJid) {
+        markCleanupRemovalActionSkipped(runningAction.id, "participant is no longer in group");
+        continue;
+      }
+
+      const knownAliases = [member.primaryJid, ...getUserAliases(runningAction.userId).map((alias) => alias.alias)];
+      if (isProtectedGroupMember(runningAction.userId, knownAliases, runningAction.groupJid, config, groupMetadataByJid)) {
+        markCleanupRemovalActionSkipped(runningAction.id, "participant is now protected");
+        continue;
+      }
+
+      if (!isGroupAdmin(selfAliases, runningAction.groupJid, groupMetadataByJid)) {
+        markCleanupRemovalActionFailed(runningAction.id, "bot_not_admin", "bot is not admin in group");
+        continue;
+      }
+
       try {
         log("cleanup.remove_attempt", {
-          campaignId,
-          userId: action.member.userId,
-          groupJid: action.removal.groupJid,
-          participantJid: action.removal.participantJid,
+          campaignId: runningAction.campaignId,
+          jobId: job.id,
+          actionId: runningAction.id,
+          userId: runningAction.userId,
+          groupJid: runningAction.groupJid,
+          participantJid: liveParticipantJid,
           attempted,
-          totalRemovalActions,
+          totalRemovalActions: job.totalActions,
         });
         const result = await sock.groupParticipantsUpdate(
-          action.removal.groupJid,
-          [action.removal.participantJid],
+          runningAction.groupJid,
+          [liveParticipantJid],
           "remove",
         );
         const status = result?.[0]?.status;
         if (status && status !== "200") {
-          failed += 1;
+          markCleanupRemovalActionFailed(runningAction.id, status, `WhatsApp remove returned status ${status}`);
           warn("cleanup.remove_failed", {
-            campaignId,
-            userId: action.member.userId,
-            groupJid: action.removal.groupJid,
-            participantJid: action.removal.participantJid,
+            campaignId: runningAction.campaignId,
+            jobId: job.id,
+            actionId: runningAction.id,
+            userId: runningAction.userId,
+            groupJid: runningAction.groupJid,
+            participantJid: liveParticipantJid,
             status,
           });
         } else {
-          removed += 1;
+          markCleanupRemovalActionSucceeded(runningAction.id, status ?? null);
           log("cleanup.remove_ok", {
-            campaignId,
-            userId: action.member.userId,
-            groupJid: action.removal.groupJid,
-            participantJid: action.removal.participantJid,
+            campaignId: runningAction.campaignId,
+            jobId: job.id,
+            actionId: runningAction.id,
+            userId: runningAction.userId,
+            groupJid: runningAction.groupJid,
+            participantJid: liveParticipantJid,
             status: status ?? null,
           });
         }
       } catch (removeError) {
-        failed += 1;
+        markCleanupRemovalActionFailed(runningAction.id, null, describeError(removeError));
         warn("cleanup.remove_failed", {
-          campaignId,
-          userId: action.member.userId,
-          groupJid: action.removal.groupJid,
-          participantJid: action.removal.participantJid,
+          campaignId: runningAction.campaignId,
+          jobId: job.id,
+          actionId: runningAction.id,
+          userId: runningAction.userId,
+          groupJid: runningAction.groupJid,
+          participantJid: liveParticipantJid,
           error: removeError,
         });
       }
     }
+
+    const summary = completeCleanupRemovalJobIfFinished(job.id);
+    if (!summary) {
+      throw new Error(`Cleanup removal job ${job.id} disappeared before completion`);
+    }
+
+    log("cleanup.remove_batch.finish", {
+      campaignId: job.campaignId,
+      jobId: job.id,
+      attempted,
+      succeeded: summary.succeeded,
+      failed: summary.failed,
+      skipped: summary.skipped,
+      pending: summary.pending,
+      running: summary.running,
+    });
+
+    return summary;
+  } catch (jobError) {
+    if (claimed) {
+      markCleanupRemovalJobFailed(jobId, describeError(jobError));
+    }
+    throw jobError;
+  } finally {
+    cleanupRemovalJobInFlight = null;
   }
+};
 
-  skipped = plan.filter((entry) => entry.removals.length === 0).length;
+export const resumeCleanupRemovalJobs = async (
+  sock: WASocket,
+  config: Config,
+  groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
+  selfJids: ReadonlySet<string>,
+): Promise<void> => {
+  const jobs = listUnfinishedCleanupRemovalJobs(5);
+  for (const job of jobs) {
+    if (cleanupRemovalJobInFlight) {
+      return;
+    }
 
-  log("cleanup.remove_batch.finish", {
-    campaignId,
-    attempted,
-    removed,
-    failed,
-    skipped,
-  });
+    const before = getCleanupRemovalJobSummary(job.id);
+    if (!before || before.pending + before.running === 0) {
+      completeCleanupRemovalJobIfFinished(job.id);
+      continue;
+    }
 
-  return { removed, failed, skipped };
+    log("cleanup.remove_resume.start", {
+      campaignId: job.campaignId,
+      jobId: job.id,
+      pending: before.pending,
+      running: before.running,
+      succeeded: before.succeeded,
+      failed: before.failed,
+      skipped: before.skipped,
+    });
+
+    try {
+      await sock.sendMessage(job.replyJid, {
+        text: [
+          `Resuming cleanup removal job ${job.id}.`,
+          `Remaining: ${before.pending + before.running}/${job.totalActions} removal action(s).`,
+          "Queue survived the restart; continuing pending removals only.",
+        ].join("\n"),
+      });
+    } catch (sendError) {
+      warn("cleanup.remove_resume_notice_failed", {
+        campaignId: job.campaignId,
+        jobId: job.id,
+        replyJid: job.replyJid,
+        error: sendError,
+      });
+    }
+
+    try {
+      const result = await runCleanupRemovalJob(sock, job.id, config, groupMetadataByJid, selfJids);
+      await sock.sendMessage(job.replyJid, {
+        text: [
+          "Cleanup removal batch complete.",
+          `Job: ${job.id}`,
+          `Removed: ${result.succeeded}`,
+          `Failed: ${result.failed}`,
+          result.skipped > 0 ? `Skipped: ${result.skipped}` : null,
+          "Run `!cleanup candidates 100` or another `!cleanup remove-preview` before the next batch.",
+        ].filter(Boolean).join("\n"),
+      });
+    } catch (resumeError) {
+      warn("cleanup.remove_resume_failed", {
+        campaignId: job.campaignId,
+        jobId: job.id,
+        error: resumeError,
+      });
+      try {
+        await sock.sendMessage(job.replyJid, {
+          text: `Cleanup removal job ${job.id} failed while resuming: ${describeError(resumeError)}`,
+        });
+      } catch {
+        // The failure is already logged; avoid masking the resume error.
+      }
+    }
+  }
 };
 
 const primaryJidForParticipant = (participant: {
@@ -1038,20 +1187,50 @@ export const handleCleanupCommand = async (
     const delayText = groupJids.length === 1
       ? `Delay: ${Math.round(delayMs / 1000)}s between removals in the chat.`
       : `Delay: ${Math.round(delayMs / 1000)}s between removals in the same chat; ${Math.round(groupDelayMs / 1000)}s cooldown before switching chats.`;
+    if (cleanupRemovalJobInFlight) {
+      await sock.sendMessage(replyJid, {
+        text: `Cleanup removal job ${cleanupRemovalJobInFlight} is already running. Wait for it to finish before starting another removal batch.`,
+      });
+      return true;
+    }
+
+    const orderedActions = groupCleanupRemovalActions(plan, groupJids)
+      .flatMap((group) => group.actions.map((action) => ({
+        userId: action.member.userId,
+        displayName: action.member.displayName,
+        groupJid: action.removal.groupJid,
+        participantJid: action.removal.participantJid,
+      })));
+    const job = createCleanupRemovalJob({
+      campaignId: campaign.id,
+      groupJids,
+      peopleLimit: limit,
+      delayMs,
+      groupDelayMs,
+      totalPeople: removablePeople,
+      createdByUserId: actor.userId,
+      createdByLabel: actor.label,
+      replyJid,
+      actions: orderedActions,
+    });
+
     await sock.sendMessage(replyJid, {
       text: [
         `Starting cleanup removal for ${pluralize(removablePeople, "person", "people")} (${pluralize(removalActions, "participant removal")}) in ${scope}.`,
+        `Job: ${job.id}`,
         "Execution: grouped by chat.",
         delayText,
+        "Queue is persisted; if the bot restarts, pending removals resume after reconnect.",
         "This removes only; it does not ban.",
       ].join("\n"),
     });
 
-    const result = await runCleanupRemovalPlan(sock, campaign.id, plan, groupJids, delayMs, groupDelayMs);
+    const result = await runCleanupRemovalJob(sock, job.id, config, groupMetadataByJid, selfJids);
     await sock.sendMessage(replyJid, {
       text: [
         "Cleanup removal batch complete.",
-        `Removed: ${result.removed}`,
+        `Job: ${job.id}`,
+        `Removed: ${result.succeeded}`,
         `Failed: ${result.failed}`,
         result.skipped > 0 ? `Skipped: ${result.skipped}` : null,
         "Run `!cleanup candidates 100` or another `!cleanup remove-preview` before the next batch.",

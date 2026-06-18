@@ -224,7 +224,7 @@ type LegacyReviewQueueRow = {
   flagged_at: string;
 };
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 const RESET_DB_FLAG = "RESET_DB";
 export const GLOBAL_MODERATION_GROUP_JID = "__all_groups__";
 
@@ -433,6 +433,57 @@ const CLEANUP_SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_cleanup_signals_campaign ON cleanup_signals(campaign_id, signal_type, created_at);
 `;
 
+const CLEANUP_REMOVAL_SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS cleanup_removal_jobs (
+    id TEXT PRIMARY KEY,
+    campaign_id TEXT NOT NULL REFERENCES cleanup_campaigns(id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK(status IN ('queued','running','completed','failed','cancelled')) DEFAULT 'queued',
+    scope_group_jids_json TEXT NOT NULL,
+    people_limit INTEGER NOT NULL,
+    delay_ms INTEGER NOT NULL,
+    group_delay_ms INTEGER NOT NULL,
+    total_people INTEGER NOT NULL,
+    total_actions INTEGER NOT NULL,
+    created_by_user_id TEXT REFERENCES users(id),
+    created_by_label TEXT NOT NULL,
+    reply_jid TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    started_at INTEGER,
+    updated_at INTEGER NOT NULL,
+    completed_at INTEGER,
+    last_error TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_cleanup_removal_jobs_status
+    ON cleanup_removal_jobs(status, updated_at);
+  CREATE INDEX IF NOT EXISTS idx_cleanup_removal_jobs_campaign
+    ON cleanup_removal_jobs(campaign_id, created_at);
+
+  CREATE TABLE IF NOT EXISTS cleanup_removal_actions (
+    id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL REFERENCES cleanup_removal_jobs(id) ON DELETE CASCADE,
+    campaign_id TEXT NOT NULL REFERENCES cleanup_campaigns(id) ON DELETE CASCADE,
+    action_order INTEGER NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    display_name TEXT,
+    group_jid TEXT NOT NULL,
+    participant_jid TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending','running','succeeded','failed','skipped')) DEFAULT 'pending',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    last_status TEXT,
+    last_error TEXT,
+    created_at INTEGER NOT NULL,
+    started_at INTEGER,
+    updated_at INTEGER NOT NULL,
+    completed_at INTEGER,
+    UNIQUE(job_id, action_order),
+    UNIQUE(job_id, group_jid, participant_jid)
+  );
+  CREATE INDEX IF NOT EXISTS idx_cleanup_removal_actions_job_status
+    ON cleanup_removal_actions(job_id, status, action_order);
+  CREATE INDEX IF NOT EXISTS idx_cleanup_removal_actions_campaign_user
+    ON cleanup_removal_actions(campaign_id, user_id, status);
+`;
+
 const recreateSchema = (database: Database.Database): void => {
   database.exec("PRAGMA foreign_keys = OFF");
 
@@ -443,6 +494,8 @@ const recreateSchema = (database: Database.Database): void => {
     "announcement_queue_items",
     "call_guard_audit",
     "call_violations",
+    "cleanup_removal_actions",
+    "cleanup_removal_jobs",
     "cleanup_signals",
     "cleanup_messages",
     "cleanup_members",
@@ -584,6 +637,7 @@ const recreateSchema = (database: Database.Database): void => {
     ${ANNOUNCEMENT_SCHEMA_SQL}
     ${CALL_GUARD_SCHEMA_SQL}
     ${CLEANUP_SCHEMA_SQL}
+    ${CLEANUP_REMOVAL_SCHEMA_SQL}
   `);
 
   database.pragma(`user_version = ${SCHEMA_VERSION}`);
@@ -904,6 +958,30 @@ export const migrateSchemaV5ToV6 = (
     if (options.throwAfterSchemaForTest) {
       throw new Error("Intentional migration failure");
     }
+    database.pragma("user_version = 6");
+    database.exec("COMMIT");
+  } catch (migrationError) {
+    if (database.inTransaction) {
+      database.exec("ROLLBACK");
+    }
+    throw migrationError;
+  }
+};
+
+export const migrateSchemaV6ToV7 = (
+  database: Database.Database,
+  options: { throwAfterSchemaForTest?: boolean } = {},
+): void => {
+  if (database.inTransaction) {
+    throw new Error("Cannot migrate schema while another transaction is active");
+  }
+
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    database.exec(CLEANUP_REMOVAL_SCHEMA_SQL);
+    if (options.throwAfterSchemaForTest) {
+      throw new Error("Intentional migration failure");
+    }
     database.pragma(`user_version = ${SCHEMA_VERSION}`);
     database.exec("COMMIT");
   } catch (migrationError) {
@@ -950,6 +1028,10 @@ export const ensureSchema = (database: Database.Database): void => {
 
   if (Number(database.pragma("user_version", { simple: true }) ?? 0) === 5) {
     migrateSchemaV5ToV6(database);
+  }
+
+  if (Number(database.pragma("user_version", { simple: true }) ?? 0) === 6) {
+    migrateSchemaV6ToV7(database);
     database.pragma("journal_mode = WAL");
     database.exec("PRAGMA foreign_keys = ON");
     return;

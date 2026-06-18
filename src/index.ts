@@ -17,6 +17,7 @@ import pino from "pino";
 import QRCode from "qrcode";
 
 import { startAnnouncementScheduler, stopAnnouncementScheduler } from "./announcements/scheduler.js";
+import { resumeCleanupRemovalJobs } from "./cleanup/commands.js";
 import { buildCleanupWhitelistConfirmationMessage } from "./cleanup/format.js";
 import { startCleanupScheduler, stopCleanupScheduler } from "./cleanup/scheduler.js";
 import {
@@ -3716,6 +3717,7 @@ export const startBot = async (): Promise<void> => {
         await listDiscoveredGroups(sock);
         await enforceGlobalBans(sock);
         await runStartupHealthCheck(sock, config, discoveredGroupMetadata);
+        await resumeCleanupRemovalJobs(sock, config, discoveredGroupMetadata, getSelfJids(sock));
         startSpotlightScheduler(sock, config, getEffectiveTicketSpotlightTargetJids);
         startTicketMarketplaceRuleReminderScheduler(sock, config);
         startWebsiteTicketExchangeAnnouncementScheduler(sock, config);

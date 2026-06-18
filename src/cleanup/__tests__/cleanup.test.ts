@@ -635,6 +635,181 @@ describe("cleanup campaign", () => {
     }
   });
 
+  it("persists cleanup removal jobs before the first removal attempt", async () => {
+    vi.useFakeTimers();
+    try {
+      await setupDb();
+      const { handleCleanupCommand } = await import("../commands.js");
+      const store = await import("../store.js");
+      const sendMessage = vi.fn().mockResolvedValue({ key: { id: "admin-reply" } });
+      let seenJobId: string | null = null;
+      const groupParticipantsUpdate = vi.fn().mockImplementation(() => {
+        const jobs = store.listUnfinishedCleanupRemovalJobs();
+        expect(jobs).toHaveLength(1);
+        seenJobId = jobs[0]!.id;
+        const actions = store.listCleanupRemovalJobActions(seenJobId);
+        expect(actions).toHaveLength(1);
+        expect(actions[0]!.status).toBe("running");
+        return Promise.resolve([{ status: "200" }]);
+      });
+      const groupMetadata = new Map([
+        [
+          "group@g.us",
+          {
+            id: "group@g.us",
+            subject: "Fete Group",
+            participants: [
+              { id: "bot@s.whatsapp.net", admin: "admin" },
+              { id: "447700900001@s.whatsapp.net" },
+            ],
+          },
+        ],
+      ]) as never;
+
+      await handleCleanupCommand(
+        { sendMessage, groupParticipantsUpdate } as never,
+        { userId: "owner", label: "owner", role: "owner" },
+        "447700900000@s.whatsapp.net",
+        "!cleanup start 72h public=off",
+        config,
+        new Map([["group@g.us", "Fete Group"]]),
+        groupMetadata,
+        new Set(["bot@s.whatsapp.net"]),
+      );
+      sendMessage.mockClear();
+
+      const removal = handleCleanupCommand(
+        { sendMessage, groupParticipantsUpdate } as never,
+        { userId: "owner", label: "owner", role: "owner" },
+        "447700900000@s.whatsapp.net",
+        "!cleanup remove-start 1 confirm=REMOVE delay=5s",
+        config,
+        new Map([["group@g.us", "Fete Group"]]),
+        groupMetadata,
+        new Set(["bot@s.whatsapp.net"]),
+      );
+
+      await vi.runAllTimersAsync();
+      await removal;
+
+      expect(groupParticipantsUpdate).toHaveBeenCalledTimes(1);
+      expect(seenJobId).toBeTruthy();
+      expect(store.getCleanupRemovalJobSummary(seenJobId!)).toMatchObject({
+        pending: 0,
+        running: 0,
+        succeeded: 1,
+        failed: 0,
+        skipped: 0,
+      });
+      expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", expect.objectContaining({
+        text: expect.stringContaining("Queue is persisted; if the bot restarts"),
+      }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resumes pending cleanup removal actions after restart", async () => {
+    vi.useFakeTimers();
+    try {
+      await setupDb();
+      const db = await import("../../db.js");
+      db.getDb()
+        .prepare("INSERT INTO user_aliases (alias, alias_type, user_id, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?)")
+        .run("447700900001@s.whatsapp.net", "phone", "user-1", 1, 1);
+      db.getDb()
+        .prepare("INSERT INTO user_aliases (alias, alias_type, user_id, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?)")
+        .run("447700900002@s.whatsapp.net", "phone", "user-2", 1, 1);
+      const store = await import("../store.js");
+      const { resumeCleanupRemovalJobs } = await import("../commands.js");
+      const campaign = store.createCleanupCampaign({
+        durationMs: 72 * 60 * 60_000,
+        actorUserId: "owner",
+        actorLabel: "owner",
+        channelLink: config.cleanupChannelLink,
+        publicMessage: "public",
+        dmMessage: "dm",
+        batchSize: 25,
+        batchIntervalMinutes: 30,
+        nowMs: 1_000,
+        members: [
+          { userId: "user-1", displayName: "User One", primaryJid: "447700900001@s.whatsapp.net" },
+          { userId: "user-2", displayName: "User Two", primaryJid: "447700900002@s.whatsapp.net" },
+        ],
+      });
+      const job = store.createCleanupRemovalJob({
+        campaignId: campaign.id,
+        groupJids: ["group@g.us"],
+        peopleLimit: 2,
+        delayMs: 5_000,
+        groupDelayMs: 15_000,
+        totalPeople: 2,
+        createdByUserId: "owner",
+        createdByLabel: "owner",
+        replyJid: "447700900000@s.whatsapp.net",
+        actions: [
+          {
+            userId: "user-1",
+            displayName: "User One",
+            groupJid: "group@g.us",
+            participantJid: "447700900001@s.whatsapp.net",
+          },
+          {
+            userId: "user-2",
+            displayName: "User Two",
+            groupJid: "group@g.us",
+            participantJid: "447700900002@s.whatsapp.net",
+          },
+        ],
+        nowMs: 2_000,
+      });
+      const [firstAction] = store.listCleanupRemovalJobActions(job.id, ["pending"]);
+      store.markCleanupRemovalActionRunning(firstAction!.id, 2_500);
+      store.markCleanupRemovalActionSucceeded(firstAction!.id, "200", 3_000);
+
+      const sendMessage = vi.fn().mockResolvedValue({ key: { id: "admin-reply" } });
+      const groupParticipantsUpdate = vi.fn().mockResolvedValue([{ status: "200" }]);
+      const groupMetadata = new Map([
+        [
+          "group@g.us",
+          {
+            id: "group@g.us",
+            subject: "Fete Group",
+            participants: [
+              { id: "bot@s.whatsapp.net", admin: "admin" },
+              { id: "447700900002@s.whatsapp.net" },
+            ],
+          },
+        ],
+      ]) as never;
+
+      const resume = resumeCleanupRemovalJobs(
+        { sendMessage, groupParticipantsUpdate } as never,
+        config,
+        groupMetadata,
+        new Set(["bot@s.whatsapp.net"]),
+      );
+
+      await vi.runAllTimersAsync();
+      await resume;
+
+      expect(groupParticipantsUpdate).toHaveBeenCalledTimes(1);
+      expect(groupParticipantsUpdate).toHaveBeenCalledWith("group@g.us", ["447700900002@s.whatsapp.net"], "remove");
+      expect(store.getCleanupRemovalJobSummary(job.id)).toMatchObject({
+        pending: 0,
+        running: 0,
+        succeeded: 2,
+        failed: 0,
+        skipped: 0,
+      });
+      expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", expect.objectContaining({
+        text: expect.stringContaining("Resuming cleanup removal job"),
+      }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("starts without public notices and carries the previous cleanup whitelist by default", async () => {
     await setupDb();
     const { handleCleanupCommand } = await import("../commands.js");

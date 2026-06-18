@@ -13,6 +13,8 @@ export type CleanupSignalType =
   | "manual"
   | "protected";
 export type CleanupDmStatus = "pending" | "sent" | "failed" | "skipped";
+export type CleanupRemovalJobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type CleanupRemovalActionStatus = "pending" | "running" | "succeeded" | "failed" | "skipped";
 
 export type CleanupCampaign = {
   id: string;
@@ -48,6 +50,54 @@ export type CleanupMember = {
   dmError: string | null;
   createdAt: number;
   updatedAt: number;
+};
+
+export type CleanupRemovalJob = {
+  id: string;
+  campaignId: string;
+  status: CleanupRemovalJobStatus;
+  scopeGroupJids: string[];
+  peopleLimit: number;
+  delayMs: number;
+  groupDelayMs: number;
+  totalPeople: number;
+  totalActions: number;
+  createdByUserId: string | null;
+  createdByLabel: string;
+  replyJid: string;
+  createdAt: number;
+  startedAt: number | null;
+  updatedAt: number;
+  completedAt: number | null;
+  lastError: string | null;
+};
+
+export type CleanupRemovalAction = {
+  id: string;
+  jobId: string;
+  campaignId: string;
+  actionOrder: number;
+  userId: string;
+  displayName: string | null;
+  groupJid: string;
+  participantJid: string;
+  status: CleanupRemovalActionStatus;
+  attemptCount: number;
+  lastStatus: string | null;
+  lastError: string | null;
+  createdAt: number;
+  startedAt: number | null;
+  updatedAt: number;
+  completedAt: number | null;
+};
+
+export type CleanupRemovalJobSummary = {
+  job: CleanupRemovalJob;
+  pending: number;
+  running: number;
+  succeeded: number;
+  failed: number;
+  skipped: number;
 };
 
 export type CleanupMemberSeed = {
@@ -125,6 +175,45 @@ type MemberRow = {
   updated_at: number;
 };
 
+type RemovalJobRow = {
+  id: string;
+  campaign_id: string;
+  status: CleanupRemovalJobStatus;
+  scope_group_jids_json: string;
+  people_limit: number;
+  delay_ms: number;
+  group_delay_ms: number;
+  total_people: number;
+  total_actions: number;
+  created_by_user_id: string | null;
+  created_by_label: string;
+  reply_jid: string;
+  created_at: number;
+  started_at: number | null;
+  updated_at: number;
+  completed_at: number | null;
+  last_error: string | null;
+};
+
+type RemovalActionRow = {
+  id: string;
+  job_id: string;
+  campaign_id: string;
+  action_order: number;
+  user_id: string;
+  display_name: string | null;
+  group_jid: string;
+  participant_jid: string;
+  status: CleanupRemovalActionStatus;
+  attempt_count: number;
+  last_status: string | null;
+  last_error: string | null;
+  created_at: number;
+  started_at: number | null;
+  updated_at: number;
+  completed_at: number | null;
+};
+
 const toCampaign = (row: CampaignRow): CleanupCampaign => ({
   id: row.id,
   status: row.status,
@@ -159,6 +248,54 @@ const toMember = (row: MemberRow): CleanupMember => ({
   dmError: row.dm_error,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
+});
+
+const parseGroupJids = (json: string): string[] => {
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : [];
+  } catch {
+    return [];
+  }
+};
+
+const toRemovalJob = (row: RemovalJobRow): CleanupRemovalJob => ({
+  id: row.id,
+  campaignId: row.campaign_id,
+  status: row.status,
+  scopeGroupJids: parseGroupJids(row.scope_group_jids_json),
+  peopleLimit: row.people_limit,
+  delayMs: row.delay_ms,
+  groupDelayMs: row.group_delay_ms,
+  totalPeople: row.total_people,
+  totalActions: row.total_actions,
+  createdByUserId: row.created_by_user_id,
+  createdByLabel: row.created_by_label,
+  replyJid: row.reply_jid,
+  createdAt: row.created_at,
+  startedAt: row.started_at,
+  updatedAt: row.updated_at,
+  completedAt: row.completed_at,
+  lastError: row.last_error,
+});
+
+const toRemovalAction = (row: RemovalActionRow): CleanupRemovalAction => ({
+  id: row.id,
+  jobId: row.job_id,
+  campaignId: row.campaign_id,
+  actionOrder: row.action_order,
+  userId: row.user_id,
+  displayName: row.display_name,
+  groupJid: row.group_jid,
+  participantJid: row.participant_jid,
+  status: row.status,
+  attemptCount: row.attempt_count,
+  lastStatus: row.last_status,
+  lastError: row.last_error,
+  createdAt: row.created_at,
+  startedAt: row.started_at,
+  updatedAt: row.updated_at,
+  completedAt: row.completed_at,
 });
 
 export const getOpenCleanupCampaign = (): CleanupCampaign | null => {
@@ -774,6 +911,352 @@ export const listCleanupRemovalCandidateMembers = (
     `)
     .all(campaignId, Math.min(Math.max(Math.trunc(limit), 1), 5_000))
     .map(toMember);
+
+export const getCleanupMember = (
+  campaignId: string,
+  userId: string,
+): CleanupMember | null => {
+  const row = getDb()
+    .prepare<[string, string], MemberRow>(`
+      SELECT *
+      FROM cleanup_members
+      WHERE campaign_id = ? AND user_id = ?
+      LIMIT 1
+    `)
+    .get(campaignId, assertUserWritable(userId));
+  return row ? toMember(row) : null;
+};
+
+export const createCleanupRemovalJob = (input: {
+  campaignId: string;
+  groupJids: readonly string[];
+  peopleLimit: number;
+  delayMs: number;
+  groupDelayMs: number;
+  totalPeople: number;
+  createdByUserId: string | null;
+  createdByLabel: string;
+  replyJid: string;
+  actions: readonly {
+    userId: string;
+    displayName: string | null;
+    groupJid: string;
+    participantJid: string;
+  }[];
+  nowMs?: number;
+}): CleanupRemovalJob => withImmediateTransaction(() => {
+  const nowMs = input.nowMs ?? Date.now();
+  const jobId = randomUUID();
+
+  getDb()
+    .prepare(`
+      INSERT INTO cleanup_removal_jobs (
+        id,
+        campaign_id,
+        status,
+        scope_group_jids_json,
+        people_limit,
+        delay_ms,
+        group_delay_ms,
+        total_people,
+        total_actions,
+        created_by_user_id,
+        created_by_label,
+        reply_jid,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    .run(
+      jobId,
+      input.campaignId,
+      JSON.stringify(Array.from(input.groupJids)),
+      Math.max(1, Math.trunc(input.peopleLimit)),
+      Math.max(0, Math.trunc(input.delayMs)),
+      Math.max(0, Math.trunc(input.groupDelayMs)),
+      Math.max(0, Math.trunc(input.totalPeople)),
+      input.actions.length,
+      input.createdByUserId,
+      input.createdByLabel,
+      input.replyJid,
+      nowMs,
+      nowMs,
+    );
+
+  const insertAction = getDb().prepare(`
+    INSERT INTO cleanup_removal_actions (
+      id,
+      job_id,
+      campaign_id,
+      action_order,
+      user_id,
+      display_name,
+      group_jid,
+      participant_jid,
+      status,
+      created_at,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+  `);
+
+  for (const [index, action] of input.actions.entries()) {
+    insertAction.run(
+      randomUUID(),
+      jobId,
+      input.campaignId,
+      index + 1,
+      assertUserWritable(action.userId),
+      action.displayName,
+      action.groupJid,
+      action.participantJid,
+      nowMs,
+      nowMs,
+    );
+  }
+
+  return getCleanupRemovalJob(jobId)!;
+});
+
+export const getCleanupRemovalJob = (jobId: string): CleanupRemovalJob | null => {
+  const row = getDb()
+    .prepare<[string], RemovalJobRow>("SELECT * FROM cleanup_removal_jobs WHERE id = ?")
+    .get(jobId);
+  return row ? toRemovalJob(row) : null;
+};
+
+export const claimCleanupRemovalJob = (
+  jobId: string,
+  nowMs = Date.now(),
+): CleanupRemovalJob | null => withImmediateTransaction(() => {
+  const row = getDb()
+    .prepare<[string], RemovalJobRow>(`
+      SELECT *
+      FROM cleanup_removal_jobs
+      WHERE id = ? AND status IN ('queued','running')
+      LIMIT 1
+    `)
+    .get(jobId);
+  if (!row) {
+    return null;
+  }
+
+  getDb()
+    .prepare(`
+      UPDATE cleanup_removal_jobs
+      SET status = 'running',
+          started_at = COALESCE(started_at, ?),
+          updated_at = ?,
+          last_error = NULL
+      WHERE id = ?
+    `)
+    .run(nowMs, nowMs, jobId);
+
+  getDb()
+    .prepare(`
+      UPDATE cleanup_removal_actions
+      SET status = 'pending',
+          updated_at = ?,
+          last_error = COALESCE(last_error, 'interrupted before completion')
+      WHERE job_id = ? AND status = 'running'
+    `)
+    .run(nowMs, jobId);
+
+  return getCleanupRemovalJob(jobId);
+});
+
+export const listUnfinishedCleanupRemovalJobs = (limit = 5): CleanupRemovalJob[] =>
+  getDb()
+    .prepare<[number], RemovalJobRow>(`
+      SELECT *
+      FROM cleanup_removal_jobs
+      WHERE status IN ('queued','running')
+      ORDER BY created_at ASC
+      LIMIT ?
+    `)
+    .all(Math.min(Math.max(Math.trunc(limit), 1), 25))
+    .map(toRemovalJob);
+
+export const listCleanupRemovalJobActions = (
+  jobId: string,
+  statuses: readonly CleanupRemovalActionStatus[] = ["pending", "running", "succeeded", "failed", "skipped"],
+): CleanupRemovalAction[] => {
+  if (statuses.length === 0) {
+    return [];
+  }
+  const placeholders = statuses.map(() => "?").join(", ");
+  return getDb()
+    .prepare<string[], RemovalActionRow>(`
+      SELECT *
+      FROM cleanup_removal_actions
+      WHERE job_id = ? AND status IN (${placeholders})
+      ORDER BY action_order ASC
+    `)
+    .all(jobId, ...statuses)
+    .map(toRemovalAction);
+};
+
+export const markCleanupRemovalActionRunning = (
+  actionId: string,
+  nowMs = Date.now(),
+): CleanupRemovalAction | null => withImmediateTransaction(() => {
+  const result = getDb()
+    .prepare(`
+      UPDATE cleanup_removal_actions
+      SET status = 'running',
+          attempt_count = attempt_count + 1,
+          started_at = COALESCE(started_at, ?),
+          updated_at = ?,
+          last_error = NULL
+      WHERE id = ? AND status = 'pending'
+    `)
+    .run(nowMs, nowMs, actionId);
+  if (result.changes === 0) {
+    return null;
+  }
+
+  const row = getDb()
+    .prepare<[string], RemovalActionRow>("SELECT * FROM cleanup_removal_actions WHERE id = ?")
+    .get(actionId);
+  return row ? toRemovalAction(row) : null;
+});
+
+export const markCleanupRemovalActionSucceeded = (
+  actionId: string,
+  status: string | null,
+  nowMs = Date.now(),
+): void => {
+  getDb()
+    .prepare(`
+      UPDATE cleanup_removal_actions
+      SET status = 'succeeded',
+          last_status = ?,
+          last_error = NULL,
+          completed_at = ?,
+          updated_at = ?
+      WHERE id = ?
+    `)
+    .run(status, nowMs, nowMs, actionId);
+};
+
+export const markCleanupRemovalActionFailed = (
+  actionId: string,
+  status: string | null,
+  error: string,
+  nowMs = Date.now(),
+): void => {
+  getDb()
+    .prepare(`
+      UPDATE cleanup_removal_actions
+      SET status = 'failed',
+          last_status = ?,
+          last_error = ?,
+          completed_at = ?,
+          updated_at = ?
+      WHERE id = ?
+    `)
+    .run(status, error.slice(0, 500), nowMs, nowMs, actionId);
+};
+
+export const markCleanupRemovalActionSkipped = (
+  actionId: string,
+  reason: string,
+  nowMs = Date.now(),
+): void => {
+  getDb()
+    .prepare(`
+      UPDATE cleanup_removal_actions
+      SET status = 'skipped',
+          last_error = ?,
+          completed_at = ?,
+          updated_at = ?
+      WHERE id = ?
+    `)
+    .run(reason.slice(0, 500), nowMs, nowMs, actionId);
+};
+
+export const markCleanupRemovalJobFailed = (
+  jobId: string,
+  error: string,
+  nowMs = Date.now(),
+): void => {
+  getDb()
+    .prepare(`
+      UPDATE cleanup_removal_jobs
+      SET status = 'failed',
+          last_error = ?,
+          completed_at = ?,
+          updated_at = ?
+      WHERE id = ?
+    `)
+    .run(error.slice(0, 500), nowMs, nowMs, jobId);
+};
+
+export const getCleanupRemovalJobSummary = (jobId: string): CleanupRemovalJobSummary | null => {
+  const job = getCleanupRemovalJob(jobId);
+  if (!job) {
+    return null;
+  }
+
+  const rows = getDb()
+    .prepare<[string], { status: CleanupRemovalActionStatus; count: number }>(`
+      SELECT status, COUNT(*) AS count
+      FROM cleanup_removal_actions
+      WHERE job_id = ?
+      GROUP BY status
+    `)
+    .all(jobId);
+
+  const counts: Record<CleanupRemovalActionStatus, number> = {
+    pending: 0,
+    running: 0,
+    succeeded: 0,
+    failed: 0,
+    skipped: 0,
+  };
+  for (const row of rows) {
+    counts[row.status] = row.count;
+  }
+
+  return {
+    job,
+    pending: counts.pending,
+    running: counts.running,
+    succeeded: counts.succeeded,
+    failed: counts.failed,
+    skipped: counts.skipped,
+  };
+};
+
+export const completeCleanupRemovalJobIfFinished = (
+  jobId: string,
+  nowMs = Date.now(),
+): CleanupRemovalJobSummary | null => withImmediateTransaction(() => {
+  const summary = getCleanupRemovalJobSummary(jobId);
+  if (!summary) {
+    return null;
+  }
+  if (summary.pending > 0 || summary.running > 0) {
+    return summary;
+  }
+
+  getDb()
+    .prepare(`
+      UPDATE cleanup_removal_jobs
+      SET status = 'completed',
+          completed_at = COALESCE(completed_at, ?),
+          updated_at = ?,
+          last_error = ?
+      WHERE id = ? AND status IN ('queued','running')
+    `)
+    .run(
+      nowMs,
+      nowMs,
+      summary.failed > 0 ? `${summary.failed} action(s) failed` : null,
+      jobId,
+    );
+
+  return getCleanupRemovalJobSummary(jobId);
+});
 
 export const listCleanupMembers = (
   campaignId: string,

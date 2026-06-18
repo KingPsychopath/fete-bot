@@ -4,7 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { migrateSchemaV2ToV3, migrateSchemaV3ToV4, migrateSchemaV4ToV5 } from "../../../db.js";
+import {
+  migrateSchemaV2ToV3,
+  migrateSchemaV3ToV4,
+  migrateSchemaV4ToV5,
+  migrateSchemaV5ToV6,
+  migrateSchemaV6ToV7,
+} from "../../../db.js";
 
 let tempDir: string | null = null;
 
@@ -117,6 +123,49 @@ describe("v4 to v5 migration", () => {
       expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'call_guard_audit'").get()).toEqual({
         name: "call_guard_audit",
       });
+    } finally {
+      database.close();
+    }
+  });
+});
+
+describe("v6 to v7 migration", () => {
+  it("creates durable cleanup removal queue tables without touching existing data", () => {
+    const database = createV2Database();
+    try {
+      migrateSchemaV2ToV3(database);
+      migrateSchemaV3ToV4(database);
+      migrateSchemaV4ToV5(database);
+      migrateSchemaV5ToV6(database);
+      migrateSchemaV6ToV7(database);
+
+      expect(Number(database.pragma("user_version", { simple: true }))).toBe(7);
+      expect(database.prepare("SELECT COUNT(*) AS count FROM users").get()).toEqual({ count: 1 });
+      expect(database.prepare("SELECT COUNT(*) AS count FROM strikes").get()).toEqual({ count: 1 });
+      expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cleanup_removal_jobs'").get()).toEqual({
+        name: "cleanup_removal_jobs",
+      });
+      expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cleanup_removal_actions'").get()).toEqual({
+        name: "cleanup_removal_actions",
+      });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("rolls back a failed cleanup removal queue migration", () => {
+    const database = createV2Database();
+    try {
+      migrateSchemaV2ToV3(database);
+      migrateSchemaV3ToV4(database);
+      migrateSchemaV4ToV5(database);
+      migrateSchemaV5ToV6(database);
+
+      expect(() => migrateSchemaV6ToV7(database, { throwAfterSchemaForTest: true })).toThrow("Intentional migration failure");
+
+      expect(Number(database.pragma("user_version", { simple: true }))).toBe(6);
+      expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cleanup_removal_jobs'").get()).toBeUndefined();
+      expect(database.prepare("SELECT COUNT(*) AS count FROM users").get()).toEqual({ count: 1 });
     } finally {
       database.close();
     }
