@@ -281,9 +281,123 @@ describe("cleanup campaign", () => {
       text: expect.stringContaining("*Out of Office Collective Fete Community Cleanup*"),
     }));
     expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", expect.objectContaining({
-      text: expect.stringContaining("cleanup never removes members"),
+      text: expect.stringContaining("cleanup watching never removes members automatically"),
     }));
     expect(groupParticipantsUpdate).not.toHaveBeenCalled();
+  });
+
+  it("previews owner-only cleanup removals without removing members", async () => {
+    await setupDb();
+    const { handleCleanupCommand } = await import("../commands.js");
+    const sendMessage = vi.fn().mockResolvedValue({ key: { id: "admin-reply" } });
+    const groupParticipantsUpdate = vi.fn().mockResolvedValue([{ status: "200" }]);
+    const groupMetadata = new Map([
+      [
+        "group@g.us",
+        {
+          id: "group@g.us",
+          subject: "Fete Group",
+          participants: [
+            { id: "447700900001@s.whatsapp.net" },
+            { id: "447700900002@s.whatsapp.net" },
+          ],
+        },
+      ],
+    ]) as never;
+
+    await handleCleanupCommand(
+      { sendMessage, groupParticipantsUpdate } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "447700900000@s.whatsapp.net",
+      "!cleanup start 72h public=off",
+      config,
+      new Map([["group@g.us", "Fete Group"]]),
+      groupMetadata,
+      new Set(["bot@s.whatsapp.net"]),
+    );
+    sendMessage.mockClear();
+
+    await handleCleanupCommand(
+      { sendMessage, groupParticipantsUpdate } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "447700900000@s.whatsapp.net",
+      "!cleanup remove-preview 2",
+      config,
+      new Map([["group@g.us", "Fete Group"]]),
+      groupMetadata,
+      new Set(["bot@s.whatsapp.net"]),
+    );
+
+    expect(groupParticipantsUpdate).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", {
+      text: expect.stringContaining("Cleanup removal preview (2/2, Fete Group)"),
+    });
+    expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", {
+      text: expect.stringContaining("confirm=REMOVE"),
+    });
+  });
+
+  it("removes a confirmed cleanup candidate batch without banning users", async () => {
+    vi.useFakeTimers();
+    try {
+      await setupDb();
+      const { handleCleanupCommand } = await import("../commands.js");
+      const db = await import("../../db.js");
+      const sendMessage = vi.fn().mockResolvedValue({ key: { id: "admin-reply" } });
+      const groupParticipantsUpdate = vi.fn().mockResolvedValue([{ status: "200" }]);
+      const groupMetadata = new Map([
+        [
+          "group@g.us",
+          {
+            id: "group@g.us",
+            subject: "Fete Group",
+            participants: [
+              { id: "447700900001@s.whatsapp.net" },
+              { id: "447700900002@s.whatsapp.net" },
+            ],
+          },
+        ],
+      ]) as never;
+
+      await handleCleanupCommand(
+        { sendMessage, groupParticipantsUpdate } as never,
+        { userId: "owner", label: "owner", role: "owner" },
+        "447700900000@s.whatsapp.net",
+        "!cleanup start 72h public=off",
+        config,
+        new Map([["group@g.us", "Fete Group"]]),
+        groupMetadata,
+        new Set(["bot@s.whatsapp.net"]),
+      );
+      sendMessage.mockClear();
+
+      const removal = handleCleanupCommand(
+        { sendMessage, groupParticipantsUpdate } as never,
+        { userId: "owner", label: "owner", role: "owner" },
+        "447700900000@s.whatsapp.net",
+        "!cleanup remove-start 2 confirm=REMOVE delay=15s",
+        config,
+        new Map([["group@g.us", "Fete Group"]]),
+        groupMetadata,
+        new Set(["bot@s.whatsapp.net"]),
+      );
+
+      await vi.runOnlyPendingTimersAsync();
+      await removal;
+
+      expect(groupParticipantsUpdate).toHaveBeenCalledTimes(2);
+      expect(groupParticipantsUpdate).toHaveBeenCalledWith("group@g.us", ["447700900001@s.whatsapp.net"], "remove");
+      expect(groupParticipantsUpdate).toHaveBeenCalledWith("group@g.us", ["447700900002@s.whatsapp.net"], "remove");
+      expect(db.getTotalActiveBans()).toBe(0);
+      expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", {
+        text: expect.stringContaining("This removes only; it does not ban."),
+      });
+      expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", {
+        text: expect.stringContaining("Removed: 2"),
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("starts without public notices and carries the previous cleanup whitelist by default", async () => {

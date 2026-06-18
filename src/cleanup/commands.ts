@@ -1,8 +1,8 @@
 import type { GroupMetadata, WASocket } from "@whiskeysockets/baileys";
 
 import type { Config } from "../config.js";
-import type { ActorRole } from "../db.js";
-import { describeUser, resolveUser } from "../identity.js";
+import { getUserAliases, type ActorRole } from "../db.js";
+import { describeUser, findParticipantJidForUser, resolveUser } from "../identity.js";
 import { formatJidForDisplay, isProtectedGroupMember, parseToJid } from "../utils.js";
 import { isCleanupDmHardPaused } from "./scheduler.js";
 import {
@@ -23,6 +23,7 @@ import {
   listCleanupCandidateMembers,
   listCleanupDmMembers,
   listCleanupMembers,
+  listCleanupRemovalCandidateMembers,
   listCleanupWhitelistedMembers,
   recordCleanupMessage,
   recordCleanupSignal,
@@ -47,6 +48,8 @@ const CLEANUP_HELP = `*Cleanup commands*
 !cleanup whitelist {limit?}
 !cleanup candidates {limit?}
 !cleanup dms {sent|failed|pending|all?} {limit?}
+!cleanup remove-preview {limit?} group={groupJid}|all=true
+!cleanup remove-start {limit?} group={groupJid}|all=true confirm=REMOVE [delay=30s]
 !cleanup pause
 !cleanup resume
 !cleanup extend {duration}
@@ -55,7 +58,14 @@ const CLEANUP_HELP = `*Cleanup commands*
 !cleanup unkeep {userId|phone|jid}
 !cleanup keepmany {phone/user ids...}
 
-Safety: cleanup never removes members. It only whitelists responders and lists purge candidates for admins.`;
+Safety: cleanup watching never removes members automatically. Owner-only remove-start removes confirmed candidate batches and does not ban.`;
+
+const CLEANUP_REMOVE_CONFIRM_TOKEN = "REMOVE";
+const CLEANUP_REMOVE_DEFAULT_LIMIT = 5;
+const CLEANUP_REMOVE_MAX_LIMIT = 25;
+const CLEANUP_REMOVE_DEFAULT_DELAY_MS = 30_000;
+const CLEANUP_REMOVE_MIN_DELAY_MS = 15_000;
+const CLEANUP_REMOVE_MAX_DELAY_MS = 10 * 60_000;
 
 const durationMsFromToken = (token: string | undefined, fallbackMs: number): number | null => {
   if (!token) {
@@ -84,6 +94,23 @@ const durationLabel = (durationMs: number): string => {
     return `${hours} hour${hours === 1 ? "" : "s"}`;
   }
   return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+};
+
+const delayMsFromToken = (token: string | undefined, fallbackMs: number): number | null => {
+  if (!token) {
+    return fallbackMs;
+  }
+
+  const match = token.trim().toLowerCase().match(/^(\d+)(ms|s|m)?$/u);
+  if (!match) {
+    return null;
+  }
+
+  const value = Number(match[1]);
+  const unit = match[2] ?? "s";
+  const multiplier = unit === "ms" ? 1 : unit === "s" ? 1_000 : 60_000;
+  const delayMs = value * multiplier;
+  return Math.min(Math.max(delayMs, CLEANUP_REMOVE_MIN_DELAY_MS), CLEANUP_REMOVE_MAX_DELAY_MS);
 };
 
 const parseChannelOption = (tokens: readonly string[], fallback: string | null): string | null => {
@@ -117,6 +144,11 @@ const parseBooleanOption = (
     return true;
   }
   return fallback;
+};
+
+const getOptionValue = (tokens: readonly string[], name: string): string | null => {
+  const token = tokens.find((candidate) => candidate.startsWith(`${name}=`));
+  return token ? token.slice(name.length + 1).trim() : null;
 };
 
 const getCommandParts = (text: string): string[] => text.trim().split(/\s+/).filter(Boolean);
@@ -182,6 +214,12 @@ const parsePositiveLimit = (value: string | undefined, fallback: number, max: nu
   return Number.isInteger(limit) && limit > 0 ? Math.min(limit, max) : fallback;
 };
 
+const parseCleanupRemoveLimit = (tokens: readonly string[]): number => {
+  const explicitLimit = getOptionValue(tokens, "limit");
+  const positionalLimit = tokens.find((token) => !token.includes("=") && /^\d+$/u.test(token));
+  return parsePositiveLimit(explicitLimit ?? positionalLimit, CLEANUP_REMOVE_DEFAULT_LIMIT, CLEANUP_REMOVE_MAX_LIMIT);
+};
+
 const formatTimestamp = (timestampMs: number | null): string => {
   if (!timestampMs) {
     return "not sent";
@@ -229,6 +267,149 @@ const getPublicTargetJids = (
     ? config.cleanupPublicTargetJids
     : getManagedGroupJids(config, groups);
   return Array.from(new Set(targets));
+};
+
+const getRemovalTargetGroupJids = (
+  config: Config,
+  groups: ReadonlyMap<string, string>,
+  tokens: readonly string[],
+): { groupJids: string[]; error: string | null } => {
+  const managedGroupJids = getManagedGroupJids(config, groups);
+  const groupJid = getOptionValue(tokens, "group");
+  const all = parseBooleanOption(tokens, ["all"], false);
+
+  if (groupJid) {
+    if (!managedGroupJids.includes(groupJid)) {
+      return { groupJids: [], error: `That group is not managed by this bot: ${groupJid}` };
+    }
+    return { groupJids: [groupJid], error: null };
+  }
+
+  if (all) {
+    return { groupJids: managedGroupJids, error: null };
+  }
+
+  if (managedGroupJids.length === 1) {
+    return { groupJids: managedGroupJids, error: null };
+  }
+
+  return {
+    groupJids: [],
+    error: [
+      "Choose a cleanup removal scope explicitly.",
+      "Use `group={groupJid}` for one chat, or `all=true` for every managed chat.",
+      "",
+      "Managed chats:",
+      ...managedGroupJids.map((jid) => `- ${groups.get(jid) ?? jid} (${jid})`),
+    ].join("\n"),
+  };
+};
+
+type CleanupRemovalPlanEntry = {
+  member: ReturnType<typeof listCleanupRemovalCandidateMembers>[number];
+  removals: { groupJid: string; participantJid: string }[];
+};
+
+const buildCleanupRemovalPlan = (
+  campaignId: string,
+  groupJids: readonly string[],
+  limit: number,
+  config: Config,
+  groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
+): CleanupRemovalPlanEntry[] => {
+  const candidates = listCleanupRemovalCandidateMembers(campaignId, Math.max(limit * 10, 50));
+  const plan: CleanupRemovalPlanEntry[] = [];
+
+  for (const member of candidates) {
+    const removals = groupJids.flatMap((groupJid) => {
+      const metadata = groupMetadataByJid.get(groupJid);
+      const participantJid = findParticipantJidForUser(member.userId, metadata);
+      if (!participantJid) {
+        return [];
+      }
+      const knownAliases = [member.primaryJid, ...getUserAliases(member.userId).map((alias) => alias.alias)];
+      if (isProtectedGroupMember(member.userId, knownAliases, groupJid, config, groupMetadataByJid)) {
+        return [];
+      }
+      return [{ groupJid, participantJid }];
+    });
+
+    if (removals.length === 0) {
+      continue;
+    }
+
+    plan.push({ member, removals });
+    if (plan.length >= limit) {
+      break;
+    }
+  }
+
+  return plan;
+};
+
+const formatRemovalScope = (groupJids: readonly string[], groups: ReadonlyMap<string, string>): string =>
+  groupJids.length === 1 ? `${groups.get(groupJids[0] ?? "") ?? groupJids[0]}` : `${groupJids.length} managed chats`;
+
+const formatCleanupRemovalPlan = (
+  title: string,
+  plan: readonly CleanupRemovalPlanEntry[],
+  groups: ReadonlyMap<string, string>,
+): string => {
+  if (plan.length === 0) {
+    return `${title}\n\nNo removable non-whitelisted candidates found in the selected chat scope.`;
+  }
+
+  return [
+    title,
+    "",
+    ...plan.map((entry, index) => {
+      const label = entry.member.displayName?.trim() || entry.member.primaryJid;
+      const targetGroups = entry.removals.map((removal) => groups.get(removal.groupJid) ?? removal.groupJid).join(", ");
+      return `${index + 1}. ${label} (${formatJidForDisplay(entry.member.primaryJid)}) — ${targetGroups}`;
+    }),
+  ].join("\n");
+};
+
+const wait = (delayMs: number): Promise<void> => new Promise((resolve) => {
+  setTimeout(resolve, delayMs);
+});
+
+const runCleanupRemovalPlan = async (
+  sock: WASocket,
+  plan: readonly CleanupRemovalPlanEntry[],
+  delayMs: number,
+): Promise<{ removed: number; failed: number; skipped: number }> => {
+  let removed = 0;
+  let failed = 0;
+  let skipped = 0;
+  let attempted = 0;
+
+  for (const entry of plan) {
+    for (const removal of entry.removals) {
+      if (attempted > 0) {
+        await wait(delayMs);
+      }
+      attempted += 1;
+
+      try {
+        const result = await sock.groupParticipantsUpdate(removal.groupJid, [removal.participantJid], "remove");
+        const status = result?.[0]?.status;
+        if (status && status !== "200") {
+          failed += 1;
+        } else {
+          removed += 1;
+        }
+      } catch {
+        failed += 1;
+      }
+    }
+
+    if (entry.removals.length === 0) {
+      skipped += 1;
+    }
+  }
+
+  return { removed, failed, skipped };
 };
 
 const primaryJidForParticipant = (participant: {
@@ -577,6 +758,91 @@ export const handleCleanupCommand = async (
         `Cleanup DMs (${status}, ${members.length}${members.length === safeLimit ? "+" : ""})`,
         members,
       ),
+    });
+    return true;
+  }
+
+  if (subcommand === "remove-preview" || subcommand === "remove-start") {
+    const campaign = await getLatestOrReply(sock, replyJid);
+    if (!campaign) {
+      return true;
+    }
+
+    if (actor.role !== "owner") {
+      await sock.sendMessage(replyJid, {
+        text: "Only owners can bulk-remove cleanup candidates.",
+      });
+      return true;
+    }
+
+    const optionTokens = parts.slice(2);
+    const { groupJids, error } = getRemovalTargetGroupJids(config, groups, optionTokens);
+    if (error) {
+      await sock.sendMessage(replyJid, { text: error });
+      return true;
+    }
+
+    const limit = parseCleanupRemoveLimit(optionTokens);
+    const plan = buildCleanupRemovalPlan(campaign.id, groupJids, limit, config, groupMetadataByJid);
+    const scope = formatRemovalScope(groupJids, groups);
+
+    if (subcommand === "remove-preview") {
+      await sock.sendMessage(replyJid, {
+        text: [
+          formatCleanupRemovalPlan(`Cleanup removal preview (${plan.length}/${limit}, ${scope})`, plan, groups),
+          "",
+          "Selection: non-whitelisted cleanup candidates, oldest-known identity first. WhatsApp join time is not stored, so this is deterministic rather than random.",
+          `To run: \`!cleanup remove-start ${limit} ${groupJids.length === 1 ? `group=${groupJids[0]}` : "all=true"} confirm=${CLEANUP_REMOVE_CONFIRM_TOKEN}\``,
+        ].join("\n"),
+      });
+      return true;
+    }
+
+    const confirm = getOptionValue(optionTokens, "confirm");
+    if (confirm !== CLEANUP_REMOVE_CONFIRM_TOKEN) {
+      await sock.sendMessage(replyJid, {
+        text: [
+          "Cleanup removal needs explicit confirmation.",
+          `Preview first with \`!cleanup remove-preview ${limit} ${groupJids.length === 1 ? `group=${groupJids[0]}` : "all=true"}\`.`,
+          `Then run with \`confirm=${CLEANUP_REMOVE_CONFIRM_TOKEN}\`.`,
+          "This only removes members from chats. It does not ban them.",
+        ].join("\n"),
+      });
+      return true;
+    }
+
+    if (plan.length === 0) {
+      await sock.sendMessage(replyJid, {
+        text: "No removable non-whitelisted cleanup candidates found in the selected chat scope.",
+      });
+      return true;
+    }
+
+    const delayMs = delayMsFromToken(getOptionValue(optionTokens, "delay") ?? undefined, CLEANUP_REMOVE_DEFAULT_DELAY_MS);
+    if (!delayMs) {
+      await sock.sendMessage(replyJid, {
+        text: "Usage: !cleanup remove-start {limit?} group={groupJid}|all=true confirm=REMOVE [delay=30s]",
+      });
+      return true;
+    }
+
+    await sock.sendMessage(replyJid, {
+      text: [
+        `Starting cleanup removal for ${plan.length} candidate(s) in ${scope}.`,
+        `Delay: ${Math.round(delayMs / 1000)}s between participant removals.`,
+        "This removes only; it does not ban.",
+      ].join("\n"),
+    });
+
+    const result = await runCleanupRemovalPlan(sock, plan, delayMs);
+    await sock.sendMessage(replyJid, {
+      text: [
+        "Cleanup removal batch complete.",
+        `Removed: ${result.removed}`,
+        `Failed: ${result.failed}`,
+        result.skipped > 0 ? `Skipped: ${result.skipped}` : null,
+        "Run `!cleanup candidates 100` or another `!cleanup remove-preview` before the next batch.",
+      ].filter(Boolean).join("\n"),
     });
     return true;
   }

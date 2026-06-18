@@ -116,7 +116,7 @@ export const formatCleanupStatus = (
     `Next batch: ${hardPauseDms ? "hard-paused" : stats.nextBatchSize > 0 ? `${stats.nextBatchSize} DM${stats.nextBatchSize === 1 ? "" : "s"} ${formatTime(stats.nextBatchAt, nowMs)}` : "none"}`,
     `DM finish: ${getDmBatchEstimate(stats, hardPauseDms, nowMs)}`,
     "",
-    "Bot safety: cleanup never removes members. It only lists candidates for admins.",
+    "Bot safety: cleanup watching never removes members automatically. Owner-confirmed removal batches do not ban users.",
   ].join("\n");
 };
 
@@ -179,7 +179,7 @@ export const formatCleanupStarted = (
     `DM safety rate: ${cleanupDmRateLabel()}, ${Math.round(CLEANUP_DM_RATE_LIMIT.perMessageDelayMs / 1000)}s apart`,
     `Estimated DM finish: ${getDmBatchEstimate(stats, false, stats.campaign.startedAt)}`,
     "",
-    "Bot safety: cleanup never removes members. It only lists candidates for admins.",
+    "Bot safety: cleanup watching never removes members automatically. Owner-confirmed removal batches do not ban users.",
     "",
     "Use `!cleanup status` for the compact dashboard.",
   ].join("\n");

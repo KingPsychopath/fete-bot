@@ -755,6 +755,26 @@ export const listCleanupCandidateMembers = (
     .all(campaignId, Math.min(Math.max(Math.trunc(limit), 1), 500))
     .map(toMember);
 
+export const listCleanupRemovalCandidateMembers = (
+  campaignId: string,
+  limit: number,
+): CleanupMember[] =>
+  getDb()
+    .prepare<[string, number], MemberRow>(`
+      SELECT cleanup_members.*
+      FROM cleanup_members
+      LEFT JOIN users ON users.id = cleanup_members.user_id
+      WHERE cleanup_members.campaign_id = ?
+        AND cleanup_members.whitelisted_at IS NULL
+      ORDER BY
+        COALESCE(users.created_at, cleanup_members.created_at) ASC,
+        cleanup_members.created_at ASC,
+        cleanup_members.user_id ASC
+      LIMIT ?
+    `)
+    .all(campaignId, Math.min(Math.max(Math.trunc(limit), 1), 5_000))
+    .map(toMember);
+
 export const listCleanupMembers = (
   campaignId: string,
   limit = 5_000,
