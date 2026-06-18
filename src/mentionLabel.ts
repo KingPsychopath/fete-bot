@@ -38,11 +38,15 @@ export const formatMentionLabel = (
   pushName: string | null,
   phoneJid?: string | null,
 ): string => {
+  const mentionToken = getMentionableToken(senderJid, phoneJid);
+  if (mentionToken) {
+    return `@${mentionToken}`;
+  }
+
   const visibleName = cleanPushName(pushName);
   if (visibleName) {
     return visibleName;
   }
 
-  const mentionToken = getMentionableToken(senderJid, phoneJid);
-  return mentionToken ? `@${mentionToken}` : "there";
+  return "there";
 };
