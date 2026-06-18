@@ -180,6 +180,7 @@ const loadedConfig = {
   directChatAutoresponseText:
     normaliseEnvValue(process.env.DIRECT_CHAT_AUTORESPONSE_TEXT) ||
     "Sorry, I can't respond to direct messages. Please contact one of the other admins in the chat.",
+  nonAdminAutomaticDmsEnabled: parseBoolean(process.env.NON_ADMIN_AUTOMATIC_DMS_ENABLED, true),
   groupCallGuardEnabled: parseBoolean(process.env.GROUP_CALL_GUARD_ENABLED, true),
   groupCallGuardGroupJids: parseList(process.env.GROUP_CALL_GUARD_GROUP_JIDS),
   groupCallGuardWarningText:

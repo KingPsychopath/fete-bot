@@ -133,6 +133,7 @@ The backup contains WhatsApp linked-device credentials. Treat it like a secret.
 - `ANNOUNCEMENTS_ENABLED=false` by default; when enabled, announcements are sent to `ANNOUNCEMENTS_TARGET_GROUP_JID` on a local wall-clock schedule
 - `STARTUP_OWNER_AWAKE_ENABLED=true` sends owners a warm-up DM on startup; `STARTUP_OWNER_AWAKE_COOLDOWN_MINUTES=30` suppresses repeats across rapid restarts, and setting enabled to `false` disables the warm-up DM entirely
 - `DIRECT_CHAT_AUTORESPONSE_ENABLED=true` sends ordinary 1:1 messages a short "contact admins" reply; `DIRECT_CHAT_AUTORESPONSE_COOLDOWN_DAYS=365` keeps it effectively one-and-done per chat, and cleanup DM replies stay separate
+- `NON_ADMIN_AUTOMATIC_DMS_ENABLED=true` gates automatic private replies/prompts to ordinary users. Set it to `false` to pass through without attempting direct-chat autoresponses, cleanup DM acknowledgements, call-guard fallback DMs, unauthorised-command diagnostics, or ticket listing prompt DMs for non-owner/mod/admin users.
 - `CLEANUP_DMS_ENABLED=false` hard-pauses cleanup DMs by default; set it to `true` to send at the fixed safety rate of 8 every 30m, 10s apart inside a batch. Use `!cleanup start 72h public=off` to start without sending public group notices
 - Cleanup starts carry the previous campaign whitelist by default; add `carry=off` if you need a completely fresh whitelist
 - `TICKET_SPOTLIGHT_TARGET_JIDS` defaults to FDLM Parties & Events PT.2 and FDLM Parties & Events; website ticket exchange announcements default to the configured ticket marketplace groups only

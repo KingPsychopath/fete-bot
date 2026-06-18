@@ -4,6 +4,7 @@ const managedEnvKeys = [
   "DOTENV_CONFIG_PATH",
   "TICKET_EXCHANGE_WEBSITE_ANNOUNCEMENTS_ENABLED",
   "TICKET_EXCHANGE_WEBSITE_TARGET_JIDS",
+  "NON_ADMIN_AUTOMATIC_DMS_ENABLED",
   "TICKET_MARKETPLACE_GROUP_JIDS",
   "TICKET_SPOTLIGHT_ENABLED",
 ] as const;
@@ -38,8 +39,17 @@ describe("config ticket exchange defaults", () => {
 
     expect(config.ticketMarketplaceGroupJids).toEqual(["120363418331899807@g.us"]);
     expect(config.ticketExchangeWebsiteAnnouncementsEnabled).toBe(true);
+    expect(config.nonAdminAutomaticDmsEnabled).toBe(true);
     expect(config.ticketExchangeWebsiteTargetJids).toEqual(["120363418331899807@g.us"]);
     expect(config.ticketSpotlightEnabled).toBe(false);
+  });
+
+  it("can disable automatic DMs to non-admin users", async () => {
+    const config = await loadConfig({
+      NON_ADMIN_AUTOMATIC_DMS_ENABLED: "false",
+    });
+
+    expect(config.nonAdminAutomaticDmsEnabled).toBe(false);
   });
 
   it("uses configured marketplace groups as the website exchange announcement target fallback", async () => {

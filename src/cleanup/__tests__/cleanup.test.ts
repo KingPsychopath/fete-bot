@@ -29,6 +29,7 @@ const config = {
   directChatAutoresponseEnabled: true,
   directChatAutoresponseCooldownDays: 365,
   directChatAutoresponseText: "Sorry, I can't respond to direct messages. Please contact one of the other admins in the chat.",
+  nonAdminAutomaticDmsEnabled: true,
   groupCallGuardEnabled: true,
   groupCallGuardGroupJids: [],
   groupCallGuardWarningText: "No calls",

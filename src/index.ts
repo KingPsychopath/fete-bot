@@ -118,7 +118,7 @@ import {
   resolveUser,
   type ResolvedUser,
 } from "./identity.js";
-import { extractAllIdentifiers, isProtectedGroupMember, parseToJid } from "./utils.js";
+import { extractAllIdentifiers, isAuthorised, isProtectedGroupMember, parseToJid } from "./utils.js";
 import { STARTED_AT, VERSION } from "./version.js";
 import { getDirectCommandReplyTargets, getKnownDirectMessageTargets, getStartupOwnerAwakeTargets } from "./directCommandReply.js";
 import { getDebugRedirectSwitchState } from "./debugRedirectSwitch.js";
@@ -364,8 +364,17 @@ const maybeSendDirectChatAutoresponse = async (
   remoteJid: string,
   msg: WAMessage,
   text: string,
+  sender?: ResolvedUser | null,
 ): Promise<void> => {
   if (!config.directChatAutoresponseEnabled || !text.trim() || !config.directChatAutoresponseText.trim()) {
+    return;
+  }
+
+  if (!canSendAutomaticDmToUser(sender)) {
+    log("direct.autoresponse.skipped_non_admin_dm_gate", {
+      remoteJid,
+      senderUserId: sender?.userId ?? null,
+    });
     return;
   }
 
@@ -755,6 +764,35 @@ const isSystemChatJid = (jid: string): boolean =>
 const isDirectCommandCandidate = (remoteJid: string, text: string): boolean =>
   text.trim().startsWith("!") && !isGroupChatJid(remoteJid) && !isSystemChatJid(remoteJid);
 
+const isAdminOrModeratorLevelIdentity = (
+  userId: string,
+  candidateAliases: readonly string[],
+  groupJid?: string,
+): boolean => {
+  if (isAuthorised(userId, candidateAliases, config)) {
+    return true;
+  }
+
+  if (groupJid) {
+    return isProtectedGroupMember(userId, candidateAliases, groupJid, config, discoveredGroupMetadata);
+  }
+
+  return Array.from(discoveredGroupMetadata.keys()).some((knownGroupJid) =>
+    isProtectedGroupMember(userId, candidateAliases, knownGroupJid, config, discoveredGroupMetadata),
+  );
+};
+
+const canSendAutomaticDmToIdentity = (
+  userId: string | null | undefined,
+  candidateAliases: readonly string[],
+  groupJid?: string,
+): boolean =>
+  config.nonAdminAutomaticDmsEnabled ||
+  (userId ? isAdminOrModeratorLevelIdentity(userId, candidateAliases, groupJid) : false);
+
+const canSendAutomaticDmToUser = (sender: ResolvedUser | null | undefined, groupJid?: string): boolean =>
+  canSendAutomaticDmToIdentity(sender?.userId, sender?.knownAliases ?? [], groupJid);
+
 const buildDirectCommandReplySocket = (
   sock: WASocket,
   inboundRemoteJid: string,
@@ -910,6 +948,7 @@ const handleCleanupDmBackfillMarker = async (
 
 const maybeAcknowledgeCleanupSignal = async (
   sock: WASocket,
+  sender: ResolvedUser,
   signal: ReturnType<typeof recordCleanupSignalForOpenCampaign>,
   kind: "dm_reply" | "public_reply" | "silent",
   remoteJid: string,
@@ -920,6 +959,15 @@ const maybeAcknowledgeCleanupSignal = async (
   }
 
   if (kind === "dm_reply") {
+    if (!canSendAutomaticDmToUser(sender)) {
+      log("cleanup.dm_ack.skipped_non_admin_dm_gate", {
+        campaignId: signal.campaign.id,
+        userId: sender.userId,
+        remoteJid,
+      });
+      return;
+    }
+
     await sock.sendMessage(remoteJid, {
       text: buildCleanupWhitelistConfirmationMessage(signal.campaign.channelLink),
     });
@@ -962,7 +1010,7 @@ const recordCleanupInteraction = async (
   if (isDirectChat) {
     if (text.trim()) {
       const signal = recordCleanupSignalForOpenCampaign(sender.userId, "dm_reply", remoteJid, msg.key.id ?? null);
-      await maybeAcknowledgeCleanupSignal(sock, signal, "dm_reply", remoteJid, msg);
+      await maybeAcknowledgeCleanupSignal(sock, sender, signal, "dm_reply", remoteJid, msg);
       return Boolean(signal.campaign);
     }
     return false;
@@ -980,6 +1028,7 @@ const recordCleanupInteraction = async (
   );
   await maybeAcknowledgeCleanupSignal(
     sock,
+    sender,
     signal,
     quotedCleanupMessage ? "public_reply" : "silent",
     remoteJid,
@@ -1523,6 +1572,15 @@ const sendCallGuardDmWarning = async (
   call: WACallEvent,
   caller: ResolvedUser | null,
 ): Promise<boolean> => {
+  if (!canSendAutomaticDmToUser(caller)) {
+    log("call_guard.dm_warning.skipped_non_admin_dm_gate", {
+      callId: call.id,
+      callerJid: call.from,
+      callerUserId: caller?.userId ?? null,
+    });
+    return false;
+  }
+
   const dmTargetJid = getCallGuardDmTargetJid(caller, call);
   if (!dmTargetJid) {
     warn("Unable to find DM target for group call guard warning", {
@@ -2038,6 +2096,15 @@ const sendIgnoredGroupCommandDiagnostic = async (
     return;
   }
 
+  if (!canSendAutomaticDmToUser(sender, groupJid)) {
+    log("ignored_group_command.diagnostic.skipped_non_admin_dm_gate", {
+      groupJid,
+      replyJid,
+      senderUserId: sender.userId,
+    });
+    return;
+  }
+
   try {
     await sock.sendMessage(replyJid, {
       text: `⛔ You're not authorised to use Fete Bot commands in this group.
@@ -2157,6 +2224,21 @@ const sendTicketExchangeListingPromptIfAllowed = async (
   phoneJid: string | null,
   pendingId: string | null = null,
 ): Promise<void> => {
+  const senderAliases = Array.from(new Set([
+    senderJid,
+    phoneJid,
+    ...getUserAliases(senderUserId).map((alias) => alias.alias),
+  ].filter((alias): alias is string => Boolean(alias))));
+  if (!canSendAutomaticDmToIdentity(senderUserId, senderAliases, groupJid)) {
+    log("ticket_exchange.listing_prompt.skipped_non_admin_dm_gate", {
+      pendingId,
+      groupJid,
+      senderJid,
+      senderUserId,
+    });
+    return;
+  }
+
   const promptSuppressed = isQuietSwitchEnabled() || getDebugRedirectSwitchState().enabled;
   if (promptSuppressed) {
     log("ticket_exchange.listing_prompt.skipped_suppressed", {
@@ -2182,7 +2264,7 @@ const sendTicketExchangeListingPromptIfAllowed = async (
   if (userPromptAllowed) {
     const promptTargets = getKnownDirectMessageTargets(
       senderJid,
-      getUserAliases(senderUserId).map((alias) => alias.alias),
+      senderAliases,
     );
     let promptSent = false;
     let lastPromptError: unknown = null;
@@ -2577,7 +2659,7 @@ LID JID: ${lidJid ?? "unknown"}
 Push name: ${getPushName(msg) ?? "unknown"}`,
         });
       } else if (isDirectChat) {
-        await maybeSendDirectChatAutoresponse(sock, remoteJid, msg, text);
+        await maybeSendDirectChatAutoresponse(sock, remoteJid, msg, text, null);
       }
       return;
     }
@@ -2612,7 +2694,7 @@ Push name: ${getPushName(msg) ?? "unknown"}`,
         );
       }
       if (!isDirectCommand && !cleanupHandled) {
-        await maybeSendDirectChatAutoresponse(sock, remoteJid, msg, text);
+        await maybeSendDirectChatAutoresponse(sock, remoteJid, msg, text, directSender);
       }
       return;
     }
@@ -3668,6 +3750,7 @@ export const startBot = async (): Promise<void> => {
         ? lastDisconnect.error.output?.statusCode
         : undefined;
       const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+      const isForbidden = statusCode === DisconnectReason.forbidden;
       const isReplaced = statusCode === DisconnectReason.connectionReplaced || statusCode === 440;
 
       if (isReplaced) {
@@ -3678,12 +3761,12 @@ export const startBot = async (): Promise<void> => {
         return;
       }
 
-      if (isLoggedOut) {
+      if (isLoggedOut || isForbidden) {
         cleanupSocket(sock);
         pairingCodeRequested = false;
 
         if (pairingPhoneDigits) {
-          warn("WhatsApp logged the bot out. Clearing SQLite auth state and restarting pairing.", {
+          warn("WhatsApp rejected the stored auth state. Clearing SQLite auth state and restarting pairing.", {
             authFolder,
             statusCode,
           });
@@ -3701,7 +3784,7 @@ export const startBot = async (): Promise<void> => {
           return;
         }
 
-        error("WhatsApp logged the bot out. Clear the SQLite auth state and pair again.", { statusCode });
+        error("WhatsApp rejected the stored auth state. Clear the SQLite auth state and pair again.", { statusCode });
         warn("Bot is staying online for health/SSH while waiting for WhatsApp re-pair.");
         return;
       }

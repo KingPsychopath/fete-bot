@@ -135,6 +135,11 @@ export const runCleanupSchedulerTick = async (sock: WASocket, config = activeCle
       return;
     }
 
+    if (!config.nonAdminAutomaticDmsEnabled) {
+      log("cleanup.dm_non_admin_gate_paused", { campaignId: campaign.id });
+      return;
+    }
+
     const debugRedirect = getDebugRedirectSwitchState();
     if (debugRedirect.enabled) {
       warn("cleanup.dm_debug_redirect_paused", {
