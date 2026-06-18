@@ -316,20 +316,26 @@ type CleanupRemovalPlanEntry = {
 const countCleanupRemovalActions = (plan: readonly CleanupRemovalPlanEntry[]): number =>
   plan.reduce((count, entry) => count + entry.removals.length, 0);
 
+const countCleanupRemovablePeople = (plan: readonly CleanupRemovalPlanEntry[]): number =>
+  plan.filter((entry) => entry.removals.length > 0).length;
+
 const countCleanupBlockedGroups = (plan: readonly CleanupRemovalPlanEntry[]): number =>
   plan.reduce((count, entry) => count + entry.blockedGroups.length, 0);
+
+const pluralize = (count: number, singular: string, plural = `${singular}s`): string =>
+  `${count} ${count === 1 ? singular : plural}`;
 
 const buildCleanupRemovalPlan = (
   campaignId: string,
   groupJids: readonly string[],
-  removalLimit: number,
+  peopleLimit: number,
   config: Config,
   groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
   selfJids: ReadonlySet<string>,
 ): CleanupRemovalPlanEntry[] => {
-  const candidates = listCleanupRemovalCandidateMembers(campaignId, Math.max(removalLimit * 10, 50));
+  const candidates = listCleanupRemovalCandidateMembers(campaignId, Math.max(peopleLimit * 20, 50));
   const plan: CleanupRemovalPlanEntry[] = [];
-  let plannedRemovals = 0;
+  let plannedPeople = 0;
   let blockedPreviewEntries = 0;
   const selfAliases = Array.from(selfJids);
   const botAdminGroupJids = new Set(
@@ -365,11 +371,9 @@ const buildCleanupRemovalPlan = (
       continue;
     }
 
-    const remaining = removalLimit - plannedRemovals;
-    const cappedRemovals = removals.slice(0, remaining);
-    plan.push({ member, removals: cappedRemovals, blockedGroups });
-    plannedRemovals += cappedRemovals.length;
-    if (plannedRemovals >= removalLimit) {
+    plan.push({ member, removals, blockedGroups });
+    plannedPeople += 1;
+    if (plannedPeople >= peopleLimit) {
       break;
     }
   }
@@ -911,13 +915,14 @@ export const handleCleanupCommand = async (
 
     const limit = parseCleanupRemoveLimit(optionTokens);
     const plan = buildCleanupRemovalPlan(campaign.id, groupJids, limit, config, groupMetadataByJid, selfJids);
+    const removablePeople = countCleanupRemovablePeople(plan);
     const removalActions = countCleanupRemovalActions(plan);
     const blockedGroups = countCleanupBlockedGroups(plan);
     const scope = formatRemovalScope(groupJids, groups);
 
     if (subcommand === "remove-preview") {
       const preview = formatCleanupRemovalPlan(
-        `Cleanup removal preview (${removalActions}/${limit} removals, ${plan.length} candidate(s), ${scope}${blockedGroups > 0 ? `, ${blockedGroups} blocked` : ""})`,
+        `Cleanup removal preview (${removablePeople}/${limit} people, ${removalActions} removals, ${plan.length} shown, ${scope}${blockedGroups > 0 ? `, ${blockedGroups} blocked` : ""})`,
         plan,
         groups,
       );
@@ -975,7 +980,7 @@ export const handleCleanupCommand = async (
 
     await sock.sendMessage(replyJid, {
       text: [
-        `Starting cleanup removal for ${removalActions} participant removal(s) across ${plan.length} candidate(s) in ${scope}.`,
+        `Starting cleanup removal for ${pluralize(removablePeople, "person", "people")} (${pluralize(removalActions, "participant removal")}) in ${scope}.`,
         `Delay: ${Math.round(delayMs / 1000)}s between participant removals.`,
         "This removes only; it does not ban.",
       ].join("\n"),

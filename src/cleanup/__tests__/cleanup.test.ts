@@ -330,10 +330,13 @@ describe("cleanup campaign", () => {
     );
 
     expect(groupParticipantsUpdate).not.toHaveBeenCalled();
-    expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", {
-      text: expect.stringContaining("Cleanup removal preview (2/2 removals, 2 candidate(s), Fete Group)"),
-      mentions: ["447700900001@s.whatsapp.net", "447700900002@s.whatsapp.net"],
-    });
+    const previewReply = sendMessage.mock.calls.find(([, message]) =>
+      message.text.includes("Cleanup removal preview (2/2 people, 2 removals, 2 shown, Fete Group)"));
+    expect(previewReply).toBeTruthy();
+    expect(previewReply?.[1].mentions).toEqual(expect.arrayContaining([
+      "447700900001@s.whatsapp.net",
+      "447700900002@s.whatsapp.net",
+    ]));
     expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", expect.objectContaining({
       text: expect.stringContaining("1 removal: Fete Group"),
     }));
@@ -386,7 +389,7 @@ describe("cleanup campaign", () => {
 
     expect(groupParticipantsUpdate).not.toHaveBeenCalled();
     expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", expect.objectContaining({
-      text: expect.stringContaining("Cleanup removal preview (0/5 removals, 1 candidate(s), Fete Group, 1 blocked)"),
+      text: expect.stringContaining("Cleanup removal preview (0/5 people, 0 removals, 1 shown, Fete Group, 1 blocked)"),
     }));
     expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", expect.objectContaining({
       text: expect.stringContaining("blocked, bot is not admin: Fete Group"),
@@ -474,7 +477,7 @@ describe("cleanup campaign", () => {
     }
   });
 
-  it("caps cleanup removal batches by participant removal action across all groups", async () => {
+  it("caps cleanup removal batches by removable people while showing action counts", async () => {
     vi.useFakeTimers();
     try {
       await setupDb();
@@ -536,12 +539,14 @@ describe("cleanup campaign", () => {
       await vi.runOnlyPendingTimersAsync();
       await removal;
 
-      expect(groupParticipantsUpdate).toHaveBeenCalledTimes(1);
+      expect(groupParticipantsUpdate).toHaveBeenCalledTimes(2);
+      expect(groupParticipantsUpdate).toHaveBeenCalledWith("group@g.us", ["447700900001@s.whatsapp.net"], "remove");
+      expect(groupParticipantsUpdate).toHaveBeenCalledWith("second@g.us", ["447700900001@s.whatsapp.net"], "remove");
       expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", {
-        text: expect.stringContaining("Starting cleanup removal for 1 participant removal(s)"),
+        text: expect.stringContaining("Starting cleanup removal for 1 person (2 participant removals)"),
       });
       expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", {
-        text: expect.stringContaining("Removed: 1"),
+        text: expect.stringContaining("Removed: 2"),
       });
     } finally {
       vi.useRealTimers();
