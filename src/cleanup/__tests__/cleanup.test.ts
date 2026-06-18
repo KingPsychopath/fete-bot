@@ -28,7 +28,7 @@ const config = {
   startupOwnerAwakeCooldownMinutes: 30,
   directChatAutoresponseEnabled: true,
   directChatAutoresponseCooldownDays: 365,
-  directChatAutoresponseText: "Sorry, I can't respond to direct messages. Please contact one of the other admins in the chat.",
+  directChatAutoresponseText: "This inbox is not monitored. Please ask in the group or message an admin directly.",
   nonAdminAutomaticDmsEnabled: true,
   groupCallGuardEnabled: true,
   groupCallGuardGroupJids: [],
@@ -1217,7 +1217,7 @@ describe("cleanup campaign", () => {
     expect(sendMessage).toHaveBeenCalledWith(
       "447700900001@s.whatsapp.net",
       expect.objectContaining({
-        text: expect.stringContaining("Please contact one of the other admins in the chat."),
+        text: expect.stringContaining("This inbox is not monitored."),
       }),
       expect.objectContaining({ quoted: expect.objectContaining({ key: expect.objectContaining({ id: "dm-1" }) }) }),
     );
@@ -1324,7 +1324,7 @@ describe("cleanup campaign", () => {
     expect(sendMessage).toHaveBeenCalledWith(
       "447700900001@s.whatsapp.net",
       expect.objectContaining({
-        text: expect.stringContaining("You're not authorised to use Fete Bot commands"),
+        text: expect.stringContaining("This command is only available to admins and moderators"),
       }),
       expect.objectContaining({ quoted: expect.objectContaining({ key: expect.objectContaining({ id: "command-1" }) }) }),
     );

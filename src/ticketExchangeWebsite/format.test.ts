@@ -25,14 +25,14 @@ describe("website Ticket Exchange announcements", () => {
       listing,
     );
 
-    expect(message).toContain("🎟️ Selling on Ticket Exchange");
+    expect(message).toContain("🎟️ Ticket listed");
     expect(message).toContain("Sunday 21st · 18:00");
     expect(message).toContain("Qty x1 · £35");
-    expect(message).toContain("Visible until today, 12:49");
+    expect(message).toContain("Visible until 02 Jun, 12:49");
     expect(message).toContain("Note: need garn");
-    expect(message).toContain("Interested? Open the link to contact them.");
+    expect(message).toContain("Interested? Use the link to reply.");
     expect(message).toContain("https://fete.outofofficecollective.co.uk/exchange/evt_fb92305ee56b7b95");
-    expect(message).toContain("OOOC only connects people - please check details before paying.");
+    expect(message).toContain("Please check details before paying.");
   });
 
   it("formats looking copy with budget language", () => {
@@ -46,9 +46,9 @@ describe("website Ticket Exchange announcements", () => {
       },
     );
 
-    expect(message).toContain("🎟️ Looking for tickets on Ticket Exchange");
+    expect(message).toContain("🎟️ Ticket request");
     expect(message).toContain("Qty x1 · Budget £40");
-    expect(message).toContain("Got one? Open the link to contact them.");
+    expect(message).toContain("Got one? Use the link to reply.");
   });
 
   it("removes notes with obvious profanity", () => {

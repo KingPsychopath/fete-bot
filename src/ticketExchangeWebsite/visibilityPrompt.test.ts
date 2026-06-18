@@ -40,17 +40,16 @@ describe("Ticket Exchange visibility prompts", () => {
     const text = buildTicketExchangeListingPromptText("https://fete.outofofficecollective.co.uk");
 
     expect(text).not.toContain("queued");
-    expect(text).toContain("for the best chance of finding someone");
-    expect(text).toContain("Fete Finder Ticket Exchange");
+    expect(text).toContain("You can also add your ticket post here");
+    expect(text).toContain("contact stays behind the site");
     expect(text).toContain("https://fete.outofofficecollective.co.uk/exchange");
   });
 
   it("builds the Ticket Exchange listing group prompt with a mention", () => {
     const text = buildTicketExchangeListingGroupPromptText("@447700900000", "https://fete.outofofficecollective.co.uk");
 
-    expect(text).toContain("Hey @447700900000");
+    expect(text).toContain("@447700900000 you can also add your ticket post here");
     expect(text).not.toContain("queued");
-    expect(text).toContain("you can also list your ticket post");
     expect(text).toContain("https://fete.outofofficecollective.co.uk/exchange");
   });
 
@@ -62,7 +61,7 @@ describe("Ticket Exchange visibility prompts", () => {
         marketplaceName: "FDLM Ticket Marketplace",
         baseUrl: "https://fete.outofofficecollective.co.uk",
       }),
-    ).toContain("Please post in FDLM Ticket Marketplace, or use Fete Finder Ticket Exchange");
+    ).toContain("ticket requests go in FDLM Ticket Marketplace. You can also use");
 
     expect(
       buildTicketExchangeRedirectText({
@@ -71,7 +70,7 @@ describe("Ticket Exchange visibility prompts", () => {
         marketplaceName: "FDLM Ticket Marketplace",
         baseUrl: "https://fete.outofofficecollective.co.uk",
       }),
-    ).toContain("For better visibility, you can also list on Fete Finder Ticket Exchange");
+    ).toContain("ticket sales go in FDLM Ticket Marketplace. You can also list here");
   });
 
   it("persists spotlight DM prompt cooldowns by user", async () => {

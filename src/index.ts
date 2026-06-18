@@ -1191,26 +1191,26 @@ const getWarningText = (
   const mentionLabel = formatMentionLabel(senderJid, pushName, phoneJid);
 
   if (reason === "whatsapp invite link") {
-    return `Hey ${mentionLabel} - WhatsApp group invite links aren't allowed in here 🙏`;
+    return `${mentionLabel} group invite links are not allowed here.`;
   }
 
   if (reason === "ticket platform") {
-    return `Hey ${mentionLabel} - please use fete.outofofficecollective.co.uk to share event links 🙏`;
+    return `${mentionLabel} event links should go through fete.outofofficecollective.co.uk.`;
   }
 
   if (reason === "social video (profile links only)") {
-    return `Hey ${mentionLabel} - Instagram and TikTok video links are removed here. Please share the creator's profile page directly instead 🙏`;
+    return `${mentionLabel} video links are removed here. Please share the creator profile page instead.`;
   }
 
   if (reason === "url shortener") {
-    return `Hey ${mentionLabel} - shortened links aren't allowed. Please share the full URL instead 🙏`;
+    return `${mentionLabel} shortened links are not allowed. Please share the full URL.`;
   }
 
   if (reason === "bare profile handle or URL") {
-    return `Hey ${mentionLabel} - this group only allows practical links like social profiles, music, accommodation, shopping, maps, bookings, or travel. If that was a social profile, please write it as @username, @/username, or share the full Instagram/TikTok/X profile URL. Bare dotted text can look like a website, so this one was removed without a strike. Future repeats may count as link violations 🙏`;
+    return `${mentionLabel} this chat only allows practical links like profiles, music, accommodation, maps, bookings, or travel. If that was a profile, write it as @username, @/username, or use the full profile URL. Bare dotted text can look like a website, so this was removed without a strike.`;
   }
 
-  return `Hey ${mentionLabel} — please keep links practical: social profiles, music, accommodation, shopping, maps, bookings, or travel. For events, post at fete.outofofficecollective.co.uk 🙏`;
+  return `${mentionLabel} please keep links practical: profiles, music, accommodation, maps, bookings, or travel. Events should go through fete.outofofficecollective.co.uk.`;
 };
 
 const getSpamWarningText = (
@@ -1222,14 +1222,14 @@ const getSpamWarningText = (
   const mentionLabel = formatMentionLabel(senderJid, pushName, phoneJid);
 
   if (reason === "duplicate_message") {
-    return `Hey ${mentionLabel} - please don't send the same message multiple times 🙏`;
+    return `${mentionLabel} please avoid reposting the same message.`;
   }
 
   if (reason === "message_flood") {
-    return `Hey ${mentionLabel} - you're sending messages too quickly. Slow down please 🙏`;
+    return `${mentionLabel} messages are coming through too quickly. Please slow down.`;
   }
 
-  return `Hey ${mentionLabel} - please don't share phone numbers in the group. For event info use fete.outofofficecollective.co.uk 🙏`;
+  return `${mentionLabel} please do not share phone numbers in the group. Use fete.outofofficecollective.co.uk for event info.`;
 };
 
 const getGroupCallWarningText = (callerJid: string): string => {
@@ -1593,7 +1593,7 @@ const sendCallGuardDmWarning = async (
 
   try {
     await sock.sendMessage(dmTargetJid, {
-      text: "Calls aren't allowed in the groups managed by Fete Bot. Don't do that again. 🙏🏾\n\nFurther call attempts may get you removed from the group.",
+      text: "Please do not start calls in the group chats.\n\nFurther call attempts may get you removed.",
     });
     warn("Sent DM warning for group call without group JID", {
       callId: call.id,
@@ -2107,7 +2107,7 @@ const sendIgnoredGroupCommandDiagnostic = async (
 
   try {
     await sock.sendMessage(replyJid, {
-      text: `⛔ You're not authorised to use Fete Bot commands in this group.
+      text: `This command is only available to admins and moderators in this group.
 
 Command: ${text.trim().split(/\s+/)[0] ?? "unknown"}
 Group: ${groupJid}
@@ -2647,7 +2647,7 @@ export const handleMessage = async (
     if (!sender) {
       if (isDirectCommand) {
         await sock.sendMessage(remoteJid, {
-          text: `⛔ You're not authorised to use Fete Bot commands. Ignoring this command.
+          text: `This command is only available to admins and moderators.
 
 Raw identity:
 Remote JID: ${remoteJid}
@@ -3086,7 +3086,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
               baseUrl: config.ticketExchangeWebsiteBaseUrl,
             })
             : ticketDecision.action === "require_price"
-              ? `Hey ${mentionLabel} - ticket sale posts must include a price, or say face value / FV.`
+              ? `${mentionLabel} please include a price, or say face value / FV, when selling a ticket.`
               : buildTicketExchangeRedirectText({
                 action: "review",
                 mentionLabel,

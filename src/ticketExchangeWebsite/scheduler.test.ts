@@ -44,7 +44,7 @@ const config = {
   startupOwnerAwakeCooldownMinutes: 30,
   directChatAutoresponseEnabled: true,
   directChatAutoresponseCooldownDays: 365,
-  directChatAutoresponseText: "Sorry, I can't respond to direct messages. Please contact one of the other admins in the chat.",
+  directChatAutoresponseText: "This inbox is not monitored. Please ask in the group or message an admin directly.",
   nonAdminAutomaticDmsEnabled: true,
   groupCallGuardEnabled: true,
   groupCallGuardGroupJids: [],

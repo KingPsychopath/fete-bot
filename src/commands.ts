@@ -708,26 +708,26 @@ const parseCommandArgs = (text: string): ParsedCommandArgs => {
 
 const previewWarningText = (reason: DisallowedUrlReason): string => {
   if (reason === "ticket platform") {
-    return `Hey @name - please use fete.outofofficecollective.co.uk to share event links 🙏`;
+    return "@name event links should go through fete.outofofficecollective.co.uk.";
   }
 
   if (reason === "social video (profile links only)") {
-    return `Hey @name - Instagram and TikTok video links are removed here. Please share the creator's profile page directly instead 🙏`;
+    return "@name video links are removed here. Please share the creator profile page instead.";
   }
 
   if (reason === "url shortener") {
-    return `Hey @name - shortened links aren't allowed. Please share the full URL instead 🙏`;
+    return "@name shortened links are not allowed. Please share the full URL.";
   }
 
   if (reason === "bare profile handle or URL") {
-    return "Hey @name - this group only allows practical links like social profiles, music, accommodation, shopping, maps, bookings, or travel. If that was a social profile, please write it as @username, @/username, or share the full Instagram/TikTok/X profile URL. Bare dotted text can look like a website, so this one was removed without a strike. Future repeats may count as link violations 🙏";
+    return "@name this chat only allows practical links like profiles, music, accommodation, maps, bookings, or travel. If that was a profile, write it as @username, @/username, or use the full profile URL. Bare dotted text can look like a website, so this was removed without a strike.";
   }
 
   if (reason === "whatsapp invite link") {
-    return `Hey @name - WhatsApp group invite links aren't allowed in here 🙏`;
+    return "@name group invite links are not allowed here.";
   }
 
-  return `Hey @name — please keep links practical: social profiles, music, accommodation, shopping, maps, bookings, or travel. For events, post at fete.outofofficecollective.co.uk 🙏`;
+  return "@name please keep links practical: profiles, music, accommodation, maps, bookings, or travel. Events should go through fete.outofofficecollective.co.uk.";
 };
 
 const sendInvalidIdentifier = async (sock: WASocket, destinationJid: string): Promise<void> => {
@@ -1860,7 +1860,7 @@ Text: "${formatPreview(queued.body)}"`,
 
   if (isDestructiveCommand(command) && !checkDestructiveCommandRateLimit(actorContext.userId)) {
     await sock.sendMessage(groupJid, {
-      text: "Slow down — you've run 10 commands in the last minute. Try again shortly.",
+      text: "Too many commands in the last minute. Please try again shortly.",
     });
     logAudit(actorContext, command, target.userId, quotedParticipant, groupJid, text, "error");
     return true;
@@ -2000,7 +2000,7 @@ export async function handleAuthorisedCommand(
   if (!actorContext) {
     if (replyJid && command.startsWith("!")) {
       await sock.sendMessage(replyJid, {
-        text: `⛔ You're not authorised to use Fete Bot commands. Ignoring this command.
+        text: `This command is only available to admins and moderators.
 
 Seen as: ${formatUserSummary(actor)}
 ${buildIdentityDebugText(actor)}`,
@@ -2430,7 +2430,7 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
 
   if (isDestructiveCommand(parsed.command) && !checkDestructiveCommandRateLimit(actorContext.userId)) {
     await sock.sendMessage(replyJid, {
-      text: "Slow down — you've run 10 commands in the last minute. Try again shortly.",
+      text: "Too many commands in the last minute. Please try again shortly.",
     });
     logAudit(actorContext, parsed.command, null, null, parsed.groupJid, text, "error");
     return;

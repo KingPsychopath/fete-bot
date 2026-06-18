@@ -24,10 +24,10 @@ export const ADMIN_MENTION_REPLIES = [
 ] as const;
 
 export const ADMIN_MENTION_OVERUSE_REPLIES = [
-  "Leave me alone. You're so obsessed with me",
-  "Leave me alone. Please go touch grass.",
-  "Leave me alone. I'm shy.",
-  "Leave me alone. You are overstimulating me",
+  "Admin mentions are on cooldown. Please wait a bit.",
+  "Please give the admins a moment before tagging again.",
+  "That ping has already been seen. Hold tight.",
+  "Too many admin tags in a short window. Please pause.",
 ] as const;
 
 const ADMIN_MENTION_REGEX = /(^|[^\p{L}\p{N}_])@admins?\b/iu;

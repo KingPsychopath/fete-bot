@@ -373,7 +373,7 @@ Per owner or moderator:
 
 If exceeded, the bot replies:
 
-- `Slow down — you've run 10 commands in the last minute. Try again shortly.`
+- `Too many commands in the last minute. Please try again shortly.`
 
 ### Undo window
 
@@ -596,7 +596,7 @@ Notes:
 - `PORT=3000`
 - `GROUP_CALL_GUARD_ENABLED=true|false`
 - `GROUP_CALL_GUARD_GROUP_JIDS=120363...@g.us,120363...@g.us`
-- `GROUP_CALL_GUARD_WARNING_TEXT=Hey {mention} - calls aren't allowed in this group. Don't do that again. 🙏🏾`
+- `GROUP_CALL_GUARD_WARNING_TEXT={mention} please don't start calls in this group.`
 - `GROUP_CALL_GUARD_REMOVE_ON=2`
 - `GROUP_CALL_GUARD_WINDOW_HOURS=24`
 - `GROUP_CALL_GUARD_WARNING_COOLDOWN_SECONDS=30`

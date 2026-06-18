@@ -49,13 +49,13 @@ const writeState = (state: WebsiteVisibilityPromptState): void => {
 export const buildTicketExchangeUrl = (baseUrl: string): string =>
   `${baseUrl.replace(/\/+$/u, "")}/exchange`;
 
-export const buildTicketExchangeListingPromptText = (baseUrl: string): string => `Hey - for the best chance of finding someone, you can also list your ticket post on Fete Finder Ticket Exchange:
+export const buildTicketExchangeListingPromptText = (baseUrl: string): string => `You can also add your ticket post here:
 ${buildTicketExchangeUrl(baseUrl)}
 
-Listings there can be shared by the bot too, and people unlock contact through the site.`;
+Listings there can be shared into the chat, and contact stays behind the site.`;
 
 export const buildTicketExchangeListingGroupPromptText = (mentionLabel: string, baseUrl: string): string =>
-  `Hey ${mentionLabel} - you can also list your ticket post on Fete Finder Ticket Exchange:
+  `${mentionLabel} you can also add your ticket post here:
 ${buildTicketExchangeUrl(baseUrl)}`;
 
 export const buildSpotlightWebsitePromptText = buildTicketExchangeListingPromptText;
@@ -73,16 +73,16 @@ export const buildTicketExchangeRedirectText = (
   const ticketExchangeUrl = buildTicketExchangeUrl(input.baseUrl);
 
   if (input.action === "redirect_buying") {
-    return `Hey ${input.mentionLabel} - looking for tickets? Please post in ${input.marketplaceName}, or use Fete Finder Ticket Exchange:
+    return `${input.mentionLabel} ticket requests go in ${input.marketplaceName}. You can also use:
 ${ticketExchangeUrl}`;
   }
 
   if (input.action === "redirect_selling") {
-    return `Hey ${input.mentionLabel} - ticket sales belong in ${input.marketplaceName}. For better visibility, you can also list on Fete Finder Ticket Exchange:
+    return `${input.mentionLabel} ticket sales go in ${input.marketplaceName}. You can also list here:
 ${ticketExchangeUrl}`;
   }
 
-  return `Hey ${input.mentionLabel} - this looks ambiguous and is under manual review. If this is a valid ticket post, repost it with clearer details in ${input.marketplaceName}, or use Fete Finder Ticket Exchange:
+  return `${input.mentionLabel} this ticket post needs clearer details and is under review. You can repost in ${input.marketplaceName}, or use:
 ${ticketExchangeUrl}`;
 };
 

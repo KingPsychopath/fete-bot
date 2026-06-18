@@ -179,13 +179,13 @@ const loadedConfig = {
   directChatAutoresponseCooldownDays: parsePositiveInteger(process.env.DIRECT_CHAT_AUTORESPONSE_COOLDOWN_DAYS, 365),
   directChatAutoresponseText:
     normaliseEnvValue(process.env.DIRECT_CHAT_AUTORESPONSE_TEXT) ||
-    "Sorry, I can't respond to direct messages. Please contact one of the other admins in the chat.",
+    "This inbox is not monitored. Please ask in the group or message an admin directly.",
   nonAdminAutomaticDmsEnabled: parseBoolean(process.env.NON_ADMIN_AUTOMATIC_DMS_ENABLED, true),
   groupCallGuardEnabled: parseBoolean(process.env.GROUP_CALL_GUARD_ENABLED, true),
   groupCallGuardGroupJids: parseList(process.env.GROUP_CALL_GUARD_GROUP_JIDS),
   groupCallGuardWarningText:
     normaliseEnvValue(process.env.GROUP_CALL_GUARD_WARNING_TEXT) ||
-    "Hey {mention} - calls aren't allowed in this group. Don't do that again. 🙏🏾",
+    "{mention} please don't start calls in this group.",
   groupCallGuardRemoveOn: parsePositiveInteger(process.env.GROUP_CALL_GUARD_REMOVE_ON, 2),
   groupCallGuardWindowHours: parsePositiveInteger(process.env.GROUP_CALL_GUARD_WINDOW_HOURS, 24),
   groupCallGuardWarningCooldownSeconds: parsePositiveInteger(process.env.GROUP_CALL_GUARD_WARNING_COOLDOWN_SECONDS, 30),

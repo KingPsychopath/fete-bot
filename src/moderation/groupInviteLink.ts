@@ -83,4 +83,4 @@ export const classifyGroupInviteLinkRequest = (text: string): GroupInviteLinkCla
 };
 
 export const buildGroupInviteLinkReply = (mentionLabel: string): string =>
-  `Hey ${mentionLabel} - if you're looking for the group invite link, please go to https://fete.outofofficecollective.co.uk. You can find it in the dropdown menu under the lightning bolt in the top right hand corner.`;
+  `${mentionLabel} group links are on https://fete.outofofficecollective.co.uk in the top-right menu.`;

@@ -128,8 +128,8 @@ export const buildWebsiteTicketExchangeAnnouncement = (
   listing: WebsiteTicketExchangeListing,
 ): string => {
   const heading = listing.listingType === "selling"
-    ? "Selling on Ticket Exchange"
-    : "Looking for tickets on Ticket Exchange";
+    ? "Ticket listed"
+    : "Ticket request";
   const priceText = listing.priceLabel
     ? listing.listingType === "selling"
       ? listing.priceLabel
@@ -146,8 +146,8 @@ export const buildWebsiteTicketExchangeAnnouncement = (
     .join("\n");
 
   const actionLine = listing.listingType === "selling"
-    ? "Interested? Open the link to contact them."
-    : "Got one? Open the link to contact them.";
+    ? "Interested? Use the link to reply."
+    : "Got one? Use the link to reply.";
 
   return `🎟️ ${heading}
 
@@ -157,5 +157,5 @@ ${eventDateLine ? `${eventDateLine}\n` : ""}${details}${note}
 ${actionLine}
 ${absoluteUrl(baseUrl, listing.url)}
 
-Availability can change quickly. OOOC only connects people - please check details before paying.`;
+Availability can change quickly. Please check details before paying.`;
 };

@@ -45,13 +45,12 @@ describe("admin mention", () => {
     expect(ADMIN_MENTION_REPLIES).toContain(pickAdminMentionReply(() => 0.999));
   });
 
-  it("keeps overuse replies in the leave me alone pool", () => {
+  it("keeps overuse replies in the cooldown pool", () => {
     expect(ADMIN_MENTION_OVERUSE_REPLIES).toHaveLength(4);
-    expect(ADMIN_MENTION_OVERUSE_REPLIES.every((reply) => reply.startsWith("Leave me alone"))).toBe(true);
-    expect(ADMIN_MENTION_OVERUSE_REPLIES).toContain("Leave me alone. You're so obsessed with me");
-    expect(ADMIN_MENTION_OVERUSE_REPLIES).toContain("Leave me alone. Please go touch grass.");
-    expect(ADMIN_MENTION_OVERUSE_REPLIES).toContain("Leave me alone. I'm shy.");
-    expect(ADMIN_MENTION_OVERUSE_REPLIES).toContain("Leave me alone. You are overstimulating me");
+    expect(ADMIN_MENTION_OVERUSE_REPLIES).toContain("Admin mentions are on cooldown. Please wait a bit.");
+    expect(ADMIN_MENTION_OVERUSE_REPLIES).toContain("Please give the admins a moment before tagging again.");
+    expect(ADMIN_MENTION_OVERUSE_REPLIES).toContain("That ping has already been seen. Hold tight.");
+    expect(ADMIN_MENTION_OVERUSE_REPLIES).toContain("Too many admin tags in a short window. Please pause.");
   });
 
   it("applies cooldown per group chat", () => {

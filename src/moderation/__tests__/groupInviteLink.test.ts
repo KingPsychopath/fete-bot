@@ -77,7 +77,7 @@ describe("group invite link request classifier", () => {
 
   it("builds the configured reply text", () => {
     expect(buildGroupInviteLinkReply("@name")).toBe(
-      "Hey @name - if you're looking for the group invite link, please go to https://fete.outofofficecollective.co.uk. You can find it in the dropdown menu under the lightning bolt in the top right hand corner.",
+      "@name group links are on https://fete.outofofficecollective.co.uk in the top-right menu.",
     );
   });
 });
