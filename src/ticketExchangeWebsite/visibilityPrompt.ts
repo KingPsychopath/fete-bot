@@ -10,6 +10,20 @@ type WebsiteVisibilityPromptState = {
   promptedByGroupJid: Record<string, string>;
 };
 
+export type TicketExchangeListingPromptDeliveryInput = {
+  userPromptAllowed: boolean;
+  groupPromptAllowed: boolean;
+  automaticDmAllowed: boolean;
+};
+
+export type TicketExchangeListingPromptDeliveryPlan = {
+  sendDirectPrompt: boolean;
+  sendGroupPrompt: boolean;
+  directPromptSkippedByDmGate: boolean;
+  userPromptCoolingDown: boolean;
+  groupPromptCoolingDown: boolean;
+};
+
 const defaultState = (): WebsiteVisibilityPromptState => ({ promptedByUserId: {}, promptedByGroupJid: {} });
 
 const readState = (): WebsiteVisibilityPromptState => {
@@ -61,6 +75,16 @@ ${buildTicketExchangeUrl(baseUrl)}`;
 export const buildSpotlightWebsitePromptText = buildTicketExchangeListingPromptText;
 
 export const buildSpotlightWebsiteGroupPromptText = buildTicketExchangeListingGroupPromptText;
+
+export const planTicketExchangeListingPromptDelivery = (
+  input: TicketExchangeListingPromptDeliveryInput,
+): TicketExchangeListingPromptDeliveryPlan => ({
+  sendDirectPrompt: input.userPromptAllowed && input.automaticDmAllowed,
+  sendGroupPrompt: input.groupPromptAllowed,
+  directPromptSkippedByDmGate: input.userPromptAllowed && !input.automaticDmAllowed,
+  userPromptCoolingDown: !input.userPromptAllowed,
+  groupPromptCoolingDown: !input.groupPromptAllowed,
+});
 
 export const buildTicketExchangeRedirectText = (
   input: {

@@ -8,6 +8,7 @@ import {
   buildTicketExchangeListingPromptText,
   buildTicketExchangeRedirectText,
   buildTicketExchangeUrl,
+  planTicketExchangeListingPromptDelivery,
 } from "./visibilityPrompt.js";
 
 let tempDir: string;
@@ -71,6 +72,37 @@ describe("Ticket Exchange visibility prompts", () => {
         baseUrl: "https://fete.outofofficecollective.co.uk",
       }),
     ).toContain("ticket sales go in FDLM Ticket Marketplace. You can also list here");
+  });
+
+  it("keeps the group listing prompt on when non-admin automatic DMs are off", () => {
+    expect(
+      planTicketExchangeListingPromptDelivery({
+        userPromptAllowed: true,
+        groupPromptAllowed: true,
+        automaticDmAllowed: false,
+      }),
+    ).toEqual({
+      sendDirectPrompt: false,
+      sendGroupPrompt: true,
+      directPromptSkippedByDmGate: true,
+      userPromptCoolingDown: false,
+      groupPromptCoolingDown: false,
+    });
+  });
+
+  it("keeps group cooldown independent from DM delivery", () => {
+    expect(
+      planTicketExchangeListingPromptDelivery({
+        userPromptAllowed: true,
+        groupPromptAllowed: false,
+        automaticDmAllowed: true,
+      }),
+    ).toMatchObject({
+      sendDirectPrompt: true,
+      sendGroupPrompt: false,
+      directPromptSkippedByDmGate: false,
+      groupPromptCoolingDown: true,
+    });
   });
 
   it("persists spotlight DM prompt cooldowns by user", async () => {

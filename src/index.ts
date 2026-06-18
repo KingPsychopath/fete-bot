@@ -93,6 +93,7 @@ import {
   buildTicketExchangeListingGroupPromptText,
   buildTicketExchangeListingPromptText,
   buildTicketExchangeRedirectText,
+  planTicketExchangeListingPromptDelivery,
   recordSpotlightWebsiteGroupPromptSent,
   recordSpotlightWebsitePromptSent,
   shouldSendSpotlightWebsiteGroupPrompt,
@@ -2229,15 +2230,6 @@ const sendTicketExchangeListingPromptIfAllowed = async (
     phoneJid,
     ...getUserAliases(senderUserId).map((alias) => alias.alias),
   ].filter((alias): alias is string => Boolean(alias))));
-  if (!canSendAutomaticDmToIdentity(senderUserId, senderAliases, groupJid)) {
-    log("ticket_exchange.listing_prompt.skipped_non_admin_dm_gate", {
-      pendingId,
-      groupJid,
-      senderJid,
-      senderUserId,
-    });
-    return;
-  }
 
   const promptSuppressed = isQuietSwitchEnabled() || getDebugRedirectSwitchState().enabled;
   if (promptSuppressed) {
@@ -2258,10 +2250,24 @@ const sendTicketExchangeListingPromptIfAllowed = async (
     groupJid,
     SPOTLIGHT_WEBSITE_GROUP_PROMPT_COOLDOWN_HOURS,
   );
+  const deliveryPlan = planTicketExchangeListingPromptDelivery({
+    userPromptAllowed,
+    groupPromptAllowed,
+    automaticDmAllowed: canSendAutomaticDmToIdentity(senderUserId, senderAliases, groupJid),
+  });
   const mentionTargetJid = getMentionTargetJid(senderJid, phoneJid);
   const mentionLabel = formatMentionLabel(senderJid, getPushName(msg), phoneJid);
 
-  if (userPromptAllowed) {
+  if (deliveryPlan.directPromptSkippedByDmGate) {
+    log("ticket_exchange.listing_prompt.dm_skipped_non_admin_dm_gate", {
+      pendingId,
+      groupJid,
+      senderJid,
+      senderUserId,
+    });
+  }
+
+  if (deliveryPlan.sendDirectPrompt) {
     const promptTargets = getKnownDirectMessageTargets(
       senderJid,
       senderAliases,
@@ -2331,7 +2337,7 @@ const sendTicketExchangeListingPromptIfAllowed = async (
     }
   }
 
-  if (groupPromptAllowed) {
+  if (deliveryPlan.sendGroupPrompt) {
     try {
       const sent = await sock.sendMessage(
         groupJid,
@@ -2362,14 +2368,14 @@ const sendTicketExchangeListingPromptIfAllowed = async (
     }
   }
 
-  if (!userPromptAllowed || !groupPromptAllowed) {
+  if (deliveryPlan.userPromptCoolingDown || deliveryPlan.groupPromptCoolingDown) {
     log("ticket_exchange.listing_prompt.skipped_cooldown", {
       pendingId,
       groupJid,
       senderJid,
       senderUserId,
-      groupCooldown: !groupPromptAllowed,
-      userCooldown: !userPromptAllowed,
+      groupCooldown: deliveryPlan.groupPromptCoolingDown,
+      userCooldown: deliveryPlan.userPromptCoolingDown,
       groupCooldownHours: SPOTLIGHT_WEBSITE_GROUP_PROMPT_COOLDOWN_HOURS,
       userCooldownDays: config.ticketExchangeWebsiteSpotlightPromptCooldownDays,
     });
