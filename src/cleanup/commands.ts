@@ -358,24 +358,63 @@ const buildCleanupRemovalPlan = (
 const formatRemovalScope = (groupJids: readonly string[], groups: ReadonlyMap<string, string>): string =>
   groupJids.length === 1 ? `${groups.get(groupJids[0] ?? "") ?? groupJids[0]}` : `${groupJids.length} managed chats`;
 
+const isMentionableJid = (jid: string): boolean => jid.endsWith("@s.whatsapp.net") || jid.endsWith("@lid");
+
+const getCleanupRemovalMentionTarget = (entry: CleanupRemovalPlanEntry): string | null => {
+  const aliases = getUserAliases(entry.member.userId).map((alias) => alias.alias);
+  const phoneAlias = aliases.find((alias) => alias.endsWith("@s.whatsapp.net"));
+  if (phoneAlias) {
+    return phoneAlias;
+  }
+
+  const liveParticipantJid = entry.removals.map((removal) => removal.participantJid).find(isMentionableJid);
+  if (liveParticipantJid) {
+    return liveParticipantJid;
+  }
+
+  return isMentionableJid(entry.member.primaryJid) ? entry.member.primaryJid : null;
+};
+
+const formatMentionTargetLabel = (mentionTargetJid: string | null, fallbackJid: string): string => {
+  const target = mentionTargetJid ?? fallbackJid;
+  if (target.endsWith("@s.whatsapp.net")) {
+    return `@${target.replace(/@s\.whatsapp\.net$/iu, "")}`;
+  }
+  if (target.endsWith("@lid")) {
+    return `@${target.replace(/@lid$/iu, "")}`;
+  }
+  return formatJidForDisplay(target);
+};
+
 const formatCleanupRemovalPlan = (
   title: string,
   plan: readonly CleanupRemovalPlanEntry[],
   groups: ReadonlyMap<string, string>,
-): string => {
+): { text: string; mentions: string[] } => {
   if (plan.length === 0) {
-    return `${title}\n\nNo removable non-whitelisted candidates found in the selected chat scope.`;
+    return {
+      text: `${title}\n\nNo removable non-whitelisted candidates found in the selected chat scope.`,
+      mentions: [],
+    };
   }
 
-  return [
+  const mentions: string[] = [];
+  const lines = [
     title,
     "",
     ...plan.map((entry, index) => {
       const label = entry.member.displayName?.trim() || entry.member.primaryJid;
+      const mentionTarget = getCleanupRemovalMentionTarget(entry);
+      if (mentionTarget) {
+        mentions.push(mentionTarget);
+      }
+      const mentionLabel = formatMentionTargetLabel(mentionTarget, entry.member.primaryJid);
       const targetGroups = entry.removals.map((removal) => groups.get(removal.groupJid) ?? removal.groupJid).join(", ");
-      return `${index + 1}. ${label} (${formatJidForDisplay(entry.member.primaryJid)}) — ${targetGroups}`;
+      return `${index + 1}. ${label} (${mentionLabel}) — ${targetGroups}`;
     }),
-  ].join("\n");
+  ];
+
+  return { text: lines.join("\n"), mentions: Array.from(new Set(mentions)) };
 };
 
 const wait = (delayMs: number): Promise<void> => new Promise((resolve) => {
@@ -842,13 +881,19 @@ export const handleCleanupCommand = async (
     const scope = formatRemovalScope(groupJids, groups);
 
     if (subcommand === "remove-preview") {
+      const preview = formatCleanupRemovalPlan(
+        `Cleanup removal preview (${removalActions}/${limit} removals, ${plan.length} candidate(s), ${scope})`,
+        plan,
+        groups,
+      );
       await sock.sendMessage(replyJid, {
         text: [
-          formatCleanupRemovalPlan(`Cleanup removal preview (${removalActions}/${limit} removals, ${plan.length} candidate(s), ${scope})`, plan, groups),
+          preview.text,
           "",
           "Selection: non-whitelisted cleanup candidates, oldest-known identity first. WhatsApp join time is not stored, so this is deterministic rather than random.",
           `To run: \`!cleanup remove-start ${limit} ${groupJids.length === 1 ? `group=${groupJids[0]}` : "all=true"} confirm=${CLEANUP_REMOVE_CONFIRM_TOKEN}\``,
         ].join("\n"),
+        mentions: preview.mentions,
       });
       return true;
     }

@@ -331,10 +331,11 @@ describe("cleanup campaign", () => {
     expect(groupParticipantsUpdate).not.toHaveBeenCalled();
     expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", {
       text: expect.stringContaining("Cleanup removal preview (2/2 removals, 2 candidate(s), Fete Group)"),
+      mentions: ["447700900001@s.whatsapp.net", "447700900002@s.whatsapp.net"],
     });
-    expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", {
+    expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", expect.objectContaining({
       text: expect.stringContaining("confirm=REMOVE"),
-    });
+    }));
   });
 
   it("removes a confirmed cleanup candidate batch without banning users", async () => {
