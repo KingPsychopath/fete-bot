@@ -409,8 +409,10 @@ const formatCleanupRemovalPlan = (
         mentions.push(mentionTarget);
       }
       const mentionLabel = formatMentionTargetLabel(mentionTarget, entry.member.primaryJid);
+      const removalCount = entry.removals.length;
+      const removalLabel = `${removalCount} removal${removalCount === 1 ? "" : "s"}`;
       const targetGroups = entry.removals.map((removal) => groups.get(removal.groupJid) ?? removal.groupJid).join(", ");
-      return `${index + 1}. ${label} (${mentionLabel}) — ${targetGroups}`;
+      return `${index + 1}. ${label} (${mentionLabel}) — ${removalLabel}: ${targetGroups}`;
     }),
   ];
 

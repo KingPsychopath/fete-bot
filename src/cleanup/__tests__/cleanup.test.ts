@@ -334,6 +334,9 @@ describe("cleanup campaign", () => {
       mentions: ["447700900001@s.whatsapp.net", "447700900002@s.whatsapp.net"],
     });
     expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", expect.objectContaining({
+      text: expect.stringContaining("1 removal: Fete Group"),
+    }));
+    expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", expect.objectContaining({
       text: expect.stringContaining("confirm=REMOVE"),
     }));
   });
