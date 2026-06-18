@@ -3,6 +3,7 @@ import type { GroupMetadata, WASocket } from "@whiskeysockets/baileys";
 import type { Config } from "../config.js";
 import { getUserAliases, type ActorRole } from "../db.js";
 import { describeUser, findParticipantJidForUser, resolveUser } from "../identity.js";
+import { log, warn } from "../logger.js";
 import { formatJidForDisplay, isProtectedGroupMember, parseToJid } from "../utils.js";
 import { isCleanupDmHardPaused } from "./scheduler.js";
 import {
@@ -310,15 +311,19 @@ type CleanupRemovalPlanEntry = {
   removals: { groupJid: string; participantJid: string }[];
 };
 
+const countCleanupRemovalActions = (plan: readonly CleanupRemovalPlanEntry[]): number =>
+  plan.reduce((count, entry) => count + entry.removals.length, 0);
+
 const buildCleanupRemovalPlan = (
   campaignId: string,
   groupJids: readonly string[],
-  limit: number,
+  removalLimit: number,
   config: Config,
   groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
 ): CleanupRemovalPlanEntry[] => {
-  const candidates = listCleanupRemovalCandidateMembers(campaignId, Math.max(limit * 10, 50));
+  const candidates = listCleanupRemovalCandidateMembers(campaignId, Math.max(removalLimit * 10, 50));
   const plan: CleanupRemovalPlanEntry[] = [];
+  let plannedRemovals = 0;
 
   for (const member of candidates) {
     const removals = groupJids.flatMap((groupJid) => {
@@ -338,8 +343,11 @@ const buildCleanupRemovalPlan = (
       continue;
     }
 
-    plan.push({ member, removals });
-    if (plan.length >= limit) {
+    const remaining = removalLimit - plannedRemovals;
+    const cappedRemovals = removals.slice(0, remaining);
+    plan.push({ member, removals: cappedRemovals });
+    plannedRemovals += cappedRemovals.length;
+    if (plannedRemovals >= removalLimit) {
       break;
     }
   }
@@ -376,6 +384,7 @@ const wait = (delayMs: number): Promise<void> => new Promise((resolve) => {
 
 const runCleanupRemovalPlan = async (
   sock: WASocket,
+  campaignId: string,
   plan: readonly CleanupRemovalPlanEntry[],
   delayMs: number,
 ): Promise<{ removed: number; failed: number; skipped: number }> => {
@@ -383,6 +392,14 @@ const runCleanupRemovalPlan = async (
   let failed = 0;
   let skipped = 0;
   let attempted = 0;
+  const totalRemovalActions = countCleanupRemovalActions(plan);
+
+  log("cleanup.remove_batch.start", {
+    campaignId,
+    candidates: plan.length,
+    removalActions: totalRemovalActions,
+    delayMs,
+  });
 
   for (const entry of plan) {
     for (const removal of entry.removals) {
@@ -392,15 +409,44 @@ const runCleanupRemovalPlan = async (
       attempted += 1;
 
       try {
+        log("cleanup.remove_attempt", {
+          campaignId,
+          userId: entry.member.userId,
+          groupJid: removal.groupJid,
+          participantJid: removal.participantJid,
+          attempted,
+          totalRemovalActions,
+        });
         const result = await sock.groupParticipantsUpdate(removal.groupJid, [removal.participantJid], "remove");
         const status = result?.[0]?.status;
         if (status && status !== "200") {
           failed += 1;
+          warn("cleanup.remove_failed", {
+            campaignId,
+            userId: entry.member.userId,
+            groupJid: removal.groupJid,
+            participantJid: removal.participantJid,
+            status,
+          });
         } else {
           removed += 1;
+          log("cleanup.remove_ok", {
+            campaignId,
+            userId: entry.member.userId,
+            groupJid: removal.groupJid,
+            participantJid: removal.participantJid,
+            status: status ?? null,
+          });
         }
-      } catch {
+      } catch (removeError) {
         failed += 1;
+        warn("cleanup.remove_failed", {
+          campaignId,
+          userId: entry.member.userId,
+          groupJid: removal.groupJid,
+          participantJid: removal.participantJid,
+          error: removeError,
+        });
       }
     }
 
@@ -408,6 +454,14 @@ const runCleanupRemovalPlan = async (
       skipped += 1;
     }
   }
+
+  log("cleanup.remove_batch.finish", {
+    campaignId,
+    attempted,
+    removed,
+    failed,
+    skipped,
+  });
 
   return { removed, failed, skipped };
 };
@@ -784,12 +838,13 @@ export const handleCleanupCommand = async (
 
     const limit = parseCleanupRemoveLimit(optionTokens);
     const plan = buildCleanupRemovalPlan(campaign.id, groupJids, limit, config, groupMetadataByJid);
+    const removalActions = countCleanupRemovalActions(plan);
     const scope = formatRemovalScope(groupJids, groups);
 
     if (subcommand === "remove-preview") {
       await sock.sendMessage(replyJid, {
         text: [
-          formatCleanupRemovalPlan(`Cleanup removal preview (${plan.length}/${limit}, ${scope})`, plan, groups),
+          formatCleanupRemovalPlan(`Cleanup removal preview (${removalActions}/${limit} removals, ${plan.length} candidate(s), ${scope})`, plan, groups),
           "",
           "Selection: non-whitelisted cleanup candidates, oldest-known identity first. WhatsApp join time is not stored, so this is deterministic rather than random.",
           `To run: \`!cleanup remove-start ${limit} ${groupJids.length === 1 ? `group=${groupJids[0]}` : "all=true"} confirm=${CLEANUP_REMOVE_CONFIRM_TOKEN}\``,
@@ -811,7 +866,7 @@ export const handleCleanupCommand = async (
       return true;
     }
 
-    if (plan.length === 0) {
+    if (removalActions === 0) {
       await sock.sendMessage(replyJid, {
         text: "No removable non-whitelisted cleanup candidates found in the selected chat scope.",
       });
@@ -828,13 +883,13 @@ export const handleCleanupCommand = async (
 
     await sock.sendMessage(replyJid, {
       text: [
-        `Starting cleanup removal for ${plan.length} candidate(s) in ${scope}.`,
+        `Starting cleanup removal for ${removalActions} participant removal(s) across ${plan.length} candidate(s) in ${scope}.`,
         `Delay: ${Math.round(delayMs / 1000)}s between participant removals.`,
         "This removes only; it does not ban.",
       ].join("\n"),
     });
 
-    const result = await runCleanupRemovalPlan(sock, plan, delayMs);
+    const result = await runCleanupRemovalPlan(sock, campaign.id, plan, delayMs);
     await sock.sendMessage(replyJid, {
       text: [
         "Cleanup removal batch complete.",

@@ -136,7 +136,7 @@ The backup contains WhatsApp linked-device credentials. Treat it like a secret.
 - `NON_ADMIN_AUTOMATIC_DMS_ENABLED=true` gates automatic private replies/prompts to ordinary users. Set it to `false` to pass through without attempting direct-chat autoresponses, cleanup DM acknowledgements, call-guard fallback DMs, unauthorised-command diagnostics, or ticket listing prompt DMs for non-owner/mod/admin users.
 - `CLEANUP_DMS_ENABLED=false` hard-pauses cleanup DMs by default; set it to `true` to send at the fixed safety rate of 8 every 30m, 10s apart inside a batch. Use `!cleanup start 72h public=off` to start without sending public group notices
 - Cleanup starts carry the previous campaign whitelist by default; add `carry=off` if you need a completely fresh whitelist
-- Cleanup removal is separate from cleanup watching. Owners can preview a capped batch with `!cleanup remove-preview 5 group={groupJid}` and execute it with `!cleanup remove-start 5 group={groupJid} confirm=REMOVE`; this only removes members from chats, never bans them.
+- Cleanup removal is separate from cleanup watching. Owners can preview a capped participant-removal batch with `!cleanup remove-preview 5 group={groupJid}` and execute it with `!cleanup remove-start 5 group={groupJid} confirm=REMOVE`; this only removes members from chats, never bans them.
 - `TICKET_SPOTLIGHT_TARGET_JIDS` defaults to FDLM Parties & Events PT.2 and FDLM Parties & Events; website ticket exchange announcements default to the configured ticket marketplace groups only
 - `OWNER_JIDS`, database moderators, and WhatsApp group admins are never moderated
 - The bot only responds in 1:1 chats for the direct-chat autoresponse, cleanup replies, or authorised owner/moderator commands
