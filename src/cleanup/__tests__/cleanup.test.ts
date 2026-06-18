@@ -298,6 +298,7 @@ describe("cleanup campaign", () => {
           id: "group@g.us",
           subject: "Fete Group",
           participants: [
+            { id: "bot@s.whatsapp.net", admin: "admin" },
             { id: "447700900001@s.whatsapp.net" },
             { id: "447700900002@s.whatsapp.net" },
           ],
@@ -341,6 +342,74 @@ describe("cleanup campaign", () => {
     }));
   });
 
+  it("flags cleanup candidates in groups where the bot is not admin without consuming removals", async () => {
+    await setupDb();
+    const { handleCleanupCommand } = await import("../commands.js");
+    const sendMessage = vi.fn().mockResolvedValue({ key: { id: "admin-reply" } });
+    const groupParticipantsUpdate = vi.fn().mockResolvedValue([{ status: "200" }]);
+    const groupMetadata = new Map([
+      [
+        "group@g.us",
+        {
+          id: "group@g.us",
+          subject: "Fete Group",
+          participants: [
+            { id: "bot@s.whatsapp.net" },
+            { id: "447700900001@s.whatsapp.net" },
+          ],
+        },
+      ],
+    ]) as never;
+
+    await handleCleanupCommand(
+      { sendMessage, groupParticipantsUpdate } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "447700900000@s.whatsapp.net",
+      "!cleanup start 72h public=off",
+      config,
+      new Map([["group@g.us", "Fete Group"]]),
+      groupMetadata,
+      new Set(["bot@s.whatsapp.net"]),
+    );
+    sendMessage.mockClear();
+
+    await handleCleanupCommand(
+      { sendMessage, groupParticipantsUpdate } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "447700900000@s.whatsapp.net",
+      "!cleanup remove-preview 5",
+      config,
+      new Map([["group@g.us", "Fete Group"]]),
+      groupMetadata,
+      new Set(["bot@s.whatsapp.net"]),
+    );
+
+    expect(groupParticipantsUpdate).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", expect.objectContaining({
+      text: expect.stringContaining("Cleanup removal preview (0/5 removals, 1 candidate(s), Fete Group, 1 blocked)"),
+    }));
+    expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", expect.objectContaining({
+      text: expect.stringContaining("blocked, bot is not admin: Fete Group"),
+    }));
+
+    sendMessage.mockClear();
+    await handleCleanupCommand(
+      { sendMessage, groupParticipantsUpdate } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "447700900000@s.whatsapp.net",
+      "!cleanup remove-start 5 confirm=REMOVE",
+      config,
+      new Map([["group@g.us", "Fete Group"]]),
+      groupMetadata,
+      new Set(["bot@s.whatsapp.net"]),
+    );
+
+    expect(groupParticipantsUpdate).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith("447700900000@s.whatsapp.net", expect.objectContaining({
+      text: expect.stringContaining("No removals started because the bot is not admin in the listed chat(s)."),
+    }));
+  });
+
   it("removes a confirmed cleanup candidate batch without banning users", async () => {
     vi.useFakeTimers();
     try {
@@ -356,6 +425,7 @@ describe("cleanup campaign", () => {
             id: "group@g.us",
             subject: "Fete Group",
             participants: [
+              { id: "bot@s.whatsapp.net", admin: "admin" },
               { id: "447700900001@s.whatsapp.net" },
               { id: "447700900002@s.whatsapp.net" },
             ],
@@ -421,7 +491,10 @@ describe("cleanup campaign", () => {
           {
             id: "group@g.us",
             subject: "Fete Group",
-            participants: [{ id: "447700900001@s.whatsapp.net" }],
+            participants: [
+              { id: "bot@s.whatsapp.net", admin: "admin" },
+              { id: "447700900001@s.whatsapp.net" },
+            ],
           },
         ],
         [
@@ -429,7 +502,10 @@ describe("cleanup campaign", () => {
           {
             id: "second@g.us",
             subject: "Second Group",
-            participants: [{ id: "447700900001@s.whatsapp.net" }],
+            participants: [
+              { id: "bot@s.whatsapp.net", admin: "admin" },
+              { id: "447700900001@s.whatsapp.net" },
+            ],
           },
         ],
       ]) as never;

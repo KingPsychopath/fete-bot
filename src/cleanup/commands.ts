@@ -4,7 +4,7 @@ import type { Config } from "../config.js";
 import { getUserAliases, type ActorRole } from "../db.js";
 import { describeUser, findParticipantJidForUser, resolveUser } from "../identity.js";
 import { log, warn } from "../logger.js";
-import { formatJidForDisplay, isProtectedGroupMember, parseToJid } from "../utils.js";
+import { formatJidForDisplay, isGroupAdmin, isProtectedGroupMember, parseToJid } from "../utils.js";
 import { isCleanupDmHardPaused } from "./scheduler.js";
 import {
   buildCleanupDmMessage,
@@ -67,6 +67,7 @@ const CLEANUP_REMOVE_MAX_LIMIT = 25;
 const CLEANUP_REMOVE_DEFAULT_DELAY_MS = 30_000;
 const CLEANUP_REMOVE_MIN_DELAY_MS = 15_000;
 const CLEANUP_REMOVE_MAX_DELAY_MS = 10 * 60_000;
+const CLEANUP_REMOVE_BLOCKED_PREVIEW_LIMIT = 10;
 
 const durationMsFromToken = (token: string | undefined, fallbackMs: number): number | null => {
   if (!token) {
@@ -309,10 +310,14 @@ const getRemovalTargetGroupJids = (
 type CleanupRemovalPlanEntry = {
   member: ReturnType<typeof listCleanupRemovalCandidateMembers>[number];
   removals: { groupJid: string; participantJid: string }[];
+  blockedGroups: { groupJid: string; participantJid: string; reason: "bot_not_admin" }[];
 };
 
 const countCleanupRemovalActions = (plan: readonly CleanupRemovalPlanEntry[]): number =>
   plan.reduce((count, entry) => count + entry.removals.length, 0);
+
+const countCleanupBlockedGroups = (plan: readonly CleanupRemovalPlanEntry[]): number =>
+  plan.reduce((count, entry) => count + entry.blockedGroups.length, 0);
 
 const buildCleanupRemovalPlan = (
   campaignId: string,
@@ -320,32 +325,49 @@ const buildCleanupRemovalPlan = (
   removalLimit: number,
   config: Config,
   groupMetadataByJid: ReadonlyMap<string, GroupMetadata>,
+  selfJids: ReadonlySet<string>,
 ): CleanupRemovalPlanEntry[] => {
   const candidates = listCleanupRemovalCandidateMembers(campaignId, Math.max(removalLimit * 10, 50));
   const plan: CleanupRemovalPlanEntry[] = [];
   let plannedRemovals = 0;
+  let blockedPreviewEntries = 0;
+  const selfAliases = Array.from(selfJids);
+  const botAdminGroupJids = new Set(
+    groupJids.filter((groupJid) => isGroupAdmin(selfAliases, groupJid, groupMetadataByJid)),
+  );
 
   for (const member of candidates) {
-    const removals = groupJids.flatMap((groupJid) => {
+    const removals: CleanupRemovalPlanEntry["removals"] = [];
+    const blockedGroups: CleanupRemovalPlanEntry["blockedGroups"] = [];
+
+    for (const groupJid of groupJids) {
       const metadata = groupMetadataByJid.get(groupJid);
       const participantJid = findParticipantJidForUser(member.userId, metadata);
       if (!participantJid) {
-        return [];
+        continue;
       }
       const knownAliases = [member.primaryJid, ...getUserAliases(member.userId).map((alias) => alias.alias)];
       if (isProtectedGroupMember(member.userId, knownAliases, groupJid, config, groupMetadataByJid)) {
-        return [];
+        continue;
       }
-      return [{ groupJid, participantJid }];
-    });
+      if (!botAdminGroupJids.has(groupJid)) {
+        blockedGroups.push({ groupJid, participantJid, reason: "bot_not_admin" });
+        continue;
+      }
+      removals.push({ groupJid, participantJid });
+    }
 
     if (removals.length === 0) {
+      if (blockedGroups.length > 0 && blockedPreviewEntries < CLEANUP_REMOVE_BLOCKED_PREVIEW_LIMIT) {
+        plan.push({ member, removals: [], blockedGroups });
+        blockedPreviewEntries += 1;
+      }
       continue;
     }
 
     const remaining = removalLimit - plannedRemovals;
     const cappedRemovals = removals.slice(0, remaining);
-    plan.push({ member, removals: cappedRemovals });
+    plan.push({ member, removals: cappedRemovals, blockedGroups });
     plannedRemovals += cappedRemovals.length;
     if (plannedRemovals >= removalLimit) {
       break;
@@ -370,6 +392,11 @@ const getCleanupRemovalMentionTarget = (entry: CleanupRemovalPlanEntry): string 
   const liveParticipantJid = entry.removals.map((removal) => removal.participantJid).find(isMentionableJid);
   if (liveParticipantJid) {
     return liveParticipantJid;
+  }
+
+  const blockedParticipantJid = entry.blockedGroups.map((blocked) => blocked.participantJid).find(isMentionableJid);
+  if (blockedParticipantJid) {
+    return blockedParticipantJid;
   }
 
   return isMentionableJid(entry.member.primaryJid) ? entry.member.primaryJid : null;
@@ -411,8 +438,13 @@ const formatCleanupRemovalPlan = (
       const mentionLabel = formatMentionTargetLabel(mentionTarget, entry.member.primaryJid);
       const removalCount = entry.removals.length;
       const removalLabel = `${removalCount} removal${removalCount === 1 ? "" : "s"}`;
-      const targetGroups = entry.removals.map((removal) => groups.get(removal.groupJid) ?? removal.groupJid).join(", ");
-      return `${index + 1}. ${label} (${mentionLabel}) — ${removalLabel}: ${targetGroups}`;
+      const targetGroups = entry.removals.map((removal) => groups.get(removal.groupJid) ?? removal.groupJid);
+      const blockedGroups = entry.blockedGroups.map((blocked) => groups.get(blocked.groupJid) ?? blocked.groupJid);
+      const details = [
+        targetGroups.length > 0 ? `${removalLabel}: ${targetGroups.join(", ")}` : null,
+        blockedGroups.length > 0 ? `blocked, bot is not admin: ${blockedGroups.join(", ")}` : null,
+      ].filter(Boolean);
+      return `${index + 1}. ${label} (${mentionLabel}) — ${details.join("; ")}`;
     }),
   ];
 
@@ -878,13 +910,14 @@ export const handleCleanupCommand = async (
     }
 
     const limit = parseCleanupRemoveLimit(optionTokens);
-    const plan = buildCleanupRemovalPlan(campaign.id, groupJids, limit, config, groupMetadataByJid);
+    const plan = buildCleanupRemovalPlan(campaign.id, groupJids, limit, config, groupMetadataByJid, selfJids);
     const removalActions = countCleanupRemovalActions(plan);
+    const blockedGroups = countCleanupBlockedGroups(plan);
     const scope = formatRemovalScope(groupJids, groups);
 
     if (subcommand === "remove-preview") {
       const preview = formatCleanupRemovalPlan(
-        `Cleanup removal preview (${removalActions}/${limit} removals, ${plan.length} candidate(s), ${scope})`,
+        `Cleanup removal preview (${removalActions}/${limit} removals, ${plan.length} candidate(s), ${scope}${blockedGroups > 0 ? `, ${blockedGroups} blocked` : ""})`,
         plan,
         groups,
       );
@@ -914,8 +947,20 @@ export const handleCleanupCommand = async (
     }
 
     if (removalActions === 0) {
+      const preview = formatCleanupRemovalPlan(
+        `Cleanup removal blocked (${plan.length} candidate(s), ${scope}${blockedGroups > 0 ? `, ${blockedGroups} blocked` : ""})`,
+        plan,
+        groups,
+      );
       await sock.sendMessage(replyJid, {
-        text: "No removable non-whitelisted cleanup candidates found in the selected chat scope.",
+        text: [
+          preview.text,
+          "",
+          blockedGroups > 0
+            ? "No removals started because the bot is not admin in the listed chat(s)."
+            : "No removable non-whitelisted cleanup candidates found in the selected chat scope.",
+        ].join("\n"),
+        mentions: preview.mentions,
       });
       return true;
     }
