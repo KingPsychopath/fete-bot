@@ -151,6 +151,12 @@ export const FALSE_POSITIVE_REGRESSIONS = [
     layer: "classifier",
     reason: "Short accommodation offers can contain lmk, guests, price per person, and dates without being ticket resale.",
   },
+  {
+    text: "Just let you know that you can buy your travel ticket via the apps IDF Mobilités and Bonjour RATP. Today you buy the anti pollution pass which will last you the whole day for €5.10",
+    expected: "none",
+    layer: "classifier",
+    reason: "Public transport and anti-pollution passes can contain ticket, pass, buy, and price language without being event ticket resale.",
+  },
 ] as const satisfies ReadonlyArray<{
   text: string;
   expected: TicketMarketplaceIntent;

@@ -291,6 +291,10 @@ const NEGATED_BUYER_INTENT_PATTERNS: Array<{ label: string; regex: RegExp }> = [
 
 const NON_MARKETPLACE_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   {
+    label: "public transport ticket or pass",
+    regex: /\b(?:travel|transit|transport|metro|train|bus|ratp|idf|mobilit[eé]s|bonjour|anti\s+pollution)\b(?:\s+[\p{L}\p{N}'£€$]+){0,16}\s+\b(?:tickets?|passes?)\b|\b(?:tickets?|passes?)\b(?:\s+[\p{L}\p{N}'£€$]+){0,16}\s+\b(?:travel|transit|transport|metro|train|bus|ratp|idf|mobilit[eé]s|bonjour|anti\s+pollution)\b/iu,
+  },
+  {
     label: "looking for people",
     regex: new RegExp(
       String.raw`\b(?:looking|lookin)\s+for\s+${saleQuantityPattern}\s+${nonOfferQuantityObjectPattern}\b`,
