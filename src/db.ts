@@ -224,7 +224,15 @@ type LegacyReviewQueueRow = {
   flagged_at: string;
 };
 
-const SCHEMA_VERSION = 7;
+export type GroupMemberJoin = {
+  groupJid: string;
+  userId: string;
+  participantJid: string | null;
+  firstSeenJoinAt: number;
+  lastSeenJoinAt: number;
+};
+
+const SCHEMA_VERSION = 8;
 const RESET_DB_FLAG = "RESET_DB";
 export const GLOBAL_MODERATION_GROUP_JID = "__all_groups__";
 
@@ -419,6 +427,7 @@ const CLEANUP_SCHEMA_SQL = `
       'public_reaction',
       'public_reply',
       'group_activity',
+      'group_join',
       'dm_reaction',
       'dm_reply',
       'manual',
@@ -431,6 +440,19 @@ const CLEANUP_SCHEMA_SQL = `
   CREATE UNIQUE INDEX IF NOT EXISTS idx_cleanup_signals_unique
     ON cleanup_signals(campaign_id, user_id, signal_type, IFNULL(source_jid, ''), IFNULL(message_id, ''));
   CREATE INDEX IF NOT EXISTS idx_cleanup_signals_campaign ON cleanup_signals(campaign_id, signal_type, created_at);
+`;
+
+const GROUP_MEMBER_JOINS_SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS group_member_joins (
+    group_jid TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    participant_jid TEXT,
+    first_seen_join_at INTEGER NOT NULL,
+    last_seen_join_at INTEGER NOT NULL,
+    PRIMARY KEY(group_jid, user_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_group_member_joins_recent
+    ON group_member_joins(user_id, group_jid, last_seen_join_at);
 `;
 
 const CLEANUP_REMOVAL_SCHEMA_SQL = `
@@ -500,6 +522,7 @@ const recreateSchema = (database: Database.Database): void => {
     "cleanup_messages",
     "cleanup_members",
     "cleanup_campaigns",
+    "group_member_joins",
     "spotlight_history",
     "spotlight_pending",
     "identity_merges",
@@ -636,6 +659,7 @@ const recreateSchema = (database: Database.Database): void => {
     ${SPOTLIGHT_SCHEMA_SQL}
     ${ANNOUNCEMENT_SCHEMA_SQL}
     ${CALL_GUARD_SCHEMA_SQL}
+    ${GROUP_MEMBER_JOINS_SCHEMA_SQL}
     ${CLEANUP_SCHEMA_SQL}
     ${CLEANUP_REMOVAL_SCHEMA_SQL}
   `);
@@ -982,6 +1006,78 @@ export const migrateSchemaV6ToV7 = (
     if (options.throwAfterSchemaForTest) {
       throw new Error("Intentional migration failure");
     }
+    database.pragma("user_version = 7");
+    database.exec("COMMIT");
+  } catch (migrationError) {
+    if (database.inTransaction) {
+      database.exec("ROLLBACK");
+    }
+    throw migrationError;
+  }
+};
+
+export const migrateSchemaV7ToV8 = (
+  database: Database.Database,
+  options: { throwAfterSchemaForTest?: boolean } = {},
+): void => {
+  if (database.inTransaction) {
+    throw new Error("Cannot migrate schema while another transaction is active");
+  }
+
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    database.exec(GROUP_MEMBER_JOINS_SCHEMA_SQL);
+    database.exec(`
+      ALTER TABLE cleanup_signals RENAME TO cleanup_signals_old;
+
+      CREATE TABLE cleanup_signals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        campaign_id TEXT NOT NULL REFERENCES cleanup_campaigns(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL REFERENCES users(id),
+        signal_type TEXT NOT NULL CHECK(signal_type IN (
+          'public_reaction',
+          'public_reply',
+          'group_activity',
+          'group_join',
+          'dm_reaction',
+          'dm_reply',
+          'manual',
+          'protected'
+        )),
+        source_jid TEXT,
+        message_id TEXT,
+        created_at INTEGER NOT NULL
+      );
+
+      INSERT INTO cleanup_signals (
+        id,
+        campaign_id,
+        user_id,
+        signal_type,
+        source_jid,
+        message_id,
+        created_at
+      )
+      SELECT
+        id,
+        campaign_id,
+        user_id,
+        signal_type,
+        source_jid,
+        message_id,
+        created_at
+      FROM cleanup_signals_old;
+
+      DROP TABLE cleanup_signals_old;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_cleanup_signals_unique
+        ON cleanup_signals(campaign_id, user_id, signal_type, IFNULL(source_jid, ''), IFNULL(message_id, ''));
+      CREATE INDEX IF NOT EXISTS idx_cleanup_signals_campaign
+        ON cleanup_signals(campaign_id, signal_type, created_at);
+    `);
+    if (options.throwAfterSchemaForTest) {
+      throw new Error("Intentional migration failure");
+    }
     database.pragma(`user_version = ${SCHEMA_VERSION}`);
     database.exec("COMMIT");
   } catch (migrationError) {
@@ -1032,6 +1128,10 @@ export const ensureSchema = (database: Database.Database): void => {
 
   if (Number(database.pragma("user_version", { simple: true }) ?? 0) === 6) {
     migrateSchemaV6ToV7(database);
+  }
+
+  if (Number(database.pragma("user_version", { simple: true }) ?? 0) === 7) {
+    migrateSchemaV7ToV8(database);
     database.pragma("journal_mode = WAL");
     database.exec("PRAGMA foreign_keys = ON");
     return;
@@ -1111,6 +1211,63 @@ export const closeDb = (): void => {
 };
 
 export const getSchemaVersion = (): number => Number(getDb().pragma("user_version", { simple: true }) ?? 0);
+
+export const recordGroupMemberJoin = (
+  groupJid: string,
+  userId: string,
+  participantJid: string | null,
+  nowMs = Date.now(),
+): void => {
+  getDb()
+    .prepare<[string, string, string | null, number, number]>(`
+      INSERT INTO group_member_joins (
+        group_jid,
+        user_id,
+        participant_jid,
+        first_seen_join_at,
+        last_seen_join_at
+      ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(group_jid, user_id) DO UPDATE SET
+        participant_jid = COALESCE(excluded.participant_jid, group_member_joins.participant_jid),
+        last_seen_join_at = excluded.last_seen_join_at
+    `)
+    .run(groupJid, assertUserWritable(userId), participantJid, nowMs, nowMs);
+};
+
+export const findRecentGroupMemberJoin = (
+  groupJid: string,
+  userId: string,
+  sinceMs: number,
+): GroupMemberJoin | null => {
+  const row = getDb()
+    .prepare<
+      [string, string, number],
+      {
+        group_jid: string;
+        user_id: string;
+        participant_jid: string | null;
+        first_seen_join_at: number;
+        last_seen_join_at: number;
+      }
+    >(`
+      SELECT group_jid, user_id, participant_jid, first_seen_join_at, last_seen_join_at
+      FROM group_member_joins
+      WHERE group_jid = ?
+        AND user_id = ?
+        AND last_seen_join_at >= ?
+    `)
+    .get(groupJid, assertUserWritable(userId), sinceMs);
+
+  return row
+    ? {
+        groupJid: row.group_jid,
+        userId: row.user_id,
+        participantJid: row.participant_jid,
+        firstSeenJoinAt: row.first_seen_join_at,
+        lastSeenJoinAt: row.last_seen_join_at,
+      }
+    : null;
+};
 
 export const getUserRecord = (userId: string): UserRecord | null => {
   const row = getDb()

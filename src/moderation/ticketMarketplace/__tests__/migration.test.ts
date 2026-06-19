@@ -10,6 +10,7 @@ import {
   migrateSchemaV4ToV5,
   migrateSchemaV5ToV6,
   migrateSchemaV6ToV7,
+  migrateSchemaV7ToV8,
 } from "../../../db.js";
 
 let tempDir: string | null = null;
@@ -166,6 +167,141 @@ describe("v6 to v7 migration", () => {
       expect(Number(database.pragma("user_version", { simple: true }))).toBe(6);
       expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cleanup_removal_jobs'").get()).toBeUndefined();
       expect(database.prepare("SELECT COUNT(*) AS count FROM users").get()).toEqual({ count: 1 });
+    } finally {
+      database.close();
+    }
+  });
+});
+
+describe("v7 to v8 migration", () => {
+  it("adds group join observations and preserves cleanup signals", () => {
+    const database = createV2Database();
+    try {
+      migrateSchemaV2ToV3(database);
+      migrateSchemaV3ToV4(database);
+      migrateSchemaV4ToV5(database);
+      migrateSchemaV5ToV6(database);
+      database.exec(`
+        INSERT INTO cleanup_campaigns (
+          id,
+          status,
+          started_at,
+          ends_at,
+          created_by_user_id,
+          created_by_label,
+          channel_link,
+          public_message,
+          dm_message,
+          batch_size,
+          batch_interval_minutes,
+          next_batch_not_before,
+          created_at,
+          updated_at
+        ) VALUES (
+          'campaign-1',
+          'active',
+          1,
+          1000,
+          'user-1',
+          'owner',
+          NULL,
+          'public',
+          'dm',
+          25,
+          30,
+          1,
+          1,
+          1
+        );
+        INSERT INTO cleanup_members (
+          campaign_id,
+          user_id,
+          display_name,
+          primary_jid,
+          first_seen_group_jid,
+          whitelisted_at,
+          whitelist_reason,
+          last_signal_at,
+          dm_status,
+          created_at,
+          updated_at
+        ) VALUES (
+          'campaign-1',
+          'user-1',
+          'User One',
+          '447700900001@s.whatsapp.net',
+          'group@g.us',
+          2,
+          'group_activity',
+          2,
+          'skipped',
+          1,
+          2
+        );
+        INSERT INTO cleanup_signals (
+          campaign_id,
+          user_id,
+          signal_type,
+          source_jid,
+          message_id,
+          created_at
+        ) VALUES (
+          'campaign-1',
+          'user-1',
+          'group_activity',
+          'group@g.us',
+          'msg-1',
+          2
+        );
+      `);
+      migrateSchemaV6ToV7(database);
+      migrateSchemaV7ToV8(database);
+
+      expect(Number(database.pragma("user_version", { simple: true }))).toBe(8);
+      expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'group_member_joins'").get()).toEqual({
+        name: "group_member_joins",
+      });
+      expect(database.prepare("SELECT signal_type FROM cleanup_signals").all()).toEqual([
+        { signal_type: "group_activity" },
+      ]);
+      expect(() => database.prepare(`
+        INSERT INTO cleanup_signals (
+          campaign_id,
+          user_id,
+          signal_type,
+          source_jid,
+          message_id,
+          created_at
+        ) VALUES (
+          'campaign-1',
+          'user-1',
+          'group_join',
+          'group@g.us',
+          NULL,
+          3
+        )
+      `).run()).not.toThrow();
+    } finally {
+      database.close();
+    }
+  });
+
+  it("rolls back a failed group join migration", () => {
+    const database = createV2Database();
+    try {
+      migrateSchemaV2ToV3(database);
+      migrateSchemaV3ToV4(database);
+      migrateSchemaV4ToV5(database);
+      migrateSchemaV5ToV6(database);
+      migrateSchemaV6ToV7(database);
+
+      expect(() => migrateSchemaV7ToV8(database, { throwAfterSchemaForTest: true })).toThrow("Intentional migration failure");
+
+      expect(Number(database.pragma("user_version", { simple: true }))).toBe(7);
+      expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cleanup_signals_old'").get()).toBeUndefined();
+      expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cleanup_signals'").get()).toEqual({
+        name: "cleanup_signals",
+      });
     } finally {
       database.close();
     }

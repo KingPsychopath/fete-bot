@@ -8,6 +8,7 @@ export type CleanupSignalType =
   | "public_reaction"
   | "public_reply"
   | "group_activity"
+  | "group_join"
   | "dm_reaction"
   | "dm_reply"
   | "manual"
@@ -812,6 +813,7 @@ export const getCleanupStats = (campaignId: string): CleanupStats | null => {
     public_reaction: 0,
     public_reply: 0,
     group_activity: 0,
+    group_join: 0,
     dm_reaction: 0,
     dm_reply: 0,
     manual: 0,

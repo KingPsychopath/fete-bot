@@ -130,6 +130,9 @@ const cleanupSignalLabel = (reason: CleanupMember["whitelistReason"]): string =>
   if (reason === "manual") {
     return "manually kept";
   }
+  if (reason === "group_join") {
+    return "via recent join";
+  }
   return `via ${reason}`;
 };
 

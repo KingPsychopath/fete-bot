@@ -1,7 +1,7 @@
 import type { GroupMetadata, WASocket } from "@whiskeysockets/baileys";
 
 import type { Config } from "../config.js";
-import { getUserAliases, type ActorRole } from "../db.js";
+import { findRecentGroupMemberJoin, getUserAliases, type ActorRole } from "../db.js";
 import { describeUser, findParticipantJidForUser, resolveUser } from "../identity.js";
 import { log, warn } from "../logger.js";
 import { formatJidForDisplay, isGroupAdmin, isProtectedGroupMember, parseToJid } from "../utils.js";
@@ -92,6 +92,7 @@ const CLEANUP_REMOVE_MIN_DELAY_MS = 5_000;
 const CLEANUP_REMOVE_MIN_GROUP_DELAY_MS = 15_000;
 const CLEANUP_REMOVE_MAX_DELAY_MS = 10 * 60_000;
 const CLEANUP_REMOVE_BLOCKED_PREVIEW_LIMIT = 10;
+const CLEANUP_RECENT_JOIN_WHITELIST_MS = 14 * 24 * 60 * 60_000;
 
 const durationMsFromToken = (token: string | undefined, fallbackMs: number): number | null => {
   if (!token) {
@@ -948,6 +949,23 @@ const carryPreviousCleanupWhitelist = (
   );
 };
 
+const carryRecentJoinWhitelist = (
+  members: CleanupMemberSeed[],
+  nowMs: number,
+): CleanupMemberSeed[] => {
+  const recentJoinSinceMs = nowMs - CLEANUP_RECENT_JOIN_WHITELIST_MS;
+  return members.map((member) => {
+    if (member.whitelisted || !member.firstSeenGroupJid) {
+      return member;
+    }
+
+    const recentJoin = findRecentGroupMemberJoin(member.firstSeenGroupJid, member.userId, recentJoinSinceMs);
+    return recentJoin
+      ? { ...member, whitelisted: true, whitelistReason: "group_join" }
+      : member;
+  });
+};
+
 const sendPublicNotices = async (
   sock: WASocket,
   campaignId: string,
@@ -1049,7 +1067,11 @@ export const handleCleanupCommand = async (
     const publicTargets = publicNoticesEnabled ? getPublicTargetJids(config, groups) : [];
     const previousCampaign = carryPreviousWhitelist ? getLatestCleanupCampaign() : null;
     const collectedMembers = await collectCleanupMembers(config, groupMetadataByJid, selfJids, getManagedGroupJids(config, groups));
-    const members = carryPreviousCleanupWhitelist(collectedMembers, previousCampaign?.id ?? null);
+    const nowMs = Date.now();
+    const members = carryRecentJoinWhitelist(
+      carryPreviousCleanupWhitelist(collectedMembers, previousCampaign?.id ?? null),
+      nowMs,
+    );
 
     if (members.length === 0) {
       await sock.sendMessage(replyJid, {
@@ -1068,6 +1090,7 @@ export const handleCleanupCommand = async (
       batchSize: CLEANUP_DM_RATE_LIMIT.messagesPerWindow,
       batchIntervalMinutes: CLEANUP_DM_RATE_LIMIT.windowMinutes,
       members,
+      nowMs,
     });
 
     const sentTargets = await sendPublicNotices(sock, campaign.id, publicTargets, publicMessage);

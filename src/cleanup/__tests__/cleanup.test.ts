@@ -988,6 +988,73 @@ describe("cleanup campaign", () => {
     }));
   });
 
+  it("keeps members who recently joined a managed group when cleanup starts", async () => {
+    await setupDb();
+    const { handleCleanupCommand } = await import("../commands.js");
+    const { resolveUser } = await import("../../identity.js");
+    const db = await import("../../db.js");
+    const store = await import("../store.js");
+    const joined = await resolveUser({
+      participantJid: "447700900001@s.whatsapp.net",
+      phoneJid: "447700900001@s.whatsapp.net",
+      pushName: "Fresh Join",
+      selfJids: new Set(["bot@s.whatsapp.net"]),
+    });
+    const older = await resolveUser({
+      participantJid: "447700900002@s.whatsapp.net",
+      phoneJid: "447700900002@s.whatsapp.net",
+      pushName: "Older Member",
+      selfJids: new Set(["bot@s.whatsapp.net"]),
+    });
+    expect(joined).not.toBeNull();
+    expect(older).not.toBeNull();
+    db.recordGroupMemberJoin(
+      "group@g.us",
+      joined!.userId,
+      "447700900001@s.whatsapp.net",
+      Date.now() - 60_000,
+    );
+    db.recordGroupMemberJoin(
+      "group@g.us",
+      older!.userId,
+      "447700900002@s.whatsapp.net",
+      Date.now() - 20 * 24 * 60 * 60_000,
+    );
+
+    const sendMessage = vi.fn().mockResolvedValue({ key: { id: "admin-reply" } });
+
+    await handleCleanupCommand(
+      { sendMessage } as never,
+      { userId: "owner", label: "owner", role: "owner" },
+      "447700900000@s.whatsapp.net",
+      "!cleanup start 72h public=off",
+      config,
+      new Map([["group@g.us", "Fete Group"]]),
+      new Map([
+        [
+          "group@g.us",
+          {
+            id: "group@g.us",
+            subject: "Fete Group",
+            participants: [
+              { id: "447700900001@s.whatsapp.net" },
+              { id: "447700900002@s.whatsapp.net" },
+            ],
+          },
+        ],
+      ]) as never,
+      new Set(["bot@s.whatsapp.net"]),
+    );
+
+    const campaign = store.getOpenCleanupCampaign();
+    expect(campaign).not.toBeNull();
+    expect(store.listCleanupWhitelistedMembers(campaign!.id, 10).map((member) => ({
+      userId: member.userId,
+      reason: member.whitelistReason,
+    }))).toEqual([{ userId: joined!.userId, reason: "group_join" }]);
+    expect(store.listCleanupCandidateMembers(campaign!.id, 10).map((member) => member.userId)).toEqual([older!.userId]);
+  });
+
   it("can send the cleanup public notice separately after starting quietly", async () => {
     await setupDb();
     const { handleCleanupCommand } = await import("../commands.js");

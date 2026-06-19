@@ -45,6 +45,7 @@ import {
   isMuted,
   logCallGuardAudit,
   logAction,
+  recordGroupMemberJoin,
   purgeExpiredCallViolations,
   purgeExpiredMutes,
   purgeExpiredStrikes,
@@ -3861,37 +3862,56 @@ export const startBot = async (): Promise<void> => {
       }
 
       try {
-        if (!isBanned(participant.userId, update.id)) {
-          continue;
-        }
+        recordGroupMemberJoin(
+          update.id,
+          participant.userId,
+          participant.participantJid ?? rawParticipant.id ?? null,
+        );
 
-        try {
-          await sock.groupParticipantsUpdate(
-            update.id,
-            [findParticipantJidForUser(participant.userId, discoveredGroupMetadata.get(update.id)) ?? participant.participantJid ?? rawParticipant.id],
-            "remove",
-          );
-          warn("Auto-removed banned user on rejoin", {
-            userJid: participant.participantJid,
-            groupJid: update.id,
-          });
+        if (isBanned(participant.userId, update.id)) {
+          try {
+            await sock.groupParticipantsUpdate(
+              update.id,
+              [findParticipantJidForUser(participant.userId, discoveredGroupMetadata.get(update.id)) ?? participant.participantJid ?? rawParticipant.id],
+              "remove",
+            );
+            warn("Auto-removed banned user on rejoin", {
+              userJid: participant.participantJid,
+              groupJid: update.id,
+            });
 
-          for (const ownerJid of config.ownerJids) {
-            await sock.sendMessage(ownerJid, {
-              text: `🚫 Banned user attempted to rejoin and was auto-removed.
+            for (const ownerJid of config.ownerJids) {
+              await sock.sendMessage(ownerJid, {
+                text: `🚫 Banned user attempted to rejoin and was auto-removed.
 
 User: ${participant.knownAliases[0] ?? participant.userId}
 Group: ${update.id}
 
 Use !unban ${participant.knownAliases[0] ?? participant.userId} ${update.id} to lift the ban.`,
-            });
+              });
+            }
+            clearReviewQueueEntry(participant.userId, update.id);
+          } catch (rejoinError) {
+            error("Failed to auto-remove banned user on rejoin", rejoinError);
           }
-          clearReviewQueueEntry(participant.userId, update.id);
-        } catch (rejoinError) {
-          error("Failed to auto-remove banned user on rejoin", rejoinError);
+          continue;
         }
-      } catch (banCheckError) {
-        error("Failed banned-user rejoin check", banCheckError);
+
+        const signal = recordCleanupSignalForOpenCampaign(
+          participant.userId,
+          "group_join",
+          update.id,
+          null,
+        );
+        if (signal.firstWhitelist && signal.campaign) {
+          log("cleanup.group_join_whitelisted", {
+            campaignId: signal.campaign.id,
+            userId: participant.userId,
+            groupJid: update.id,
+          });
+        }
+      } catch (participantAddError) {
+        error("Failed participant-add handling", participantAddError);
       }
     }
   });
