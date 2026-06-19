@@ -44,6 +44,7 @@ export const TRUE_POSITIVES_BUYING = [
   "cerco biglietto domenica",
   "suche Ticket für Samstag",
   "zoek kaartje zaterdag",
+  "looking for 2 fdlm tickets, can meet at the metro",
 ] as const;
 
 export const TRUE_POSITIVES_SELLING = [
@@ -77,6 +78,7 @@ export const TRUE_POSITIVES_SELLING = [
   "Posting for a friend, Sunday ticket available FV",
   "à vendre: billet dimanche 70€",
   "For sale: 2 Saturday wristbands £80",
+  "Selling 2 Sunday tickets £80, can meet by the RATP station",
 ] as const;
 
 export const TRUE_NEGATIVES = [
@@ -136,6 +138,7 @@ export const TRUE_NEGATIVES = [
   "Scammer tried to sell me a fake ticket",
   "Just venting about ticket prices",
   "Not selling my ticket, just complaining about the prices",
+  "is there a way to resell ticket on shotgun app?",
 ] as const;
 
 export const FALSE_POSITIVE_REGRESSIONS = [
@@ -156,6 +159,24 @@ export const FALSE_POSITIVE_REGRESSIONS = [
     expected: "none",
     layer: "classifier",
     reason: "Public transport and anti-pollution passes can contain ticket, pass, buy, and price language without being event ticket resale.",
+  },
+  {
+    text: "I have 2 spare metro tickets if anyone needs one",
+    expected: "none",
+    layer: "classifier",
+    reason: "Transport tickets can contain spare and ticket language without being event ticket resale.",
+  },
+  {
+    text: "Selling my Eurostar ticket to Paris for £40",
+    expected: "none",
+    layer: "classifier",
+    reason: "Travel tickets can be sold without belonging in the event ticket marketplace.",
+  },
+  {
+    text: "Selling accommodation for FDLM, have 1 spare bed for 100€",
+    expected: "none",
+    layer: "classifier",
+    reason: "Accommodation offers can contain selling, spare, FDLM, and price language without being ticket resale.",
   },
 ] as const satisfies ReadonlyArray<{
   text: string;

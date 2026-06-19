@@ -152,6 +152,8 @@ const saleQuantityPattern = String.raw`(?:\d+\s*x|x\s*\d+|\d+|one|two|three|four
 const nonOfferQuantityObjectPattern = String.raw`(?:people|ppl|persons?|friends?|mates?|guests?)`;
 const thirdPartyActorPattern = String.raw`(?:(?:these|those)\s+(?:ppl|people|guys|lot|sellers)|someone|somebody|they|he|she|a\s+(?:guy|girl|person|seller)|this\s+(?:guy|girl|person|seller))`;
 const thirdPartyPluralActorPattern = String.raw`(?:(?:these|those)\s+(?:ppl|people|guys|lot|sellers)|people|ppl|they|sellers)`;
+const transportAccessCuePattern = String.raw`(?:anti\s+pollution|travel|transit|transport|metro|train|bus|tram|rer|navigo|ratp|idf|mobilit[eé]s|bonjour\s+ratp|sncf|eurostar|flight|airport|airline|plane)`;
+const transportAccessObjectPattern = String.raw`(?:tickets?|passes?|fares?|billets?)`;
 const STRONG_SELL_PHRASES = ["for sale", "à vendre", "a vendre", "en venta", "face value"] as const;
 const STRONG_SELL_REGEXES = [
   /\bfv\b/iu,
@@ -292,7 +294,10 @@ const NEGATED_BUYER_INTENT_PATTERNS: Array<{ label: string; regex: RegExp }> = [
 const NON_MARKETPLACE_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   {
     label: "public transport ticket or pass",
-    regex: /\b(?:travel|transit|transport|metro|train|bus|ratp|idf|mobilit[eé]s|bonjour|anti\s+pollution)\b(?:\s+[\p{L}\p{N}'£€$]+){0,16}\s+\b(?:tickets?|passes?)\b|\b(?:tickets?|passes?)\b(?:\s+[\p{L}\p{N}'£€$]+){0,16}\s+\b(?:travel|transit|transport|metro|train|bus|ratp|idf|mobilit[eé]s|bonjour|anti\s+pollution)\b/iu,
+    regex: new RegExp(
+      String.raw`\b${transportAccessCuePattern}\b(?:\s+[\p{L}\p{N}'£€$]+){0,3}\s+\b${transportAccessObjectPattern}\b|\b${transportAccessObjectPattern}\b\s+(?:via|on|from|for|with|through|using)\s+(?:the\s+)?(?:apps?\s+)?\b${transportAccessCuePattern}\b`,
+      "iu",
+    ),
   },
   {
     label: "looking for people",
@@ -385,6 +390,13 @@ const NON_MARKETPLACE_SUPPORT_PATTERNS: Array<{ label: string; regex: RegExp }> 
     label: "ticket meaning clarification",
     regex: new RegExp(
       String.raw`\b(?:does\s+anyone\s+know\s+)?(?:what|which|meaning|mean|means|explain)\b(?:\s+[\p{L}\p{N}'£€$]+){0,8}\s+\b${ticketTermPattern}\b(?:\s+[\p{L}\p{N}'£€$]+){0,8}\s+\b(?:mean|means|meaning)\b`,
+      "iu",
+    ),
+  },
+  {
+    label: "resale support question",
+    regex: new RegExp(
+      String.raw`\b(?:is\s+there\s+a\s+way|how\s+(?:do|can)\s+i|can\s+i|could\s+i|where\s+(?:do|can)\s+i)\b(?:\s+[\p{L}\p{N}'£€$]+){0,8}\s+\b(?:resell|resale|sell)\b(?:\s+[\p{L}\p{N}'£€$]+){0,8}\s+\b(?:tickets?|app|platform|shotgun)\b`,
       "iu",
     ),
   },

@@ -55,7 +55,7 @@ import { runStartupHealthCheck } from "./healthCheck.js";
 import { isGroupShhEnabled } from "./groupShhSwitch.js";
 import { loadLidMappings, recordLidMapping } from "./lidMap.js";
 import { containsDisallowedUrl } from "./linkChecker.js";
-import { isLinkGraceActive } from "./linkGrace.js";
+import { isModerationGraceActive } from "./linkGrace.js";
 import { formatMentionLabel, getMentionTargetJid } from "./mentionLabel.js";
 import {
   ADMIN_MENTION_OVERUSE_REPLIES,
@@ -2876,7 +2876,9 @@ Use !unban ${canonicalSenderAlias} ${groupJid} to lift the ban.`,
       error("Failed banned-user message check", { senderJid, groupJid, error: banError });
     }
 
-    if (isForwardedMessage(msg.message)) {
+    const moderationGraceActive = isModerationGraceActive(sender.userId, groupJid);
+
+    if (!moderationGraceActive && isForwardedMessage(msg.message)) {
       logAction({
         timestamp: new Date().toISOString(),
         group_jid: groupJid,
@@ -2964,6 +2966,18 @@ They have been banned and removed after repeatedly trying to post while muted.`,
       }
     } catch (muteError) {
       error("Failed mute check", { senderJid, groupJid, error: muteError });
+    }
+
+    if (moderationGraceActive) {
+      log("message.allowed_by_moderation_grace", {
+        groupJid,
+        senderJid: canonicalSenderAlias,
+        lidJid,
+        pushName: getPushName(msg),
+        textLength: text.length,
+        ...maybeLogTextField(text),
+      });
+      return;
     }
 
     const isCommandText = text.trim().startsWith("!");
@@ -3260,9 +3274,7 @@ They have been banned and removed after repeatedly trying to post while muted.`,
       });
     }
 
-    const moderationResult = isLinkGraceActive(sender.userId, groupJid)
-      ? { found: false }
-      : containsDisallowedUrl(text);
+    const moderationResult = containsDisallowedUrl(text);
     const baseLogEntry = {
       timestamp: new Date().toISOString(),
       group_jid: groupJid,

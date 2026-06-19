@@ -111,3 +111,7 @@ export const getActiveLinkGrace = (
 
 export const isLinkGraceActive = (userId: string, groupJid: string, nowMs = Date.now()): boolean =>
   getActiveLinkGrace(userId, groupJid, nowMs) !== null;
+
+export const grantModerationGrace = grantLinkGrace;
+export const getActiveModerationGrace = getActiveLinkGrace;
+export const isModerationGraceActive = isLinkGraceActive;

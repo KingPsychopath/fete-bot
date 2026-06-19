@@ -53,7 +53,7 @@ import {
 } from "./identity.js";
 import { containsDisallowedUrl, type DisallowedUrlReason } from "./linkChecker.js";
 import { getGroupShhEntry, listEnabledGroupShhEntries, setGroupShhEnabled } from "./groupShhSwitch.js";
-import { grantLinkGrace } from "./linkGrace.js";
+import { grantModerationGrace } from "./linkGrace.js";
 import { getModerationReplyContext } from "./moderation/moderationReplyContext.js";
 import { buildTicketMarketplaceExplainText } from "./moderation/ticketMarketplace/explain.js";
 import {
@@ -1419,7 +1419,7 @@ const handleGroupShhCommand = async (
   return true;
 };
 
-const grantLinkGraceAndReply = async (
+const grantModerationGraceAndReply = async (
   sock: WASocket,
   destinationJid: string,
   target: ResolvedUser,
@@ -1434,21 +1434,21 @@ const grantLinkGraceAndReply = async (
     return false;
   }
 
-  const grant = grantLinkGrace(
+  const grant = grantModerationGrace(
     target.userId,
     groupJid,
     durationMs,
     actorContext.participantJid ?? actorContext.userId,
   );
   await sock.sendMessage(destinationJid, {
-    text: `Granted link grace to ${formatUserSummary(target)} in ${formatGroupName(groupJid, groups)} until ${formatDate(grant.expiresAt)}.
-They can post any link during this window without deletion, warning, or strikes.`,
+    text: `Granted moderation grace to ${formatUserSummary(target)} in ${formatGroupName(groupJid, groups)} until ${formatDate(grant.expiresAt)}.
+Automated moderation replies, deletions, warnings, and strikes are bypassed during this window.`,
   });
 
   const targetReplyJid = getReplyJidForActor(target);
   if (targetReplyJid && targetReplyJid !== destinationJid) {
     await sock.sendMessage(targetReplyJid, {
-      text: `You've got link grace in ${formatGroupName(groupJid, groups)} until ${formatDate(grant.expiresAt)}. You can post the link there now.`,
+      text: `You've got moderation grace in ${formatGroupName(groupJid, groups)} until ${formatDate(grant.expiresAt)}. Automated moderation is paused for your messages there during this window.`,
     }).catch(() => {});
   }
 
@@ -1845,7 +1845,7 @@ Text: "${formatPreview(queued.body)}"`,
 
   if (command === "!grace") {
     const durationToken = rest.split(/\s+/)[0] || undefined;
-    const granted = await grantLinkGraceAndReply(
+    const granted = await grantModerationGraceAndReply(
       sock,
       commandReplyJid,
       target,
@@ -2488,7 +2488,7 @@ Total: ${config.ownerJids.length + moderators.length} authorised users`,
       return;
     }
 
-    const granted = await grantLinkGraceAndReply(
+    const granted = await grantModerationGraceAndReply(
       sock,
       replyJid,
       target,

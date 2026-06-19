@@ -285,6 +285,7 @@ In practice:
 Command note:
 
 - `!pardon` and `!resetstrikes` currently do the same thing: clear active strikes, remove any pending review entry, and lift any mute for that user in the targeted group(s)
+- `!grace` grants a short group-scoped moderation grace window. During that window, automated moderation replies, deletions, warnings, and strikes are bypassed for that user; existing bans, mutes, and group-wide `!shh` still apply.
 
 Owners and moderators can control the bot in two ways:
 
@@ -338,6 +339,7 @@ Owners and moderators can control the bot in two ways:
 - `!cleanup remove-preview {limit?} group={groupJid}|all=true`
 - `!cleanup remove-start {limit?} group={groupJid}|all=true confirm=REMOVE [delay=30s]`
 - `!pardon {jid or number} {groupJid?}`
+- `!grace {jid, lid, or number} {groupJid?} {duration?}`
 - `!strikes {jid, lid, or number}`
 - `!strike {jid, lid, or number} {reason?} {groupJid?}`
 
@@ -355,6 +357,7 @@ Reply to the target message, then send:
 - `!remove` / `!kick`
 - `!strike {reason?}`
 - `!pardon`
+- `!grace {duration?}`
 - `!strikes`
 - `!undo`
 
