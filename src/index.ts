@@ -124,6 +124,7 @@ import {
 import { extractAllIdentifiers, isAuthorised, isProtectedGroupMember, parseToJid } from "./utils.js";
 import { STARTED_AT, VERSION } from "./version.js";
 import { getDirectCommandReplyTargets, getKnownDirectMessageTargets, getStartupOwnerAwakeTargets } from "./directCommandReply.js";
+import { isDirectCommandCandidateText } from "./directCommandCandidate.js";
 import { getDebugRedirectSwitchState } from "./debugRedirectSwitch.js";
 import { createWhatsAppAuthBackup } from "./whatsappAuthBackup.js";
 import { shouldRequestWhatsAppPairingCode } from "./whatsappPairing.js";
@@ -765,7 +766,7 @@ const isGroupChatJid = (jid: string): boolean => jid.endsWith("@g.us");
 const isSystemChatJid = (jid: string): boolean =>
   jid === "status@broadcast" || jid.endsWith("@newsletter") || jid.endsWith("@broadcast");
 const isDirectCommandCandidate = (remoteJid: string, text: string): boolean =>
-  text.trim().startsWith("!") && !isGroupChatJid(remoteJid) && !isSystemChatJid(remoteJid);
+  isDirectCommandCandidateText(text) && !isGroupChatJid(remoteJid) && !isSystemChatJid(remoteJid);
 
 const isAdminOrModeratorLevelIdentity = (
   userId: string,
